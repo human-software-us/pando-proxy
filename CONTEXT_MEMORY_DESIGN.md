@@ -308,6 +308,8 @@ The best no-source-change shape is a local OpenAI-compatible model-provider prox
 
 This approach is stronger than AGENTS.md, skills, custom prompts, or an MCP memory server because those options are model-mediated. They can suggest that the model call a memory tool, but they cannot guarantee that maintenance runs before the next model turn. A model-provider proxy is on the request path, so it can enforce the maintenance order.
 
+Implementation priority: functionality comes first. Unit tests, integration tests, fixtures, and exhaustive validation harnesses are secondary to getting the proxy's core behavior working end to end. Tests should support implementation and protect high-risk logic, but they must not become the main project. The first milestone is a usable local proxy that stock Codex can route through, that can inject memory context, persist snapshots, and stream upstream responses correctly.
+
 ### Codex Config Support
 
 Yes, stock Codex can be configured to use a local proxy as a model provider.
@@ -603,6 +605,14 @@ codex --profile pando-memory
 - a test request can round-trip through the proxy.
 
 ### Testing Strategy
+
+All tests are secondary to implementing the functionality. Do not block the first usable version on comprehensive coverage. Add tests where they directly accelerate implementation or protect the pure state-machine pieces most likely to regress. The priority order is:
+
+1. Working local proxy behavior.
+2. Correct memory state transitions and prompt rewriting.
+3. Easy install/setup for stock Codex users.
+4. Focused tests around the riskiest pure logic.
+5. Broader unit/integration coverage after the vertical slice works.
 
 Start with tests that do not require network:
 
