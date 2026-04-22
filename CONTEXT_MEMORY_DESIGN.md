@@ -567,16 +567,64 @@ Rules:
 
 The proxy must optimize for easy adoption by normal Codex users.
 
-Target install experience:
+The desired product shape is a standalone local app/binary. A user should be able to download or install one executable, run it, approve installation as their Codex proxy, and then use stock Codex normally.
+
+Target first-run experience:
+
+```bash
+pando-proxy
+```
+
+The app should:
+
+1. Detect whether it is already installed in `~/.codex/config.toml`.
+2. If not installed, ask the user whether to install itself as a Codex model-provider proxy.
+3. Explain exactly what it will change:
+   - add a `pando-proxy` entry under `[model_providers]`,
+   - add a `pando-memory` profile that selects that provider,
+   - leave existing profiles and user settings intact,
+   - create a timestamped backup of `~/.codex/config.toml` before writing.
+4. Apply the config change after confirmation.
+5. Run `doctor` checks.
+6. Start the local proxy server.
+7. Print the exact next command:
+
+```bash
+codex --profile pando-memory
+```
+
+If the app chooses to make `pando-memory` the default profile, that must be an explicit separate confirmation. The safe default is to create a named profile and tell the user how to use it.
+
+Target package/install options:
 
 ```bash
 brew install pando-proxy
-pando-proxy install
-pando-proxy serve
-codex
+pando-proxy
+codex --profile pando-memory
 ```
 
-The `install` command should either write a named profile to `~/.codex/config.toml` or print an exact snippet with instructions. Prefer a named profile first to avoid surprising users who already have a tuned Codex setup:
+Also support non-Homebrew direct downloads:
+
+```bash
+curl -L https://example.com/pando-proxy/latest/pando-proxy-macos-arm64 -o pando-proxy
+chmod +x pando-proxy
+./pando-proxy
+codex --profile pando-memory
+```
+
+The exact distribution URL can change, but the design goal is stable: one local binary, no Java runtime, no Node project checkout, no manual config editing required for the happy path.
+
+The CLI should still expose explicit commands for automation and debugging:
+
+```text
+pando-proxy serve       # start localhost proxy without changing config
+pando-proxy install     # install/update Codex config profile and provider
+pando-proxy uninstall   # remove only config entries created by pando-proxy
+pando-proxy doctor      # verify port, OPENAI_API_KEY, upstream reachability, Codex config
+pando-proxy status      # show whether proxy is running and how Codex is configured
+```
+
+The `install` command should write a named profile to `~/.codex/config.toml` by default. It may also support `--print` to print an exact snippet without changing files. Prefer a named profile first to avoid surprising users who already have a tuned Codex setup:
 
 ```toml
 [profiles.pando-memory]
@@ -594,6 +642,39 @@ Then users can run:
 ```bash
 codex --profile pando-memory
 ```
+
+The app should print a successful install message like:
+
+```text
+Pando Proxy is installed and running at http://127.0.0.1:8787/v1.
+
+Use Codex with:
+  codex --profile pando-memory
+
+Leave this terminal open while using Codex.
+```
+
+If the user wants the proxy to run in the background, that should be an explicit command such as:
+
+```bash
+pando-proxy service install
+pando-proxy service start
+codex --profile pando-memory
+```
+
+Background service support is useful but not required for the first vertical slice. The first version can run in the foreground and clearly tell the user to leave it open.
+
+Standalone binary requirements:
+
+- The released artifact should be a self-contained executable per platform/architecture.
+- It should store app data under `~/.pando-proxy/`.
+- It should never require users to clone this repository.
+- It should never require users to manually run Deno, npm, Node, Java, or Clojure.
+- It should be safe to run repeatedly. Re-running install should update existing pando-owned config blocks, not duplicate them.
+- It should create backups before editing Codex config.
+- It should preserve unrelated Codex config formatting as much as practical. If exact formatting preservation becomes costly, correctness and safety are more important: parse TOML, update only owned keys, write valid TOML, and keep a backup.
+- It should bind to `127.0.0.1` by default, not `0.0.0.0`.
+- It should fail with clear messages if the port is busy or upstream credentials are missing.
 
 `doctor` should check:
 
@@ -665,5 +746,6 @@ Implement the smallest robust vertical slice:
 8. Add pando deterministic chunking.
 9. Add non-pando batch chunking.
 10. Add `install` command for Codex config/profile.
+11. Make running `pando-proxy` with no subcommand perform the friendly first-run flow: install if needed, run doctor, start the foreground proxy, and tell the user to run `codex --profile pando-memory`.
 
 Do not start with a complex database, hosted service, background daemon manager, UI, or custom Codex fork. The value of this repo is that it is a small local proxy that stock Codex users can install quickly.
