@@ -18,7 +18,7 @@ export function redactHeaders(headers: Headers): Record<string, string> {
 }
 
 export function loggableBody(body: unknown): unknown {
-  return redactSecrets(body);
+  return redactCredentialFields(body);
 }
 
 class JsonlLogger implements ProxyLogger {
@@ -32,7 +32,7 @@ class JsonlLogger implements ProxyLogger {
     const line = JSON.stringify({
       ts: new Date().toISOString(),
       event,
-      ...(redactSecrets(fields) as Record<string, unknown>),
+      ...(redactCredentialFields(fields) as Record<string, unknown>),
     });
     await Deno.mkdir(dirname(this.#path), { recursive: true });
     await Deno.writeTextFile(this.#path, `${line}\n`, { append: true, create: true });
@@ -44,9 +44,9 @@ function dirname(path: string): string {
   return index <= 0 ? "." : path.slice(0, index);
 }
 
-function redactSecrets(value: unknown): unknown {
+function redactCredentialFields(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.map(redactSecrets);
+    return value.map(redactCredentialFields);
   }
   if (!value || typeof value !== "object") {
     return value;
@@ -54,17 +54,19 @@ function redactSecrets(value: unknown): unknown {
 
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = isSecretKey(key) ? "[redacted]" : redactSecrets(child);
+    out[key] = isCredentialField(key) ? "[redacted]" : redactCredentialFields(child);
   }
   return out;
 }
 
-function isSecretKey(key: string): boolean {
+function isCredentialField(key: string): boolean {
   const lower = key.toLowerCase();
   return lower === "authorization" ||
+    lower === "proxy-authorization" ||
     lower === "access_token" ||
     lower === "refresh_token" ||
     lower === "id_token" ||
-    lower.includes("api_key") ||
-    lower.includes("token");
+    lower === "api_key" ||
+    lower === "openai_api_key" ||
+    lower === "x-api-key";
 }

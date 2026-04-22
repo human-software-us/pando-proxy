@@ -3,6 +3,7 @@ import {
   codexProviderConfigArg,
   createUniqueLogFile,
   parseWrapperArgs,
+  resolveWrapperLogFile,
   startProxyOnAvailablePort,
 } from "../src/wrapper.ts";
 
@@ -19,7 +20,42 @@ Deno.test("wrapper parses proxy flags and leaves codex args untouched", () => {
 
   assertEquals(parsed.options.memoryEnabled, false);
   assertEquals(parsed.options.portStart, 40130);
+  assertEquals(parsed.options.logEnabled, undefined);
   assertEquals(parsed.codexArgs, ["exec", "--sandbox", "read-only", "say hi"]);
+});
+
+Deno.test("wrapper logging is disabled by default", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    assertEquals(await resolveWrapperLogFile({}, tempDir), null);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("wrapper --proxy-log enables unique per-instance log file", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const parsed = parseWrapperArgs(["--proxy-log", "exec", "hello"]);
+    const path = await resolveWrapperLogFile(parsed.options, tempDir);
+
+    assert(path !== null);
+    assert(path.startsWith(`${tempDir}/logs/pando-proxy-`));
+    assert(path.endsWith(".jsonl"));
+    assertEquals(await Deno.readTextFile(path), "");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("wrapper --proxy-log-file enables explicit log file", async () => {
+  const parsed = parseWrapperArgs(["--proxy-log-file", "/tmp/pando-explicit.jsonl", "exec"]);
+
+  assertEquals(parsed.options.logEnabled, true);
+  assertEquals(
+    await resolveWrapperLogFile(parsed.options, "/tmp/pando-state"),
+    "/tmp/pando-explicit.jsonl",
+  );
 });
 
 Deno.test("wrapper stops parsing proxy flags after separator", () => {

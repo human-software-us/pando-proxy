@@ -7,6 +7,7 @@ export const PANDO_PROVIDER_ID = "pando-proxy";
 
 export type WrapperOptions = CliOptions & {
   portStart?: number;
+  logEnabled?: boolean;
 };
 
 export type ParsedWrapperArgs = {
@@ -65,8 +66,13 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
       options.memoryEnabled = false;
       continue;
     }
+    if (arg === "--proxy-log") {
+      options.logEnabled = true;
+      continue;
+    }
     if (arg === "--proxy-log-file") {
       options.logFile = requireValue(args, ++index, arg);
+      options.logEnabled = true;
       continue;
     }
 
@@ -85,13 +91,15 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   }
 
   const baseConfig = loadConfig(parsed.options);
-  const logFile = parsed.options.logFile ?? await createUniqueLogFile(baseConfig.stateDir);
+  const logFile = await resolveWrapperLogFile(parsed.options, baseConfig.stateDir);
   const portStart = parsed.options.portStart ?? DEFAULT_WRAPPER_PORT_START;
   const started = startProxyOnAvailablePort({ ...baseConfig, logFile }, portStart);
   const codexArgs = buildCodexArgs(parsed.codexArgs, started.config);
   const logger = createLogger(logFile);
 
-  console.error(`Pando Proxy log: ${logFile}`);
+  if (logFile) {
+    console.error(`Pando Proxy log: ${logFile}`);
+  }
   console.error(`Pando Proxy URL: http://${started.config.host}:${started.config.port}/v1`);
 
   await logger.log("wrapper_start", {
@@ -143,6 +151,19 @@ export function startProxyOnAvailablePort(
     }
   }
   throw new Error(`No available port found at or above ${portStart}`);
+}
+
+export async function resolveWrapperLogFile(
+  options: Pick<WrapperOptions, "logEnabled" | "logFile">,
+  stateDir: string,
+): Promise<string | null> {
+  if (options.logFile) {
+    return options.logFile;
+  }
+  if (options.logEnabled) {
+    return await createUniqueLogFile(stateDir);
+  }
+  return null;
 }
 
 export function buildCodexArgs(codexArgs: string[], config: ProxyConfig): string[] {
@@ -204,7 +225,8 @@ Proxy wrapper options:
   --proxy-maintenance-model <model>  Default: incoming request model
   --proxy-state-dir <path>           Default: ~/.pando-proxy
   --proxy-no-memory                  Bypass memory maintenance/injection
-  --proxy-log-file <path>            Default: unique file under ~/.pando-proxy/logs
+  --proxy-log                        Enable full JSONL logging to ~/.pando-proxy/logs
+  --proxy-log-file <path>            Enable full JSONL logging to this file
   --proxy-help, --help, -h           Show this help
 
 Everything after -- is passed to codex unchanged.

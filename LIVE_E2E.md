@@ -3,7 +3,7 @@
 This verifies stock Codex can talk to a real upstream model through `pando-proxy`.
 
 The first live test should run with memory disabled so it proves transport, Codex auth forwarding,
-request forwarding, response streaming, and logging before testing memory maintenance.
+request forwarding, and response streaming before testing memory maintenance.
 
 ## Prerequisites
 
@@ -21,6 +21,7 @@ Run turn one:
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
+  --proxy-log \
   --proxy-no-memory \
   exec \
   --sandbox read-only \
@@ -41,6 +42,7 @@ Run turn two:
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
+  --proxy-log \
   --proxy-no-memory \
   exec resume \
   --last \
@@ -56,16 +58,16 @@ cat /tmp/pando-proxy-turn2.txt
 # pando proxy live ok turn two
 ```
 
-Each wrapper invocation prints:
+When `--proxy-log` or `--proxy-log-file` is set, each wrapper invocation prints:
 
 ```text
 Pando Proxy log: /Users/you/.pando-proxy/logs/pando-proxy-...jsonl
 Pando Proxy URL: http://127.0.0.1:40123/v1
 ```
 
-The port starts at `40123` and increments until an available port is found. Every wrapper instance
-gets its own unique JSONL log file under `~/.pando-proxy/logs` unless `--proxy-log-file` is
-supplied.
+The port starts at `40123` and increments until an available port is found. Logging is disabled by
+default. `--proxy-log` creates a unique JSONL log file under `~/.pando-proxy/logs`;
+`--proxy-log-file` writes to the specified path.
 
 ## Verify Logs
 
@@ -97,15 +99,23 @@ Expected minimum counts in each Codex-call log:
 }
 ```
 
-Check that secrets were not logged:
+The log intentionally preserves request and response payloads as received. Only explicit credential
+fields such as `authorization`, `access_token`, `refresh_token`, `id_token`, and API-key fields are
+redacted.
 
 ```sh
-if rg -n 'Bearer |sk-|access_token|refresh_token|id_token' /path/to/log.jsonl; then
-  echo "secret-like value found in log"
-  exit 1
-else
-  echo "secret_scan=clean"
-fi
+node - <<'NODE' /path/to/log.jsonl
+const fs = require("fs");
+for (const file of process.argv.slice(2)) {
+  for (const line of fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean)) {
+    const event = JSON.parse(line);
+    if (event.headers?.authorization && event.headers.authorization !== "[redacted]") {
+      throw new Error(`${file}: authorization header was not redacted`);
+    }
+  }
+}
+console.log("credential_fields_redacted=ok");
+NODE
 ```
 
 ## `npx` Shape
@@ -120,6 +130,7 @@ Proxy-only flags are prefixed so Codex flags pass through cleanly:
 
 ```sh
 npx -y pando-proxy --proxy-no-memory --proxy-port-start 40130 exec "Reply with ok"
+npx -y pando-proxy --proxy-log exec "Reply with logged ok"
 ```
 
 Use `--` if a Codex argument ever has the same spelling as a proxy flag:
@@ -163,6 +174,7 @@ After pass-through works, rerun without `--proxy-no-memory`:
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
+  --proxy-log \
   exec \
   --sandbox read-only \
   "Use the proxy with memory enabled."

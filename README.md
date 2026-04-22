@@ -14,9 +14,9 @@ Proxy-owned flags go before the Codex command and use the `--proxy-*` prefix:
 npx -y pando-proxy --proxy-no-memory exec "Reply with exactly: ok"
 ```
 
-The wrapper starts a localhost proxy on the first available port at or above `40123`, creates a
-unique JSONL log file under `~/.pando-proxy/logs`, then runs the system `codex` command with
-process-local provider overrides pointing at that proxy.
+The wrapper starts a localhost proxy on the first available port at or above `40123`, then runs the
+system `codex` command with process-local provider overrides pointing at that proxy. Logging is off
+by default.
 
 ## Requirements
 
@@ -31,6 +31,7 @@ process-local provider overrides pointing at that proxy.
 ```sh
 npx -y pando-proxy --proxy-help
 npx -y pando-proxy --proxy-no-memory exec "Reply with exactly: pass-through ok"
+npx -y pando-proxy --proxy-log exec "Run with a unique JSONL log file"
 npx -y pando-proxy serve --no-memory --log-file /tmp/pando-proxy.jsonl
 ```
 

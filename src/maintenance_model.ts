@@ -49,13 +49,10 @@ async function callMaintenanceJson(
     },
     body: JSON.stringify({
       model,
-      stream: false,
+      instructions: system,
+      stream: true,
       store: false,
       input: [
-        {
-          role: "system",
-          content: [{ type: "input_text", text: system }],
-        },
         {
           role: "user",
           content: [{ type: "input_text", text: stableJson(payload) }],
@@ -70,12 +67,77 @@ async function callMaintenanceJson(
     throw new Error(`Maintenance model call failed: ${response.status} ${text.slice(0, 500)}`);
   }
 
-  const data = await response.json();
-  const text = extractResponseText(data);
+  const responseText = await response.text();
+  const text = isEventStream(response, responseText)
+    ? extractResponseTextFromSseText(responseText)
+    : extractResponseText(JSON.parse(responseText));
   if (!text) {
     throw new Error("Maintenance model response did not include text");
   }
   return extractJsonObject(text);
+}
+
+function isEventStream(response: Response, body: string): boolean {
+  const contentTypeIsEventStream =
+    response.headers.get("content-type")?.toLowerCase().includes("text/event-stream") ?? false;
+  return contentTypeIsEventStream ||
+    body.startsWith("event:") ||
+    body.startsWith("data:") ||
+    body.includes("\ndata:");
+}
+
+function extractResponseTextFromSseText(streamText: string): string {
+  const deltas: string[] = [];
+  let completedText = "";
+
+  for (const line of streamText.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) {
+      continue;
+    }
+    const data = line.slice("data:".length).trim();
+    if (!data || data === "[DONE]") {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      continue;
+    }
+
+    const finalText = extractResponseTextFromEvent(parsed);
+    if (finalText) {
+      completedText = finalText;
+    }
+    const delta = extractTextDelta(parsed);
+    if (delta) {
+      deltas.push(delta);
+    }
+  }
+
+  return completedText || deltas.join("");
+}
+
+function extractResponseTextFromEvent(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  const record = value as Record<string, unknown>;
+  return extractResponseText(record.response ?? value);
+}
+
+function extractTextDelta(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.delta === "string") {
+    return record.delta;
+  }
+  if (typeof record.text === "string" && String(record.type ?? "").endsWith(".delta")) {
+    return record.text;
+  }
+  return "";
 }
 
 function sanitizeChunkRequest(request: BatchChunkRequest): BatchChunkRequest {

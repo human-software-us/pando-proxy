@@ -333,8 +333,8 @@ This is based on the current `codex-main` repository:
 - `codex-rs/core/src/client.rs` sends model requests through the selected provider's configured URL.
 
 The happy path is wrapper-based: the user runs `pando-proxy`, which starts a per-instance proxy on
-an available localhost port, creates a unique JSONL log file, and then runs `codex` with process-local
-`-c` overrides that select the proxy provider. The app must not edit `~/.codex/config.toml`.
+an available localhost port and then runs `codex` with process-local `-c` overrides that select the
+proxy provider. The app must not edit `~/.codex/config.toml`. Full JSONL logging is opt-in.
 
 The wrapper passes overrides equivalent to:
 
@@ -596,10 +596,10 @@ pando-proxy exec "Help me with this repo"
 
 The app should:
 
-1. Create a unique log file under `~/.pando-proxy/logs`.
-2. Start the local proxy on `127.0.0.1`, beginning at port `40123` and incrementing until free.
-3. Run the system `codex` command directly with provider overrides pointing at that exact port.
-4. Pass user-supplied Codex arguments through unchanged except for proxy-owned `--proxy-*` flags.
+1. Start the local proxy on `127.0.0.1`, beginning at port `40123` and incrementing until free.
+2. Run the system `codex` command directly with provider overrides pointing at that exact port.
+3. Pass user-supplied Codex arguments through unchanged except for proxy-owned `--proxy-*` flags.
+4. If `--proxy-log` or `--proxy-log-file` is set, write full JSONL logs; otherwise do not log.
 5. Shut down the proxy when Codex exits and return Codex's exit code.
 
 Target package/install options:
@@ -628,7 +628,7 @@ pando-proxy serve                    # start localhost proxy without running cod
 pando-proxy doctor                   # verify port, credentials, and upstream reachability
 ```
 
-The app should print wrapper startup details like:
+With logging enabled, the app should print wrapper startup details like:
 
 ```text
 Pando Proxy log: /Users/me/.pando-proxy/logs/pando-proxy-...jsonl
@@ -642,7 +642,8 @@ Standalone binary requirements:
 - It should never require users to clone this repository.
 - It should never require users to manually run Deno, npm, Node, Java, or Clojure.
 - It should not edit Codex config files.
-- It should be safe to run repeatedly and concurrently; each instance gets its own port and log file.
+- It should be safe to run repeatedly and concurrently; each instance gets its own port.
+- It should not write logs unless the user passes an explicit logging flag.
 - It should bind to `127.0.0.1` by default, not `0.0.0.0`.
 - It should fail with clear messages if `codex` is not available or upstream credentials are missing.
 
@@ -715,6 +716,6 @@ Implement the smallest robust vertical slice:
 8. Add pando deterministic chunking.
 9. Add non-pando batch chunking.
 10. Add wrapper launch that starts a per-instance proxy and runs the system `codex` command.
-11. Add dynamic port allocation and unique per-instance full JSONL logs.
+11. Add dynamic port allocation and opt-in per-instance full JSONL logs.
 
 Do not start with a complex database, hosted service, background daemon manager, UI, or custom Codex fork. The value of this repo is that it is a small local proxy that stock Codex users can install quickly.

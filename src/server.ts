@@ -63,9 +63,26 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
           config,
           authHeader,
           requestModel(body),
+          { logger, sessionKey },
         );
         if (result.changed) {
           await store.save(sessionKey, result.record);
+          await logger.log("memory_state_saved", {
+            sessionKey,
+            taskUpdateSeq: result.record.memory.taskUpdateSeq,
+            taskIds: result.record.memory.tasks.map((task) => task.id),
+            keptUserMessageIds: result.record.memory.keptUserMessages.map((message) =>
+              message.messageId
+            ),
+            memoryChunkIds: result.record.memory.memoryLibrary.map((chunk) => chunk.id),
+            handledInputIds: result.record.handledInputIds,
+          });
+        } else {
+          await logger.log("memory_state_unchanged", {
+            sessionKey,
+            taskUpdateSeq: result.record.memory.taskUpdateSeq,
+            handledInputIds: result.record.handledInputIds,
+          });
         }
         return rewriteRequestWithMemory(
           body,

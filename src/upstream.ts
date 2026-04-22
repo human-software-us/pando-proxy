@@ -86,6 +86,12 @@ function logResponseStream(
         }
         await logger.log("upstream_response_end", { totalBytes });
       },
+      async cancel(reason) {
+        await logger.log("upstream_response_cancel", {
+          totalBytes,
+          reason: reason instanceof Error ? reason.message : String(reason ?? ""),
+        });
+      },
     }),
   );
 }
