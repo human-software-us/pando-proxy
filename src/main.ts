@@ -23,17 +23,29 @@ async function main(): Promise<void> {
       break;
     case "install":
       if (options.print) {
+        console.log('model_provider = "pando-proxy"');
+        console.log("");
         console.log(codexConfigSnippet(options));
       } else {
         const path = await installCodexConfig(options);
-        console.log(`Installed pando-memory Codex profile in ${path}`);
-        console.log("Use Codex with:");
-        console.log("  codex --profile pando-memory");
+        console.log(`Installed pando-proxy as the default Codex provider in ${path.configPath}`);
+        if (path.previousDefaultProvider) {
+          console.log(`Previous default provider saved: ${path.previousDefaultProvider}`);
+        } else {
+          console.log("Previous default provider saved: none");
+        }
+        console.log("Use Codex normally:");
+        console.log("  codex");
       }
       break;
     case "uninstall": {
-      const path = await uninstallCodexConfig();
-      console.log(`Removed pando-proxy owned config from ${path}`);
+      const result = await uninstallCodexConfig();
+      console.log(`Removed pando-proxy owned config from ${result.configPath}`);
+      console.log(
+        result.restoredDefaultProvider
+          ? `Restored default provider: ${result.restoredDefaultProvider}`
+          : "Removed pando-proxy as default provider; no previous default provider was saved",
+      );
       break;
     }
     case "doctor": {
@@ -47,7 +59,7 @@ async function main(): Promise<void> {
     case "status": {
       const installed = await isCodexConfigInstalled();
       console.log(`proxy_url: http://${config.host}:${config.port}/v1`);
-      console.log(`codex_profile_installed: ${installed ? "yes" : "no"}`);
+      console.log(`default_provider_installed: ${installed ? "yes" : "no"}`);
       console.log(`state_dir: ${config.stateDir}`);
       console.log(`memory_enabled: ${config.memoryEnabled ? "yes" : "no"}`);
       console.log(`log_file: ${config.logFile ?? "(none)"}`);
@@ -63,13 +75,13 @@ async function main(): Promise<void> {
 
 async function runFirstRun(config: ReturnType<typeof loadConfig>, yes: boolean): Promise<void> {
   if (!(await isCodexConfigInstalled())) {
-    console.log("Pando Proxy can install a named Codex profile: pando-memory.");
+    console.log("Pando Proxy can install itself as the default Codex model provider.");
     console.log(
-      "It will add only pando-proxy owned provider/profile entries and create a backup first.",
+      "It will add only pando-proxy owned provider config, set model_provider, and create a backup first.",
     );
-    if (yes || shouldPromptYes("Install Codex profile now?")) {
-      const path = await installCodexConfig({ host: config.host, port: config.port });
-      console.log(`Installed pando-memory Codex profile in ${path}`);
+    if (yes || shouldPromptYes("Set pando-proxy as the default Codex provider now?")) {
+      const result = await installCodexConfig({ host: config.host, port: config.port, yes: true });
+      console.log(`Installed pando-proxy as default provider in ${result.configPath}`);
     } else {
       console.log("Skipping Codex config install.");
     }
@@ -78,8 +90,8 @@ async function runFirstRun(config: ReturnType<typeof loadConfig>, yes: boolean):
   const doctor = await runDoctor(config);
   console.log(doctor.lines.join("\n"));
   console.log("");
-  console.log("Use Codex with:");
-  console.log("  codex --profile pando-memory");
+  console.log("Use Codex normally:");
+  console.log("  codex");
   console.log("");
   await serve(config);
 }
@@ -96,7 +108,7 @@ function printHelp(): void {
 
 Commands:
   serve       Start the local OpenAI-compatible proxy
-  install     Install/update the Codex pando-memory profile
+  install     Install/update pando-proxy as the default Codex provider
   uninstall   Remove only pando-proxy owned Codex config
   doctor      Check port, credentials, upstream, and Codex config
   status      Print local proxy/config status

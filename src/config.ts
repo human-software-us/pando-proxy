@@ -77,6 +77,10 @@ export function parseCliOptions(args: string[]): { command: string | null; optio
       options.yes = true;
       continue;
     }
+    if (arg === "--uninstall" || arg === "--uninstallt") {
+      command = "uninstall";
+      continue;
+    }
     if (arg === "--print") {
       options.print = true;
       continue;

@@ -19,16 +19,15 @@ test -f "${CODEX_HOME:-$HOME/.codex}/auth.json"
 lsof -nP -iTCP:8787 -sTCP:LISTEN
 ```
 
-## Install Codex Profile
+## Install Default Codex Provider
 
 ```sh
-deno run --allow-env --allow-read --allow-write src/main.ts install
+deno run --allow-env --allow-read --allow-write src/main.ts install --yes
 ```
 
-This writes a `pando-memory` profile using:
+This sets `pando-proxy` as the top-level default Codex provider:
 
 ```toml
-[profiles.pando-memory]
 model_provider = "pando-proxy"
 
 [model_providers.pando-proxy]
@@ -67,7 +66,6 @@ In another terminal:
 
 ```sh
 codex exec \
-  --profile pando-memory \
   --sandbox read-only \
   --json \
   -o /tmp/pando-proxy-turn1.txt \
@@ -83,12 +81,11 @@ cat /tmp/pando-proxy-turn1.txt
 
 ## Turn Two
 
-Resume the previous Codex session and force the proxy provider again:
+Resume the previous Codex session:
 
 ```sh
 codex exec resume \
   --last \
-  -c 'model_provider="pando-proxy"' \
   --json \
   -o /tmp/pando-proxy-turn2.txt \
   "Do not run tools. Reply with exactly: pando proxy live ok turn two"
@@ -101,13 +98,8 @@ cat /tmp/pando-proxy-turn2.txt
 # pando proxy live ok turn two
 ```
 
-Why the explicit `-c` matters: `codex exec --profile pando-memory ...` applies the profile to that
-new exec invocation, but `codex exec resume --last ...` does not accept `--profile` as a
-resume-scoped flag in the tested CLI. A root-level profile on
-`codex --profile pando-memory exec
-resume ...` can still resume a rollout whose saved provider is
-the original default provider. The reliable resume command is therefore to pass the provider
-override directly to the resume invocation with `-c 'model_provider="pando-proxy"'`.
+Because `pando-proxy` is installed as the top-level `model_provider`, plain `codex exec resume` uses
+the proxy without profile flags or provider overrides.
 
 ## Verify Proxy Log
 

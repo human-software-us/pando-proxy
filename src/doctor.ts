@@ -80,6 +80,6 @@ async function checkUpstream(config: ProxyConfig): Promise<Check> {
 
 async function checkCodexConfig(): Promise<Check> {
   return await isCodexConfigInstalled()
-    ? { ok: true, message: "Codex pando-memory profile is installed" }
-    : { ok: false, message: "Codex pando-memory profile is not installed" };
+    ? { ok: true, message: "pando-proxy is the default Codex provider" }
+    : { ok: false, message: "pando-proxy is not the default Codex provider" };
 }
