@@ -1,5 +1,9 @@
 import { MemoryChunk, MemoryState } from "./memory_state.ts";
 
+export type DerivedPromptOptions = {
+  keepRawHistory?: boolean;
+};
+
 export function buildSyntheticMemoryText(state: MemoryState, maxChars: number): string | null {
   const live = new Set(state.tasks.map((task) => task.id));
   const chunks = state.memoryLibrary.filter((chunk) =>
@@ -52,37 +56,71 @@ export function rewriteRequestWithMemory(
   body: Record<string, unknown>,
   state: MemoryState,
   maxChars: number,
+  options: DerivedPromptOptions = { keepRawHistory: false },
 ): Record<string, unknown> {
   const text = buildSyntheticMemoryText(state, maxChars);
-  const input = body.input;
   const next = { ...body };
-  if (!text) {
-    return next;
-  }
+  next.input = buildDerivedPrompt(
+    body.input,
+    text ? makeSyntheticMemoryItem(text) : null,
+    options,
+  );
+  return next;
+}
 
-  const memoryItem = makeSyntheticMemoryItem(text);
+export function buildDerivedPrompt(
+  input: unknown,
+  memoryItem: Record<string, unknown> | null,
+  options: DerivedPromptOptions = { keepRawHistory: false },
+): unknown {
   if (typeof input === "string") {
-    next.input = [memoryItem, {
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: input }],
-    }];
-    return next;
+    return memoryItem
+      ? [memoryItem, {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: input }],
+      }]
+      : input;
   }
-
   if (!Array.isArray(input)) {
-    next.input = [memoryItem];
-    return next;
+    return memoryItem ? [memoryItem] : input;
   }
 
   const filtered = input.filter((item) => !isSyntheticMemoryItem(item));
-  const insertIndex = leadingInstructionCount(filtered);
-  next.input = [
-    ...filtered.slice(0, insertIndex),
+  const derived = options.keepRawHistory === true ? filtered : deriveCurrentTurnInput(filtered);
+  if (!memoryItem) {
+    return derived;
+  }
+
+  const insertIndex = leadingInstructionCount(derived);
+  return [
+    ...derived.slice(0, insertIndex),
     memoryItem,
-    ...filtered.slice(insertIndex),
+    ...derived.slice(insertIndex),
   ];
-  return next;
+}
+
+function deriveCurrentTurnInput(input: unknown[]): unknown[] {
+  const instructionCount = leadingInstructionCount(input);
+  const instructions = input.slice(0, instructionCount);
+  const rest = input.slice(instructionCount);
+  const latestUserIndex = findLatestUserMessageIndex(rest);
+  if (latestUserIndex < 0) {
+    return input;
+  }
+  return [
+    ...instructions,
+    ...rest.slice(latestUserIndex),
+  ];
+}
+
+function findLatestUserMessageIndex(input: unknown[]): number {
+  for (let index = input.length - 1; index >= 0; index -= 1) {
+    if (isUserMessageItem(input[index])) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function formatChunk(chunk: MemoryChunk): string {
@@ -147,6 +185,14 @@ function isSyntheticMemoryItem(item: unknown): boolean {
     typeof (part as Record<string, unknown>).text === "string" &&
     String((part as Record<string, unknown>).text).includes("<context_memory>")
   );
+}
+
+function isUserMessageItem(item: unknown): boolean {
+  if (!item || typeof item !== "object") {
+    return false;
+  }
+  const record = item as Record<string, unknown>;
+  return record.role === "user" && !isSyntheticMemoryItem(item);
 }
 
 function leadingInstructionCount(input: unknown[]): number {

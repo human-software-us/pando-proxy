@@ -35,4 +35,8 @@ npx -y pando-proxy --proxy-log exec "Run with a unique JSONL log file"
 npx -y pando-proxy serve --no-memory --log-file /tmp/pando-proxy.jsonl
 ```
 
-See [LIVE_E2E.md](./LIVE_E2E.md) for a live end-to-end test procedure.
+See [LIVE_E2E.md](./LIVE_E2E.md) for a live end-to-end test procedure and
+[MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md) for memory/logging operational details.
+
+See [REFERENCE.md](./REFERENCE.md) for the complete flag, environment variable, auth, state, and
+development reference.

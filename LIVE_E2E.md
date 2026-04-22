@@ -182,3 +182,7 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
 
 That exercises task-update, tool-result chunking, retention, prompt rewriting, maintenance model
 calls, persistence, and upstream forwarding.
+
+For more detailed memory/logging expectations, including SSE maintenance parsing, stream
+cancelation, eager retention, and resume coverage, see
+[MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md).
