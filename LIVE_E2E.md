@@ -9,6 +9,7 @@ request forwarding, response streaming, and logging before testing memory mainte
 
 - `codex` is installed and logged in.
 - Deno is installed.
+- Node/npm is installed for `npx` package checks.
 
 No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex
 provider overrides for that process only, then runs `codex`.
@@ -125,6 +126,14 @@ Use `--` if a Codex argument ever has the same spelling as a proxy flag:
 
 ```sh
 npx -y pando-proxy --proxy-no-memory -- --proxy-no-memory
+```
+
+Before publishing, test the packed npm artifact locally:
+
+```sh
+npm pack
+npx -y ./pando-proxy-0.1.0.tgz --proxy-help
+npx -y ./pando-proxy-0.1.0.tgz --proxy-no-memory exec "Reply with exactly: packed npx ok"
 ```
 
 ## Manual Serve Mode

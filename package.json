@@ -1,15 +1,39 @@
 {
   "name": "pando-proxy",
-  "version": "0.0.0",
-  "description": "Local Codex memory proxy wrapper",
+  "version": "0.1.0",
+  "description": "Run Codex through a local memory proxy with one npx command.",
+  "scripts": {
+    "prepack": "deno bundle src/main.ts -o dist/main.js",
+    "pack:check": "npm pack --dry-run"
+  },
   "bin": {
-    "pando-proxy": "./src/main.ts"
+    "pando-proxy": "bin/pando-proxy.js"
   },
   "files": [
+    "bin",
+    "dist",
     "src",
     "deno.json",
+    "README.md",
     "LIVE_E2E.md",
     "CONTEXT_MEMORY_DESIGN.md"
   ],
-  "license": "UNLICENSED"
+  "keywords": [
+    "codex",
+    "openai",
+    "proxy",
+    "memory"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/human-software-us/pando-proxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/human-software-us/pando-proxy/issues"
+  },
+  "homepage": "https://github.com/human-software-us/pando-proxy#readme",
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "public"
+  }
 }

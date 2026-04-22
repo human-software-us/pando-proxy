@@ -5,13 +5,14 @@
     "compile": "deno compile --allow-net --allow-env --allow-read --allow-write --allow-run --output pando-proxy src/main.ts"
   },
   "fmt": {
-    "exclude": ["CONTEXT_MEMORY_DESIGN.md"],
+    "exclude": ["CONTEXT_MEMORY_DESIGN.md", "dist"],
     "indentWidth": 2,
     "lineWidth": 100,
     "semiColons": true,
     "singleQuote": false
   },
   "lint": {
+    "exclude": ["dist"],
     "rules": {
       "exclude": ["no-explicit-any"]
     }
