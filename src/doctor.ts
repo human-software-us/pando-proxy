@@ -1,5 +1,4 @@
 import { modelsUrl, ProxyConfig, resolveUpstreamBaseUrl } from "./config.ts";
-import { isCodexConfigInstalled } from "./install.ts";
 
 export type DoctorResult = {
   ok: boolean;
@@ -12,7 +11,6 @@ export async function runDoctor(config: ProxyConfig): Promise<DoctorResult> {
     Promise.resolve(checkPort(config)),
     checkApiKey(config),
     checkUpstream(config),
-    checkCodexConfig(),
   ]);
 
   const ok = checks.every((check) => check.ok);
@@ -76,10 +74,4 @@ async function checkUpstream(config: ProxyConfig): Promise<Check> {
       message: `upstream check failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-}
-
-async function checkCodexConfig(): Promise<Check> {
-  return await isCodexConfigInstalled()
-    ? { ok: true, message: "pando-proxy is the default Codex provider" }
-    : { ok: false, message: "pando-proxy is not the default Codex provider" };
 }

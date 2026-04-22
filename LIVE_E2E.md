@@ -1,71 +1,27 @@
 # Live E2E Test
 
-This verifies stock Codex can talk to a real upstream model through the local proxy.
+This verifies stock Codex can talk to a real upstream model through `pando-proxy`.
 
-The first live test should run with memory disabled so it proves transport, auth forwarding, request
-forwarding, and SSE passthrough before testing memory maintenance.
+The first live test should run with memory disabled so it proves transport, Codex auth forwarding,
+request forwarding, response streaming, and logging before testing memory maintenance.
 
 ## Prerequisites
 
 - `codex` is installed and logged in.
 - Deno is installed.
-- Port `8787` is free.
 
-Check:
+No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex
+provider overrides for that process only, then runs `codex`.
 
-```sh
-command -v codex
-test -f "${CODEX_HOME:-$HOME/.codex}/auth.json"
-lsof -nP -iTCP:8787 -sTCP:LISTEN
-```
+## Wrapper Pass-Through Test
 
-## Install Default Codex Provider
+Run turn one:
 
 ```sh
-deno run --allow-env --allow-read --allow-write src/main.ts install --yes
-```
-
-This sets `pando-proxy` as the top-level default Codex provider:
-
-```toml
-model_provider = "pando-proxy"
-
-[model_providers.pando-proxy]
-name = "Pando Memory Proxy"
-base_url = "http://127.0.0.1:8787/v1"
-wire_api = "responses"
-requires_openai_auth = true
-```
-
-With `requires_openai_auth = true`, Codex sends its existing auth as an `Authorization` header to
-the proxy. The proxy log redacts that header.
-
-## Start Proxy
-
-```sh
-rm -f /tmp/pando-proxy-live.jsonl
-
-deno run --allow-net --allow-env --allow-read --allow-write \
-  src/main.ts serve \
-  --no-memory \
-  --log-file /tmp/pando-proxy-live.jsonl
-```
-
-Keep this process running. `--no-memory` bypasses task update, chunking, retention, and prompt
-injection so the test proves baseline pass-through behavior.
-
-Optional monitor:
-
-```sh
-tail -f /tmp/pando-proxy-live.jsonl
-```
-
-## Turn One
-
-In another terminal:
-
-```sh
-codex exec \
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-no-memory \
+  exec \
   --sandbox read-only \
   --json \
   -o /tmp/pando-proxy-turn1.txt \
@@ -79,12 +35,13 @@ cat /tmp/pando-proxy-turn1.txt
 # pando proxy live ok turn one
 ```
 
-## Turn Two
-
-Resume the previous Codex session:
+Run turn two:
 
 ```sh
-codex exec resume \
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-no-memory \
+  exec resume \
   --last \
   --json \
   -o /tmp/pando-proxy-turn2.txt \
@@ -98,40 +55,51 @@ cat /tmp/pando-proxy-turn2.txt
 # pando proxy live ok turn two
 ```
 
-Because `pando-proxy` is installed as the top-level `model_provider`, plain `codex exec resume` uses
-the proxy without profile flags or provider overrides.
+Each wrapper invocation prints:
 
-## Verify Proxy Log
+```text
+Pando Proxy log: /Users/you/.pando-proxy/logs/pando-proxy-...jsonl
+Pando Proxy URL: http://127.0.0.1:40123/v1
+```
+
+The port starts at `40123` and increments until an available port is found. Every wrapper instance
+gets its own unique JSONL log file under `~/.pando-proxy/logs` unless `--proxy-log-file` is
+supplied.
+
+## Verify Logs
+
+Use the log paths printed by the two runs:
 
 ```sh
-node - <<'NODE'
+node - <<'NODE' /path/to/first-log.jsonl /path/to/second-log.jsonl
 const fs = require("fs");
-const lines = fs.readFileSync("/tmp/pando-proxy-live.jsonl", "utf8")
-  .trim()
-  .split("\n")
-  .filter(Boolean)
-  .map(JSON.parse);
-const counts = {};
-for (const event of lines) counts[event.event] = (counts[event.event] || 0) + 1;
-console.log(JSON.stringify(counts, null, 2));
+for (const file of process.argv.slice(2)) {
+  const lines = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  const counts = {};
+  for (const event of lines) counts[event.event] = (counts[event.event] || 0) + 1;
+  console.log(file);
+  console.log(JSON.stringify(counts, null, 2));
+}
 NODE
 ```
 
-Expected minimum counts after two turns:
+Expected minimum counts in each Codex-call log:
 
 ```json
 {
-  "incoming_request": 2,
-  "upstream_request": 2,
-  "upstream_response_start": 2,
-  "upstream_response_end": 2
+  "wrapper_start": 1,
+  "incoming_request": 1,
+  "upstream_request": 1,
+  "upstream_response_start": 1,
+  "upstream_response_end": 1,
+  "wrapper_exit": 1
 }
 ```
 
 Check that secrets were not logged:
 
 ```sh
-if rg -n 'Bearer |sk-|access_token|refresh_token|id_token' /tmp/pando-proxy-live.jsonl; then
+if rg -n 'Bearer |sk-|access_token|refresh_token|id_token' /path/to/log.jsonl; then
   echo "secret-like value found in log"
   exit 1
 else
@@ -139,26 +107,56 @@ else
 fi
 ```
 
-## Stop Proxy
+## `npx` Shape
 
-Press `Ctrl-C` in the proxy terminal.
-
-Confirm:
+Once published, the intended user command is:
 
 ```sh
-lsof -nP -iTCP:8787 -sTCP:LISTEN
+npx -y pando-proxy exec "Reply with exactly: pando proxy ok"
 ```
 
-No output means the proxy stopped.
+Proxy-only flags are prefixed so Codex flags pass through cleanly:
 
-## Memory-Enabled Follow-Up
+```sh
+npx -y pando-proxy --proxy-no-memory --proxy-port-start 40130 exec "Reply with ok"
+```
 
-After pass-through works, rerun without `--no-memory`:
+Use `--` if a Codex argument ever has the same spelling as a proxy flag:
+
+```sh
+npx -y pando-proxy --proxy-no-memory -- --proxy-no-memory
+```
+
+## Manual Serve Mode
+
+For debugging without the wrapper:
 
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write \
   src/main.ts serve \
-  --log-file /tmp/pando-proxy-memory-live.jsonl
+  --no-memory \
+  --log-file /tmp/pando-proxy-live.jsonl
+```
+
+Then run Codex manually with equivalent provider overrides:
+
+```sh
+codex \
+  -c 'model_provider="pando-proxy"' \
+  -c 'model_providers.pando-proxy={ name = "Pando Memory Proxy", base_url = "http://127.0.0.1:8787/v1", wire_api = "responses", requires_openai_auth = true }' \
+  exec "Reply with exactly: pando proxy manual ok"
+```
+
+## Memory-Enabled Follow-Up
+
+After pass-through works, rerun without `--proxy-no-memory`:
+
+```sh
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  exec \
+  --sandbox read-only \
+  "Use the proxy with memory enabled."
 ```
 
 That exercises task-update, tool-result chunking, retention, prompt rewriting, maintenance model

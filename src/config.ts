@@ -19,8 +19,6 @@ export type CliOptions = {
   stateDir?: string;
   memoryEnabled?: boolean;
   logFile?: string | null;
-  yes?: boolean;
-  print?: boolean;
 };
 
 export const DEFAULT_HOST = "127.0.0.1";
@@ -73,18 +71,6 @@ export function parseCliOptions(args: string[]): { command: string | null; optio
       continue;
     }
 
-    if (arg === "--yes" || arg === "-y") {
-      options.yes = true;
-      continue;
-    }
-    if (arg === "--uninstall" || arg === "--uninstallt") {
-      command = "uninstall";
-      continue;
-    }
-    if (arg === "--print") {
-      options.print = true;
-      continue;
-    }
     if (arg === "--host") {
       options.host = requireValue(args, ++index, arg);
       continue;

@@ -1,0 +1,15 @@
+{
+  "name": "pando-proxy",
+  "version": "0.0.0",
+  "description": "Local Codex memory proxy wrapper",
+  "bin": {
+    "pando-proxy": "./src/main.ts"
+  },
+  "files": [
+    "src",
+    "deno.json",
+    "LIVE_E2E.md",
+    "CONTEXT_MEMORY_DESIGN.md"
+  ],
+  "license": "UNLICENSED"
+}

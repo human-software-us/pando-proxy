@@ -34,8 +34,14 @@ class JsonlLogger implements ProxyLogger {
       event,
       ...(redactSecrets(fields) as Record<string, unknown>),
     });
+    await Deno.mkdir(dirname(this.#path), { recursive: true });
     await Deno.writeTextFile(this.#path, `${line}\n`, { append: true, create: true });
   }
+}
+
+function dirname(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index <= 0 ? "." : path.slice(0, index);
 }
 
 function redactSecrets(value: unknown): unknown {

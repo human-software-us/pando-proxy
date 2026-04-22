@@ -87,9 +87,17 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
   };
 }
 
-export async function serve(config: ProxyConfig): Promise<void> {
+export function startServer(config: ProxyConfig): Deno.HttpServer {
   const handler = createHandler(config);
-  const server = Deno.serve({ hostname: config.host, port: config.port }, handler);
+  return Deno.serve({
+    hostname: config.host,
+    port: config.port,
+    onListen: () => {},
+  }, handler);
+}
+
+export async function serve(config: ProxyConfig): Promise<void> {
+  const server = startServer(config);
   console.log(`Pando Proxy is running at http://${config.host}:${config.port}/v1`);
   console.log("Leave this terminal open while using Codex.");
   await server.finished;

@@ -8,7 +8,7 @@ It is not a reusable memory library, a Codex fork, an MCP memory server, or a ho
 
 Implement the app in Deno + TypeScript. Library-shaped modules are allowed only as internal implementation units of the binary, for example under `src/`. They must not be designed, packaged, or documented as a separate public SDK or as the primary deliverable.
 
-The memory design below exists to serve that proxy. All task update, tool chunking, retention, prompt injection, snapshot persistence, config installation, and upstream forwarding behavior must be wired through the local proxy request path and CLI.
+The memory design below exists to serve that proxy. All task update, tool chunking, retention, prompt injection, snapshot persistence, wrapper launch, and upstream forwarding behavior must be wired through the local proxy request path and CLI.
 
 ## Goal
 
@@ -320,29 +320,33 @@ This approach is stronger than AGENTS.md, skills, custom prompts, or an MCP memo
 
 Implementation priority: functionality comes first. Unit tests, integration tests, fixtures, and exhaustive validation harnesses are secondary to getting the proxy's core behavior working end to end. Tests should support implementation and protect high-risk logic, but they must not become the main project. The first milestone is a usable local proxy that stock Codex can route through, that can inject memory context, persist snapshots, and stream upstream responses correctly.
 
-### Codex Config Support
+### Codex Wrapper Support
 
-Yes, stock Codex can be configured to use a local proxy as a model provider.
+Yes, stock Codex can use a local proxy as a model provider without persistent config edits.
 
 This is based on the current `codex-main` repository:
 
 - `docs/config.md` documents `model_providers` as a map that can override and amend providers bundled with Codex.
 - `docs/config.md` documents `model_provider` as the key used to select one of those providers.
-- `docs/config.md` documents `model_providers.<id>.base_url`, `env_key`, and `wire_api`.
+- `docs/config.md` documents `model_providers.<id>.base_url` and `wire_api`.
 - `codex-rs/core/src/config.rs` loads user-defined `model_providers`, selects `model_provider`, and stores the selected `ModelProviderInfo`.
 - `codex-rs/core/src/client.rs` sends model requests through the selected provider's configured URL.
 
-Users should be able to install the proxy and add a config block like this:
+The happy path is wrapper-based: the user runs `pando-proxy`, which starts a per-instance proxy on
+an available localhost port, creates a unique JSONL log file, and then runs `codex` with process-local
+`-c` overrides that select the proxy provider. The app must not edit `~/.codex/config.toml`.
 
-```toml
-model_provider = "pando-proxy"
+The wrapper passes overrides equivalent to:
 
-[model_providers.pando-proxy]
-name = "Pando Memory Proxy"
-base_url = "http://127.0.0.1:8787/v1"
-env_key = "OPENAI_API_KEY"
-wire_api = "responses"
+```sh
+codex \
+  -c 'model_provider="pando-proxy"' \
+  -c 'model_providers.pando-proxy={ name = "Pando Memory Proxy", base_url = "http://127.0.0.1:<port>/v1", wire_api = "responses", requires_openai_auth = true }' \
+  ...
 ```
+
+With `requires_openai_auth = true`, Codex sends its existing login/auth as an `Authorization` header
+to the proxy. The proxy forwards that auth upstream and redacts it from logs.
 
 The proxy should expose the same wire shape Codex expects from an OpenAI-compatible Responses API provider. At minimum, support:
 
@@ -370,9 +374,10 @@ This is an app-first Deno project. Do not structure the repo as a library-first 
 A practical command surface:
 
 ```text
-pando-proxy serve       # start localhost proxy
-pando-proxy install     # write or print Codex config snippet/profile
-pando-proxy doctor      # verify port, OPENAI_API_KEY, upstream reachability, Codex config
+pando-proxy [codex args...]          # start per-instance proxy, then run codex
+pando-proxy serve                    # start localhost proxy only, for debugging
+pando-proxy doctor                   # verify port, credentials, and upstream reachability
+pando-proxy --proxy-no-memory exec   # run codex through pass-through proxy mode
 ```
 
 Second choice is Go. Go is excellent for a robust single binary and long-running local HTTP services, but the memory state logic will be more verbose and slower to evolve.
@@ -385,7 +390,8 @@ Keep the first implementation small and boring. This is an application layout fo
 
 ```text
 src/
-  main.ts             # CLI entrypoint: serve/install/doctor
+  main.ts             # CLI entrypoint: wrapper/serve/doctor
+  wrapper.ts          # dynamic port, unique logs, and codex process launch
   server.ts           # HTTP server and routing only
   upstream.ts         # OpenAI-compatible forwarding and SSE passthrough
   codex_request.ts    # parse and normalize Codex model requests
@@ -579,40 +585,29 @@ Rules:
 
 The proxy must optimize for easy adoption by normal Codex users.
 
-The desired product shape is a standalone local app/binary. A user should be able to download or install one executable, run it, approve installation as their Codex proxy, and then use stock Codex normally.
+The desired product shape is a standalone local app/binary. A user should be able to download or
+run one executable and use stock Codex through it without editing Codex config.
 
-Target first-run experience:
+Target wrapper experience:
 
 ```bash
-pando-proxy
+pando-proxy exec "Help me with this repo"
 ```
 
 The app should:
 
-1. Detect whether it is already installed in `~/.codex/config.toml`.
-2. If not installed, ask the user whether to install itself as a Codex model-provider proxy.
-3. Explain exactly what it will change:
-   - add a `pando-proxy` entry under `[model_providers]`,
-   - add a `pando-memory` profile that selects that provider,
-   - leave existing profiles and user settings intact,
-   - create a timestamped backup of `~/.codex/config.toml` before writing.
-4. Apply the config change after confirmation.
-5. Run `doctor` checks.
-6. Start the local proxy server.
-7. Print the exact next command:
-
-```bash
-codex --profile pando-memory
-```
-
-If the app chooses to make `pando-memory` the default profile, that must be an explicit separate confirmation. The safe default is to create a named profile and tell the user how to use it.
+1. Create a unique log file under `~/.pando-proxy/logs`.
+2. Start the local proxy on `127.0.0.1`, beginning at port `40123` and incrementing until free.
+3. Run the system `codex` command directly with provider overrides pointing at that exact port.
+4. Pass user-supplied Codex arguments through unchanged except for proxy-owned `--proxy-*` flags.
+5. Shut down the proxy when Codex exits and return Codex's exit code.
 
 Target package/install options:
 
 ```bash
+npx -y pando-proxy exec "Help me with this repo"
 brew install pando-proxy
-pando-proxy
-codex --profile pando-memory
+pando-proxy exec "Help me with this repo"
 ```
 
 Also support non-Homebrew direct downloads:
@@ -621,7 +616,6 @@ Also support non-Homebrew direct downloads:
 curl -L https://example.com/pando-proxy/latest/pando-proxy-macos-arm64 -o pando-proxy
 chmod +x pando-proxy
 ./pando-proxy
-codex --profile pando-memory
 ```
 
 The exact distribution URL can change, but the design goal is stable: one local binary, no Java runtime, no Node project checkout, no manual config editing required for the happy path.
@@ -629,52 +623,17 @@ The exact distribution URL can change, but the design goal is stable: one local 
 The CLI should still expose explicit commands for automation and debugging:
 
 ```text
-pando-proxy serve       # start localhost proxy without changing config
-pando-proxy install     # install/update Codex config profile and provider
-pando-proxy uninstall   # remove only config entries created by pando-proxy
-pando-proxy doctor      # verify port, OPENAI_API_KEY, upstream reachability, Codex config
-pando-proxy status      # show whether proxy is running and how Codex is configured
+pando-proxy [codex args...]          # start proxy and run codex with provider overrides
+pando-proxy serve                    # start localhost proxy without running codex
+pando-proxy doctor                   # verify port, credentials, and upstream reachability
 ```
 
-The `install` command should write a named profile to `~/.codex/config.toml` by default. It may also support `--print` to print an exact snippet without changing files. Prefer a named profile first to avoid surprising users who already have a tuned Codex setup:
-
-```toml
-[profiles.pando-memory]
-model_provider = "pando-proxy"
-
-[model_providers.pando-proxy]
-name = "Pando Memory Proxy"
-base_url = "http://127.0.0.1:8787/v1"
-env_key = "OPENAI_API_KEY"
-wire_api = "responses"
-```
-
-Then users can run:
-
-```bash
-codex --profile pando-memory
-```
-
-The app should print a successful install message like:
+The app should print wrapper startup details like:
 
 ```text
-Pando Proxy is installed and running at http://127.0.0.1:8787/v1.
-
-Use Codex with:
-  codex --profile pando-memory
-
-Leave this terminal open while using Codex.
+Pando Proxy log: /Users/me/.pando-proxy/logs/pando-proxy-...jsonl
+Pando Proxy URL: http://127.0.0.1:40123/v1
 ```
-
-If the user wants the proxy to run in the background, that should be an explicit command such as:
-
-```bash
-pando-proxy service install
-pando-proxy service start
-codex --profile pando-memory
-```
-
-Background service support is useful but not required for the first vertical slice. The first version can run in the foreground and clearly tell the user to leave it open.
 
 Standalone binary requirements:
 
@@ -682,19 +641,17 @@ Standalone binary requirements:
 - It should store app data under `~/.pando-proxy/`.
 - It should never require users to clone this repository.
 - It should never require users to manually run Deno, npm, Node, Java, or Clojure.
-- It should be safe to run repeatedly. Re-running install should update existing pando-owned config blocks, not duplicate them.
-- It should create backups before editing Codex config.
-- It should preserve unrelated Codex config formatting as much as practical. If exact formatting preservation becomes costly, correctness and safety are more important: parse TOML, update only owned keys, write valid TOML, and keep a backup.
+- It should not edit Codex config files.
+- It should be safe to run repeatedly and concurrently; each instance gets its own port and log file.
 - It should bind to `127.0.0.1` by default, not `0.0.0.0`.
-- It should fail with clear messages if the port is busy or upstream credentials are missing.
+- It should fail with clear messages if `codex` is not available or upstream credentials are missing.
 
 `doctor` should check:
 
 - Deno/binary version.
 - proxy port availability.
-- `OPENAI_API_KEY` is present if required.
+- whether `OPENAI_API_KEY` fallback is present, while preferring Codex-sent auth.
 - upstream OpenAI-compatible endpoint is reachable.
-- Codex config contains the proxy provider/profile.
 - a test request can round-trip through the proxy.
 
 ### Testing Strategy
@@ -703,7 +660,7 @@ All tests are secondary to implementing the functionality. Do not block the firs
 
 1. Working local proxy behavior.
 2. Correct memory state transitions and prompt rewriting.
-3. Easy install/setup for stock Codex users.
+3. Easy wrapper launch for stock Codex users.
 4. Focused tests around the riskiest pure logic.
 5. Broader unit/integration coverage after the vertical slice works.
 
@@ -757,7 +714,7 @@ Implement the smallest robust vertical slice:
 7. Add real task-update and retention model calls.
 8. Add pando deterministic chunking.
 9. Add non-pando batch chunking.
-10. Add `install` command for Codex config/profile.
-11. Make running `pando-proxy` with no subcommand perform the friendly first-run flow: install if needed, run doctor, start the foreground proxy, and tell the user to run `codex --profile pando-memory`.
+10. Add wrapper launch that starts a per-instance proxy and runs the system `codex` command.
+11. Add dynamic port allocation and unique per-instance full JSONL logs.
 
 Do not start with a complex database, hosted service, background daemon manager, UI, or custom Codex fork. The value of this repo is that it is a small local proxy that stock Codex users can install quickly.
