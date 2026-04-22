@@ -58,8 +58,8 @@ memory events are prefixed with `memory_`.
 Important events:
 
 - `memory_pass_start`: prior state IDs and handled input IDs.
-- `memory_inputs_extracted`: user message IDs and tool result metadata extracted from the Codex
-  request.
+- `memory_inputs_extracted`: user message IDs, assistant response IDs, and tool result metadata
+  extracted from the Codex request.
 - `memory_user_message_skipped`: a user message was already handled in this session.
 - `memory_task_update_start`: task update begins for one new user message.
 - `memory_task_update_model_request`: compact metadata for the maintenance task-update call.
@@ -67,6 +67,16 @@ Important events:
   by the maintenance model.
 - `memory_task_update_model_error`: maintenance task-update call failed.
 - `memory_task_update_applied`: ID diffs after applying a valid task update.
+- `memory_assistant_responses_none`: no unhandled assistant responses were present.
+- `memory_assistant_responses_start`: unhandled assistant responses will be reviewed.
+- `memory_assistant_memory_model_request`: compact metadata for the assistant-response review call.
+- `memory_assistant_memory_model_response`: assistant chunk metadata returned by the maintenance
+  model.
+- `memory_assistant_memory_model_error`: assistant-response review call failed.
+- `memory_assistant_chunks_created`: assistant chunk IDs and compact chunk metadata.
+- `memory_assistant_retention_start`: existing, inbox, and candidate chunk IDs for assistant
+  retention.
+- `memory_assistant_retention_applied`: final kept and dropped chunk IDs after assistant retention.
 - `memory_tool_results_none`: no unhandled tool outputs were present.
 - `memory_tool_results_start`: unhandled tool outputs will be chunked.
 - `memory_chunk_batch_model_request`: compact metadata for non-pando chunking.
@@ -85,6 +95,18 @@ Important events:
 
 These events intentionally use IDs and compact metadata for memory internals. The full upstream
 request and response logs contain the raw transcript/tool payloads when logging is enabled.
+
+## Assistant Response Review
+
+Assistant responses are reviewed on the next inbound request, after user-message task updates run.
+That timing lets the latest user message drop or replace old tasks before assistant output is
+considered. The assistant-memory maintenance call can create chunks only for durable information
+that still supports live tasks, such as decisions, implementation facts, test results, unresolved
+errors, or explicit next steps.
+
+Generic assistant narration, repeated user instructions, and assistant output for completed or
+dropped tasks should produce no chunks. Any assistant chunks that are created are passed through the
+same eager retention step as tool-result chunks.
 
 ## Maintenance Model Calls
 
@@ -146,6 +168,7 @@ The live memory tests should cover these distinct paths:
 - empty shell output,
 - JSON-shaped shell output,
 - multiple tool calls in one user request,
+- assistant response review on the next user request,
 - long single-line tool output,
 - pando deterministic chunking, for example `workspace_overview`, `find_nodes`, and
   `get_project_root`,

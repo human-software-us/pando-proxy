@@ -1,3 +1,4 @@
+import { chunkAssistantResponses } from "./assistant_memory.ts";
 import { chunkToolResults } from "./chunking.ts";
 import { createMaintenanceClients } from "./maintenance_model.ts";
 import { ProxyLogger } from "./logger.ts";
@@ -5,7 +6,7 @@ import { isRecord, MemoryChunk, MemoryState, SessionRecord } from "./memory_stat
 import { ProxyConfig } from "./config.ts";
 import { retainMemory } from "./retention.ts";
 import { onNewUserMessage } from "./task_update.ts";
-import { extractInputs, ToolResultEnvelope } from "./tool_results.ts";
+import { AssistantResponseExtraction, extractInputs, ToolResultEnvelope } from "./tool_results.ts";
 
 export type MaintenanceResult = {
   record: SessionRecord;
@@ -37,6 +38,7 @@ export async function runMaintenancePass(
   const extracted = await extractInputs(body, state);
   await logMemory(logContext, "inputs_extracted", {
     userMessageIds: extracted.userMessages.map((message) => message.messageId),
+    assistantResponseIds: extracted.assistantResponses.map((response) => response.responseId),
     toolResults: extracted.toolResults.map(summarizeToolResult),
   });
 
@@ -71,6 +73,53 @@ export async function runMaintenancePass(
     });
     handled.add(message.messageId);
     changed = true;
+  }
+
+  const newAssistantResponses = extracted.assistantResponses.filter((response) =>
+    !handled.has(response.responseId)
+  );
+  if (newAssistantResponses.length > 0) {
+    await logMemory(logContext, "assistant_responses_start", {
+      assistantResponses: newAssistantResponses.map(summarizeAssistantResponse),
+      beforeState: summarizeState(state),
+    });
+    const inbox = await chunkAssistantResponses(
+      newAssistantResponses,
+      state,
+      clients.assistantMemory,
+    );
+    await logMemory(logContext, "assistant_chunks_created", {
+      chunkIds: inbox.map((chunk) => chunk.id),
+      chunks: inbox.map(summarizeChunk),
+    });
+    const candidateIds = uniqueIds([
+      ...state.memoryLibrary.map((chunk) => chunk.id),
+      ...inbox.map((chunk) => chunk.id),
+    ]);
+    await logMemory(logContext, "assistant_retention_start", {
+      existingChunkIds: state.memoryLibrary.map((chunk) => chunk.id),
+      inboxChunkIds: inbox.map((chunk) => chunk.id),
+      candidateChunkIds: candidateIds,
+    });
+    state = await retainMemory(state, inbox, clients.retention);
+    await logMemory(logContext, "assistant_retention_applied", {
+      keptChunkIds: state.memoryLibrary.map((chunk) => chunk.id),
+      droppedChunkIds: candidateIds.filter((id) =>
+        !state.memoryLibrary.some((chunk) => chunk.id === id)
+      ),
+      afterState: summarizeState(state),
+    });
+    for (const response of newAssistantResponses) {
+      handled.add(response.responseId);
+    }
+    changed = true;
+  } else {
+    await logMemory(logContext, "assistant_responses_none", {
+      extractedAssistantResponseIds: extracted.assistantResponses.map((response) =>
+        response.responseId
+      ),
+      handledInputIds: [...handled],
+    });
   }
 
   const newToolResults = extracted.toolResults.filter((result) => !handled.has(result.id));
@@ -152,6 +201,27 @@ function instrumentMaintenanceClients(
         return response;
       } catch (error) {
         await logMemory(logContext, "task_update_model_error", { message: messageFor(error) });
+        throw error;
+      }
+    },
+    assistantMemory: async (request) => {
+      await logMemory(logContext, "assistant_memory_model_request", {
+        taskIds: request.tasks.map((task) => task.id),
+        activeTaskId: request.activeTaskId,
+        responseIds: request.responses.map((response) => response.responseId),
+        assistantResponses: request.responses.map(summarizeAssistantResponse),
+        validationErrors: request.validationErrors,
+      });
+      try {
+        const response = await clients.assistantMemory(request);
+        await logMemory(
+          logContext,
+          "assistant_memory_model_response",
+          summarizeAssistantMemoryResponse(response),
+        );
+        return response;
+      } catch (error) {
+        await logMemory(logContext, "assistant_memory_model_error", { message: messageFor(error) });
         throw error;
       }
     },
@@ -246,6 +316,15 @@ function summarizeToolResult(result: ToolResultEnvelope): Record<string, unknown
   };
 }
 
+function summarizeAssistantResponse(
+  response: AssistantResponseExtraction,
+): Record<string, unknown> {
+  return {
+    responseId: response.responseId,
+    textLength: response.text.length,
+  };
+}
+
 function summarizeChunk(chunk: MemoryChunk): Record<string, unknown> {
   const pointer = isRecord(chunk.pointer) ? chunk.pointer : {};
   return {
@@ -254,6 +333,9 @@ function summarizeChunk(chunk: MemoryChunk): Record<string, unknown> {
     source: chunk.source,
     taskIds: chunk.taskIds,
     sourceResultId: typeof pointer.sourceResultId === "string" ? pointer.sourceResultId : undefined,
+    sourceResponseId: typeof pointer.sourceResponseId === "string"
+      ? pointer.sourceResponseId
+      : undefined,
     toolName: typeof pointer.toolName === "string" ? pointer.toolName : undefined,
     itemIndex: typeof pointer.itemIndex === "number" ? pointer.itemIndex : undefined,
     changedPathCount: Array.isArray(pointer.changedPaths) ? pointer.changedPaths.length : undefined,
@@ -292,6 +374,21 @@ function summarizeTaskUpdateResponse(response: unknown): Record<string, unknown>
         hasSummary: typeof action.summary === "string" && action.summary.length > 0,
       }))
       : [],
+  };
+}
+
+function summarizeAssistantMemoryResponse(response: unknown): Record<string, unknown> {
+  if (!isRecord(response) || !Array.isArray(response.chunks)) {
+    return { shape: shapeOf(response) };
+  }
+  return {
+    chunks: response.chunks.filter(isRecord).map((chunk) => ({
+      sourceResponseIndex: chunk.sourceResponseIndex,
+      kind: chunk.kind,
+      taskIds: chunk.taskIds,
+      hasPointer: isRecord(chunk.pointer),
+      pointerKeys: isRecord(chunk.pointer) ? Object.keys(chunk.pointer).sort() : [],
+    })),
   };
 }
 

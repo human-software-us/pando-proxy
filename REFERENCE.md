@@ -153,8 +153,11 @@ dropping stale raw user/assistant history.
 The memory pass:
 
 - extracts user messages and tool outputs from the current request,
+- extracts assistant responses from prior turns present in the current request,
 - skips input IDs already recorded in `handled-inputs.json`,
 - asks the maintenance model to update the live task list and retained user-message summaries,
+- reviews unhandled assistant responses and creates task-linked assistant chunks only for durable
+  information that still supports live tasks,
 - chunks Pando tool results in code,
 - chunks non-Pando tool results with a maintenance model call and falls back to local summaries if
   the model response is invalid,

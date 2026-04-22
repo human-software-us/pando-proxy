@@ -17,8 +17,14 @@ export type UserMessageExtraction = {
   text: string;
 };
 
+export type AssistantResponseExtraction = {
+  responseId: string;
+  text: string;
+};
+
 export type ExtractedInputs = {
   userMessages: UserMessageExtraction[];
+  assistantResponses: AssistantResponseExtraction[];
   toolResults: ToolResultEnvelope[];
 };
 
@@ -55,6 +61,7 @@ export async function extractInputs(
   }
 
   const userMessages: UserMessageExtraction[] = [];
+  const assistantResponses: AssistantResponseExtraction[] = [];
   const toolResults: ToolResultEnvelope[] = [];
 
   for (let index = 0; index < items.length; index += 1) {
@@ -75,6 +82,17 @@ export async function extractInputs(
       if (text.trim().length > 0 && !isSyntheticMemoryText(text)) {
         userMessages.push({
           messageId: await itemId("user", index, item),
+          text,
+        });
+      }
+      continue;
+    }
+
+    if (isAssistantMessage(item)) {
+      const text = extractMessageText(item);
+      if (text.trim().length > 0) {
+        assistantResponses.push({
+          responseId: await itemId("assistant", index, item),
           text,
         });
       }
@@ -102,7 +120,7 @@ export async function extractInputs(
     }
   }
 
-  return { userMessages, toolResults };
+  return { userMessages, assistantResponses, toolResults };
 }
 
 export function isPandoResult(
@@ -153,6 +171,10 @@ export function summarizeToolContent(content: unknown, maxChars = 900): string {
 
 function isUserMessage(item: Record<string, unknown>): boolean {
   return String(item.type ?? "") === "message" && item.role === "user";
+}
+
+function isAssistantMessage(item: Record<string, unknown>): boolean {
+  return String(item.type ?? "") === "message" && item.role === "assistant";
 }
 
 function isToolOutput(item: Record<string, unknown>): boolean {

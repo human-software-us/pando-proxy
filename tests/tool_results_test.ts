@@ -30,10 +30,33 @@ Deno.test("extractInputs ignores synthetic memory and maps tool output to preced
   }, emptyMemoryState());
 
   assertEquals(extracted.userMessages.length, 1);
+  assertEquals(extracted.assistantResponses.length, 0);
   assertEquals(extracted.userMessages[0].text, "Implement this");
   assertEquals(extracted.toolResults.length, 1);
   assertEquals(extracted.toolResults[0].toolName, "pando__find_nodes");
   assertEquals(extracted.toolResults[0].params, { name: "main" });
+});
+
+Deno.test("extractInputs captures assistant response text for next-turn review", async () => {
+  const extracted = await extractInputs({
+    input: [
+      {
+        type: "message",
+        role: "assistant",
+        id: "msg_1",
+        content: [{ type: "output_text", text: "The implementation passed live testing." }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Continue" }],
+      },
+    ],
+  }, emptyMemoryState());
+
+  assertEquals(extracted.assistantResponses.length, 1);
+  assertEquals(extracted.assistantResponses[0].responseId, "assistant_msg_1");
+  assertEquals(extracted.assistantResponses[0].text, "The implementation passed live testing.");
 });
 
 Deno.test("isPandoResult detects qualified pando tool names", () => {

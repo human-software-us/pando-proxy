@@ -26,7 +26,7 @@ export type MemoryChunk = {
   kind: string;
   taskIds: string[];
   pointer?: Record<string, unknown>;
-  source?: "tool" | "user";
+  source?: "tool" | "user" | "assistant";
 };
 
 export type SessionRecord = {

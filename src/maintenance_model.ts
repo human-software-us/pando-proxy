@@ -1,3 +1,4 @@
+import { AssistantMemoryRequest } from "./assistant_memory.ts";
 import { ProxyConfig, resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import { extractJsonObject, stableJson } from "./json.ts";
 import { BatchChunkRequest } from "./chunking.ts";
@@ -6,6 +7,7 @@ import { TaskUpdateModelRequest } from "./task_update.ts";
 
 export type MaintenanceClients = {
   taskUpdate: (request: TaskUpdateModelRequest) => Promise<unknown>;
+  assistantMemory: (request: AssistantMemoryRequest) => Promise<unknown>;
   chunkBatch: (request: BatchChunkRequest) => Promise<unknown>;
   retention: (request: RetentionModelRequest) => Promise<unknown>;
 };
@@ -21,6 +23,7 @@ export function createMaintenanceClients(
 
   return {
     taskUpdate: (request) => call(taskUpdateSystemPrompt, request),
+    assistantMemory: (request) => call(assistantMemorySystemPrompt, request),
     chunkBatch: (request) => call(chunkBatchSystemPrompt, sanitizeChunkRequest(request)),
     retention: (request) => call(retentionSystemPrompt, request),
   };
@@ -233,6 +236,33 @@ Rules:
 - Keep summaries short and factual.
 - Prefer pointers over copying long raw output.
 - Drop irrelevant results by producing no chunk for them.
+- If validationErrors are provided, fix them. Return JSON only.
+`.trim();
+
+const assistantMemorySystemPrompt = `
+You review prior assistant responses for task-scoped context memory.
+Return strict JSON only:
+{
+  "chunks": [
+    {
+      "sourceResponseIndex": number,
+      "title": string,
+      "summary": string,
+      "kind": string,
+      "taskIds": string[],
+      "pointer"?: object
+    }
+  ]
+}
+Rules:
+- Include only durable information from assistant responses that can help one or more live tasks.
+- Useful durable information includes decisions made, constraints discovered, implementation facts,
+  test results, unresolved errors, or explicit next steps that still matter.
+- Do not keep generic progress narration, apologies, pleasantries, repeated user instructions, or
+  assistant text for completed/dropped/irrelevant tasks.
+- Every useful chunk must support one or more live tasks.
+- Keep summaries short, factual, and grounded in the assistant response.
+- Drop irrelevant responses by producing no chunk for them.
 - If validationErrors are provided, fix them. Return JSON only.
 `.trim();
 
