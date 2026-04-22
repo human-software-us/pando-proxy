@@ -1,8 +1,18 @@
 # Context Memory Design
 
+## Product Deliverable
+
+This repository's deliverable is a standalone local proxy binary named `pando-proxy`.
+
+It is not a reusable memory library, a Codex fork, an MCP memory server, or a hosted backend service. The product is one self-contained local executable that stock Codex can use as an OpenAI-compatible model provider.
+
+Implement the app in Deno + TypeScript. Library-shaped modules are allowed only as internal implementation units of the binary, for example under `src/`. They must not be designed, packaged, or documented as a separate public SDK or as the primary deliverable.
+
+The memory design below exists to serve that proxy. All task update, tool chunking, retention, prompt injection, snapshot persistence, config installation, and upstream forwarding behavior must be wired through the local proxy request path and CLI.
+
 ## Goal
 
-Keep context useful without letting it accumulate. Every user message and every tool result must be explicitly handled before the next work turn:
+Inside the `pando-proxy` binary, keep context useful without letting it accumulate. Every user message and every tool result must be explicitly handled before the next work turn:
 
 - update the task list from the latest user message,
 - chunk every tool result, whether it came from MCP or a native tool,
@@ -297,7 +307,7 @@ Best low-conflict shape: add a new `codex-rs/core/src/context_memory/` module th
 
 ## No-Source-Change Proxy Implementation
 
-The implementation in this repository should make the memory design usable by people running the stock Codex CLI, without requiring them to download a custom Codex build.
+The implementation in this repository is the standalone `pando-proxy` app. It should make the memory design usable by people running the stock Codex CLI, without requiring them to download a custom Codex build.
 
 The best no-source-change shape is a local OpenAI-compatible model-provider proxy:
 
@@ -345,7 +355,7 @@ Later, the proxy may also support Chat Completions if needed, but the first vers
 
 ### Recommended Language
 
-Use Deno + TypeScript for the first serious version.
+Implement the standalone proxy binary in Deno + TypeScript.
 
 Reasons:
 
@@ -354,6 +364,8 @@ Reasons:
 - The memory logic can be written in a functional style: immutable state values, pure validators, and pure `apply*` functions.
 - Deno has built-in `fmt`, `lint`, and `test`, which keeps the development loop short.
 - Deno can compile the app into a self-contained executable, which keeps install/setup simple for Codex users.
+
+This is an app-first Deno project. Do not structure the repo as a library-first TypeScript package with the proxy as an optional wrapper. Internal modules should exist only to keep the local proxy binary maintainable.
 
 A practical command surface:
 
@@ -369,7 +381,7 @@ Do not start with JVM Clojure for broad distribution. It is pleasant for this st
 
 ### Repository Shape
 
-Keep the first implementation small and boring:
+Keep the first implementation small and boring. This is an application layout for the Deno binary, not a public library package layout:
 
 ```text
 src/
