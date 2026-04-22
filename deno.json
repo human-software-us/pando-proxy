@@ -1,0 +1,19 @@
+{
+  "tasks": {
+    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test --allow-net --allow-read --allow-write --allow-env",
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write src/main.ts serve",
+    "compile": "deno compile --allow-net --allow-env --allow-read --allow-write --output pando-proxy src/main.ts"
+  },
+  "fmt": {
+    "exclude": ["CONTEXT_MEMORY_DESIGN.md"],
+    "indentWidth": 2,
+    "lineWidth": 100,
+    "semiColons": true,
+    "singleQuote": false
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-explicit-any"]
+    }
+  }
+}
