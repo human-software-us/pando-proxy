@@ -22,6 +22,14 @@ The first non-proxy argument starts Codex passthrough. For example, `exec`, `res
 and `app-server` are Codex arguments, not proxy subcommands. The wrapper does not edit
 `~/.codex/config.toml`.
 
+Runtime shape:
+
+- `exec` / `e`: the wrapper adds `--json` when missing, forwards stdout, and observes every JSONL
+  event.
+- interactive prompt / `resume` / `fork`: the wrapper starts `codex app-server` on loopback, starts
+  a loopback websocket relay, then runs the Codex TUI with `--remote` pointed at the relay.
+- utility commands: the wrapper runs Codex directly with the proxy provider overrides.
+
 ## Logging
 
 Logging is disabled by default. A normal wrapper invocation does not create a log file and does not

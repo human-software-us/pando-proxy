@@ -13,6 +13,15 @@ npx -y pando-proxy [proxy options] [codex args...]
 The wrapper starts one local proxy instance, runs `codex` with process-local provider overrides,
 then shuts the proxy down when Codex exits. It does not edit Codex config files.
 
+The wrapper uses three Codex execution paths:
+
+- `exec-json`: for `codex exec` / `codex e`; injects `--json`, forwards stdout, and observes JSONL
+  events.
+- `interactive-remote`: for normal interactive prompts plus `resume` and `fork`; starts
+  `codex app-server`, places a local websocket relay in front of it, and runs the Codex TUI with
+  `--remote` pointed at the relay.
+- `passthrough`: for utility commands such as `help`, `login`, `logout`, and `app-server`.
+
 Proxy-owned commands are:
 
 - `serve`: start only the local OpenAI-compatible proxy.

@@ -19,6 +19,10 @@ system `codex` command with process-local provider overrides pointing at that pr
 by default. The first non-proxy argument is passed to Codex, so forms like `exec`, `resume`,
 `help exec`, and `app-server` keep their normal Codex meaning.
 
+For `codex exec`, the wrapper runs Codex with `--json` so it can observe structured events while
+forwarding stdout. For interactive Codex, the wrapper starts a local Codex `app-server`, inserts a
+local websocket relay, then starts the normal Codex TUI with `--remote` pointed at that relay.
+
 ## Requirements
 
 - `codex` installed and logged in.
@@ -31,6 +35,7 @@ by default. The first non-proxy argument is passed to Codex, so forms like `exec
 
 ```sh
 npx -y pando-proxy --proxy-help
+npx -y pando-proxy "Help me with this repo"
 npx -y pando-proxy --proxy-no-memory exec "Reply with exactly: pass-through ok"
 npx -y pando-proxy exec --help
 npx -y pando-proxy resume --last

@@ -1,4 +1,10 @@
 import {
+  buildRemoteCodexArgs,
+  classifyCodexRunMode,
+  ensureExecJsonArg,
+  hasCodexRemoteArg,
+} from "../src/codex_modes.ts";
+import {
   buildCodexArgs,
   codexProviderConfigArg,
   createUniqueLogFile,
@@ -127,6 +133,37 @@ Deno.test("codex args inject pando provider overrides before user args", () => {
   assert(args[3].includes('wire_api = "responses"'));
   assert(args[3].includes("requires_openai_auth = true"));
   assertEquals(args.slice(4), ["exec", "hello"]);
+});
+
+Deno.test("codex mode classifier detects exec with leading global options", () => {
+  assertEquals(classifyCodexRunMode(["-m", "gpt-5.1-codex", "exec", "hello"]), "exec-json");
+  assertEquals(
+    ensureExecJsonArg(["-m", "gpt-5.1-codex", "exec", "hello"]),
+    ["-m", "gpt-5.1-codex", "exec", "--json", "hello"],
+  );
+});
+
+Deno.test("codex mode classifier keeps explicit exec json unchanged", () => {
+  assertEquals(ensureExecJsonArg(["exec", "--json", "hello"]), ["exec", "--json", "hello"]);
+});
+
+Deno.test("codex mode classifier detects interactive and passthrough forms", () => {
+  assertEquals(classifyCodexRunMode([]), "interactive-remote");
+  assertEquals(classifyCodexRunMode(["resume", "--last"]), "interactive-remote");
+  assertEquals(classifyCodexRunMode(["fork", "--last"]), "interactive-remote");
+  assertEquals(classifyCodexRunMode(["help", "exec"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["app-server", "--listen", "stdio://"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["Help me with this repo"]), "interactive-remote");
+});
+
+Deno.test("remote codex args prepend wrapper-managed relay", () => {
+  assertEquals(
+    buildRemoteCodexArgs(["resume", "--last"], "ws://127.0.0.1:40125"),
+    ["--remote", "ws://127.0.0.1:40125", "resume", "--last"],
+  );
+  assertEquals(hasCodexRemoteArg(["--remote", "ws://127.0.0.1:1"]), true);
+  assertEquals(hasCodexRemoteArg(["--remote=ws://127.0.0.1:1"]), true);
+  assertEquals(hasCodexRemoteArg(["resume", "--last"]), false);
 });
 
 Deno.test("provider config arg points codex at the selected proxy port", () => {
