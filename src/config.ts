@@ -15,6 +15,7 @@ export type ProxyConfig = {
   piecePreviewCharLimit: number;
   maxIndexedPiecesPerTask: number;
   maxLocalContextToolCalls: number;
+  codexAutoCompactTokenLimit: number;
 };
 
 export type CliOptions = {
@@ -26,6 +27,7 @@ export type CliOptions = {
   stateDir?: string;
   memoryEnabled?: boolean;
   logFile?: string | null;
+  codexAutoCompactTokenLimit?: number;
 };
 
 export const DEFAULT_HOST = "127.0.0.1";
@@ -43,6 +45,7 @@ export const DEFAULT_INLINE_PIECE_BYTE_LIMIT = 16_384;
 export const DEFAULT_PIECE_PREVIEW_CHAR_LIMIT = 96;
 export const DEFAULT_MAX_INDEXED_PIECES_PER_TASK = 12;
 export const DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS = 4;
+export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 200_000;
 
 export function loadConfig(options: CliOptions = {}): ProxyConfig {
   return {
@@ -96,6 +99,12 @@ export function loadConfig(options: CliOptions = {}): ProxyConfig {
       Deno.env.get("PANDO_PROXY_MAX_LOCAL_CONTEXT_TOOL_CALLS"),
       DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS,
     ),
+    codexAutoCompactTokenLimit: parsePositiveInt(
+      options.codexAutoCompactTokenLimit !== undefined
+        ? String(options.codexAutoCompactTokenLimit)
+        : Deno.env.get("PANDO_PROXY_CODEX_AUTO_COMPACT_TOKEN_LIMIT"),
+      DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT,
+    ),
   };
 }
 
@@ -140,6 +149,10 @@ export function parseCliOptions(args: string[]): { command: string | null; optio
     }
     if (arg === "--log-file") {
       options.logFile = requireValue(args, ++index, arg);
+      continue;
+    }
+    if (arg === "--codex-auto-compact-token-limit") {
+      options.codexAutoCompactTokenLimit = parseRequiredPositiveInt(requireValue(args, ++index, arg), arg);
       continue;
     }
     if (arg === "--help" || arg === "-h") {
@@ -222,6 +235,14 @@ function parsePositiveInt(value: string | undefined | null, fallback: number): n
   }
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseRequiredPositiveInt(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid positive integer for ${name}: ${value}`);
+  }
+  return parsed;
 }
 
 function parseBoolean(value: string | undefined): boolean {

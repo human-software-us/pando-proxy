@@ -121,6 +121,10 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
       options.stateDir = requireValue(args, ++index, arg);
       continue;
     }
+    if (arg === "--proxy-codex-auto-compact-token-limit") {
+      options.codexAutoCompactTokenLimit = Number(requireValue(args, ++index, arg));
+      continue;
+    }
     if (arg === "--proxy-no-memory") {
       options.memoryEnabled = false;
       continue;
@@ -177,6 +181,7 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     effectiveCodexArgs,
     mode,
     memoryEnabled: started.config.memoryEnabled,
+    codexAutoCompactTokenLimit: started.config.codexAutoCompactTokenLimit,
   });
 
   try {
@@ -834,8 +839,16 @@ export function buildCodexExecArgs(codexArgs: string[], config: ProxyConfig): st
   ];
 }
 
-export function codexProviderOverrideArgs(config: Pick<ProxyConfig, "host" | "port">): string[] {
-  return ["-c", `model_provider="${PANDO_PROVIDER_ID}"`, ...codexProviderConfigArgs(config)];
+export function codexProviderOverrideArgs(
+  config: Pick<ProxyConfig, "host" | "port" | "codexAutoCompactTokenLimit">,
+): string[] {
+  return [
+    "-c",
+    `model_provider="${PANDO_PROVIDER_ID}"`,
+    "-c",
+    `model_auto_compact_token_limit=${config.codexAutoCompactTokenLimit}`,
+    ...codexProviderConfigArgs(config),
+  ];
 }
 
 export function codexProviderConfigArgs(config: Pick<ProxyConfig, "host" | "port">): string[] {
@@ -899,6 +912,7 @@ Proxy wrapper options:
   --proxy-small-structured-model <model>   Default: cheap structured model
   --proxy-overflow-structured-model <model> Default: smallest larger-window model
   --proxy-state-dir <path>                 Default: ~/.pando-proxy
+  --proxy-codex-auto-compact-token-limit <n> Default: 200000
   --proxy-no-memory                        Bypass task/piece memory rewrite
   --proxy-log                              Enable full JSONL logging to ~/.pando-proxy/logs
   --proxy-log-file <path>                  Enable full JSONL logging to this file
