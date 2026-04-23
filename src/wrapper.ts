@@ -216,7 +216,8 @@ Usage:
   pando-proxy doctor
 
 Default mode starts a per-instance proxy, then runs codex with provider overrides
-pointing at that proxy.
+pointing at that proxy. The first non-proxy argument starts Codex passthrough,
+so commands like exec, resume, help, and app-server are passed to codex.
 
 Proxy wrapper options:
   --proxy-host <host>                Default: 127.0.0.1
@@ -228,6 +229,11 @@ Proxy wrapper options:
   --proxy-log                        Enable full JSONL logging to ~/.pando-proxy/logs
   --proxy-log-file <path>            Enable full JSONL logging to this file
   --proxy-help, --help, -h           Show this help
+
+Examples:
+  pando-proxy exec "Help me with this repo"
+  pando-proxy resume --last
+  pando-proxy help exec
 
 Everything after -- is passed to codex unchanged.
 `);

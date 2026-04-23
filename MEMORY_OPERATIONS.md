@@ -18,7 +18,9 @@ does the following:
 3. Passes Codex arguments through unchanged after proxy-owned `--proxy-*` flags.
 4. Shuts the proxy down when Codex exits and returns Codex's exit code.
 
-It does not edit `~/.codex/config.toml`.
+The first non-proxy argument starts Codex passthrough. For example, `exec`, `resume`, `help exec`,
+and `app-server` are Codex arguments, not proxy subcommands. The wrapper does not edit
+`~/.codex/config.toml`.
 
 ## Logging
 

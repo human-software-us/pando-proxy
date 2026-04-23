@@ -18,9 +18,9 @@ Proxy-owned commands are:
 - `serve`: start only the local OpenAI-compatible proxy.
 - `doctor`: check local prerequisites and upstream reachability when an `OPENAI_API_KEY` fallback is
   available.
-- `help`: show proxy help.
 
-Any first argument other than `serve`, `doctor`, or `help` is treated as a Codex argument.
+Any first argument other than `serve` or `doctor` is treated as a Codex argument. This means `exec`,
+`resume`, `help`, `app-server`, and future Codex commands are passed through.
 
 ## Wrapper Flags
 
@@ -39,6 +39,16 @@ Wrapper flags must appear before the first Codex argument.
 | `--proxy-help`, `--help`, `-h`      |                        | Show wrapper help.                                                    |
 
 Everything after `--` is passed to Codex unchanged.
+
+Examples:
+
+```sh
+npx -y pando-proxy exec "Help me with this repo"
+npx -y pando-proxy exec --help
+npx -y pando-proxy resume --last
+npx -y pando-proxy help exec
+npx -y pando-proxy app-server --listen ws://127.0.0.1:45123
+```
 
 ## Serve and Doctor Flags
 

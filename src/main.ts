@@ -5,7 +5,7 @@ import { runDoctor } from "./doctor.ts";
 import { serve } from "./server.ts";
 import { printWrapperHelp, runCodexWrapper } from "./wrapper.ts";
 
-const PROXY_COMMANDS = new Set(["serve", "doctor", "help"]);
+const PROXY_COMMANDS = new Set(["serve", "doctor"]);
 
 async function main(): Promise<void> {
   const first = Deno.args[0];
@@ -44,7 +44,6 @@ function printHelp(): void {
 Commands:
   serve      Start only the local OpenAI-compatible proxy
   doctor     Check port, credentials, and upstream reachability
-  help       Show this help
 
 Serve/doctor options:
   --host <host>                   Default: 127.0.0.1

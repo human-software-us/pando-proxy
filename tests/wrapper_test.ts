@@ -73,6 +73,38 @@ Deno.test("wrapper leaves flags after first codex arg untouched", () => {
   assertEquals(parsed.codexArgs, ["exec", "--help", "--proxy-no-memory"]);
 });
 
+Deno.test("wrapper allows exec as the first codex argument", () => {
+  const parsed = parseWrapperArgs(["exec", "--json", "--", "say hi"]);
+
+  assertEquals(parsed.help, false);
+  assertEquals(parsed.options, {});
+  assertEquals(parsed.codexArgs, ["exec", "--json", "--", "say hi"]);
+});
+
+Deno.test("wrapper passes resume command forms through unchanged", () => {
+  const parsed = parseWrapperArgs(["resume", "--last", "continue with the next task"]);
+
+  assertEquals(parsed.help, false);
+  assertEquals(parsed.options, {});
+  assertEquals(parsed.codexArgs, ["resume", "--last", "continue with the next task"]);
+});
+
+Deno.test("wrapper passes codex help command through unchanged", () => {
+  const parsed = parseWrapperArgs(["help", "exec"]);
+
+  assertEquals(parsed.help, false);
+  assertEquals(parsed.options, {});
+  assertEquals(parsed.codexArgs, ["help", "exec"]);
+});
+
+Deno.test("wrapper passes app-server command forms through unchanged", () => {
+  const parsed = parseWrapperArgs(["app-server", "--listen", "ws://127.0.0.1:45123"]);
+
+  assertEquals(parsed.help, false);
+  assertEquals(parsed.options, {});
+  assertEquals(parsed.codexArgs, ["app-server", "--listen", "ws://127.0.0.1:45123"]);
+});
+
 Deno.test("codex args inject pando provider overrides before user args", () => {
   const args = buildCodexArgs(["exec", "hello"], {
     host: "127.0.0.1",
