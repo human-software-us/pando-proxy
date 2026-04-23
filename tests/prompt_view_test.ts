@@ -10,6 +10,7 @@ Deno.test("prompt view includes live tasks and retained chunks", () => {
 });
 
 Deno.test("request rewrite inserts exactly one synthetic memory item after instructions", () => {
+  return (async () => {
   const body = {
     model: "test-model",
     input: [
@@ -19,15 +20,91 @@ Deno.test("request rewrite inserts exactly one synthetic memory item after instr
     stream: true,
   };
 
-  const rewritten = rewriteRequestWithMemory(body, state(), 4_000);
-  const input = rewritten.input as Array<Record<string, unknown>>;
+    const rewritten = await rewriteRequestWithMemory(body, state(), 4_000);
+    const input = rewritten.body.input as Array<Record<string, unknown>>;
 
-  assertEquals(input.length, 3);
-  assertEquals(input[0].role, "developer");
-  assertEquals(input[1].role, "user");
-  assert(String(JSON.stringify(input[1])).includes("<context_memory>"));
-  assertEquals(rewritten.model, "test-model");
-  assertEquals(rewritten.stream, true);
+    assertEquals(input.length, 3);
+    assertEquals(input[0].role, "developer");
+    assertEquals(input[1].role, "user");
+    assert(String(JSON.stringify(input[1])).includes("<context_memory>"));
+    assertEquals(rewritten.body.model, "test-model");
+    assertEquals(rewritten.body.stream, true);
+    assert(rewritten.diff.insertedSyntheticMemoryChars > 0);
+  })();
+});
+
+Deno.test("request rewrite drops older handled protocol segments and keeps the latest cycle", () => {
+  return (async () => {
+    const body = {
+      input: [
+        { type: "message", role: "developer", content: [{ type: "input_text", text: "rules" }] },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>" }],
+        },
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Work on it." }] },
+        {
+          type: "message",
+          role: "assistant",
+          id: "msg_1",
+          content: [{ type: "output_text", text: "Older handled cycle." }],
+        },
+        {
+          type: "function_call",
+          id: "call_1",
+          call_id: "call_1",
+          name: "exec_command",
+          arguments: "{\"cmd\":\"echo old\"}",
+        },
+        {
+          type: "function_call_output",
+          id: "out_1",
+          call_id: "call_1",
+          output: "old output",
+        },
+        { type: "reasoning", encrypted_content: "old-reasoning" },
+        {
+          type: "message",
+          role: "assistant",
+          id: "msg_2",
+          content: [{ type: "output_text", text: "Latest cycle stays raw." }],
+        },
+        {
+          type: "function_call",
+          id: "call_2",
+          call_id: "call_2",
+          name: "exec_command",
+          arguments: "{\"cmd\":\"echo latest\"}",
+        },
+        {
+          type: "function_call_output",
+          id: "out_2",
+          call_id: "call_2",
+          output: "latest output",
+        },
+      ],
+    };
+
+    const rewritten = await rewriteRequestWithMemory(body, state(), 4_000, {
+      handledInputIds: ["assistant_msg_1", "tool_out_1"],
+    });
+    const input = rewritten.body.input as Array<Record<string, unknown>>;
+
+    assertEquals(
+      input.map((item) => `${String(item.type)}:${String(item.role ?? item.call_id ?? "")}`),
+      [
+        "message:developer",
+        "message:user",
+        "message:user",
+        "message:assistant",
+        "function_call:call_2",
+        "function_call_output:call_2",
+      ],
+    );
+    assert(rewritten.diff.droppedInputIds.includes("assistant_msg_1"));
+    assert(rewritten.diff.droppedInputIds.includes("tool_out_1"));
+  })();
 });
 
 function state(): MemoryState {

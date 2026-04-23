@@ -1,7 +1,7 @@
 import { authHeaderFor, parseJsonBody, requestModel, sessionKeyFor } from "./codex_request.ts";
 import { ProxyConfig } from "./config.ts";
 import { createLogger, loggableBody, redactHeaders } from "./logger.ts";
-import { runMaintenancePass } from "./memory_pipeline.ts";
+import { runAssistantResponseReview, runMaintenancePass } from "./memory_pipeline.ts";
 import {
   estimateTokensForValue,
   memoryStateMetrics,
@@ -12,7 +12,7 @@ import {
 } from "./metrics.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
 import { SessionStore } from "./store.ts";
-import { forwardResponsesRequest } from "./upstream.ts";
+import { extractAssistantResponsesFromResponseText, forwardResponsesRequest } from "./upstream.ts";
 
 export function createHandler(config: ProxyConfig, store = new SessionStore(config.stateDir)) {
   const logger = createLogger(config.logFile);
@@ -116,11 +116,13 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
           changed: result.changed,
           ...memoryStateMetrics(result.record.memory, result.record.handledInputIds),
         });
-        const rewritten = rewriteRequestWithMemory(
+        const rewrite = await rewriteRequestWithMemory(
           body,
           result.record.memory,
           config.syntheticCharBudget,
+          { handledInputIds: result.record.handledInputIds },
         );
+        const rewritten = rewrite.body;
         await logger.log(`${METRICS_EVENT_PREFIX}rewritten_context`, {
           marker: METRICS_MARKER,
           requestId,
@@ -132,6 +134,12 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
           rewrittenInputItemCount: Array.isArray(rewritten.input)
             ? rewritten.input.length
             : undefined,
+          droppedInputIds: rewrite.diff.droppedInputIds,
+          keptInputIds: rewrite.diff.keptInputIds,
+          rawInputTypeCounts: rewrite.diff.rawInputTypeCounts,
+          rewrittenInputTypeCounts: rewrite.diff.rewrittenInputTypeCounts,
+          droppedInputTypeCounts: rewrite.diff.droppedInputTypeCounts,
+          insertedSyntheticMemoryChars: rewrite.diff.insertedSyntheticMemoryChars,
           ...requestContextMetrics(rewritten),
         });
         return rewritten;
@@ -142,6 +150,69 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
         body: rewritten,
         logger,
         metrics: upstreamMetricsOptions(sessionKey, requestId, rewritten, usageTracker),
+        onCompletion: async (completion) => {
+          if (completion.termination !== "end") {
+            return;
+          }
+          const assistantResponses = await extractAssistantResponsesFromResponseText(
+            completion.bodyText,
+            rawInputItemCount(body),
+          );
+          await logger.log("memory_response_end_assistant_extracted", {
+            requestId,
+            sessionKey,
+            responseIds: assistantResponses.map((response) => response.responseId),
+            assistantResponses: assistantResponses.map((response) => ({
+              responseId: response.responseId,
+              textLength: response.text.length,
+            })),
+          });
+          if (assistantResponses.length === 0) {
+            return;
+          }
+          await store.withLock(sessionKey, async () => {
+            const record = await store.load(sessionKey);
+            const result = await runAssistantResponseReview(
+              assistantResponses,
+              record,
+              config,
+              authHeader,
+              requestModel(rewritten),
+              { logger, sessionKey },
+            );
+            if (result.changed) {
+              await store.save(sessionKey, result.record);
+              await logger.log("memory_state_saved", {
+                requestId,
+                sessionKey,
+                source: "response_end",
+                taskUpdateSeq: result.record.memory.taskUpdateSeq,
+                taskIds: result.record.memory.tasks.map((task) => task.id),
+                keptUserMessageIds: result.record.memory.keptUserMessages.map((message) =>
+                  message.messageId
+                ),
+                memoryChunkIds: result.record.memory.memoryLibrary.map((chunk) => chunk.id),
+                handledInputIds: result.record.handledInputIds,
+              });
+            } else {
+              await logger.log("memory_state_unchanged", {
+                requestId,
+                sessionKey,
+                source: "response_end",
+                taskUpdateSeq: result.record.memory.taskUpdateSeq,
+                handledInputIds: result.record.handledInputIds,
+              });
+            }
+            await logger.log(`${METRICS_EVENT_PREFIX}memory_state`, {
+              marker: METRICS_MARKER,
+              requestId,
+              sessionKey,
+              source: "response_end",
+              changed: result.changed,
+              ...memoryStateMetrics(result.record.memory, result.record.handledInputIds),
+            });
+          });
+        },
       });
     } catch (error) {
       return jsonResponse(
@@ -153,6 +224,13 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
       );
     }
   };
+}
+
+function rawInputItemCount(body: Record<string, unknown>): number {
+  if (Array.isArray(body.input)) {
+    return body.input.length;
+  }
+  return typeof body.input === "string" ? 1 : 0;
 }
 
 function upstreamMetricsOptions(

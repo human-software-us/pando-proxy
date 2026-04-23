@@ -1,7 +1,23 @@
 import { MemoryChunk, MemoryState } from "./memory_state.ts";
+import { describeInputItems, InputItemDescriptor, inputItems } from "./tool_results.ts";
 
 export type DerivedPromptOptions = {
   keepRawHistory?: boolean;
+  handledInputIds?: Iterable<string>;
+};
+
+export type RewriteDiff = {
+  droppedInputIds: string[];
+  keptInputIds: string[];
+  rawInputTypeCounts: Record<string, number>;
+  rewrittenInputTypeCounts: Record<string, number>;
+  droppedInputTypeCounts: Record<string, number>;
+  insertedSyntheticMemoryChars: number;
+};
+
+export type RewriteResult = {
+  body: Record<string, unknown>;
+  diff: RewriteDiff;
 };
 
 export function buildSyntheticMemoryText(state: MemoryState, maxChars: number): string | null {
@@ -52,56 +68,65 @@ export function makeSyntheticMemoryItem(text: string): Record<string, unknown> {
   };
 }
 
-export function rewriteRequestWithMemory(
+export async function rewriteRequestWithMemory(
   body: Record<string, unknown>,
   state: MemoryState,
   maxChars: number,
   options: DerivedPromptOptions = { keepRawHistory: false },
-): Record<string, unknown> {
+): Promise<RewriteResult> {
   const text = buildSyntheticMemoryText(state, maxChars);
-  const next = { ...body };
-  next.input = buildDerivedPrompt(
+  const { input, diff } = await buildDerivedPrompt(
     body.input,
     text ? makeSyntheticMemoryItem(text) : null,
     options,
   );
-  return next;
+  return {
+    body: {
+      ...body,
+      input,
+    },
+    diff: {
+      ...diff,
+      insertedSyntheticMemoryChars: text?.length ?? 0,
+    },
+  };
 }
 
-export function buildDerivedPrompt(
+export async function buildDerivedPrompt(
   input: unknown,
   memoryItem: Record<string, unknown> | null,
   options: DerivedPromptOptions = { keepRawHistory: false },
-): unknown {
-  if (typeof input === "string") {
-    return memoryItem
-      ? [memoryItem, {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: input }],
-      }]
-      : input;
-  }
-  if (!Array.isArray(input)) {
-    return memoryItem ? [memoryItem] : input;
-  }
-
-  const filtered = input.filter((item) => !isSyntheticMemoryItem(item));
+): Promise<{ input: unknown; diff: RewriteDiff }> {
+  const rawDescriptors = await describeInputItems(input);
+  const filtered = rawDescriptors.filter((item) => !item.isSyntheticMemory);
   const derived = options.keepRawHistory === true ? filtered : deriveCurrentTurnInput(filtered);
-  if (!memoryItem) {
-    return derived;
-  }
+  const pruned = options.keepRawHistory === true
+    ? derived
+    : pruneHandledProtocolSegments(derived, new Set(options.handledInputIds ?? []));
+  const finalRawItems = pruned.map((item) => item.item);
+  const finalItems = memoryItem
+    ? insertAfterInstructions(finalRawItems, memoryItem)
+    : finalRawItems;
 
-  const insertIndex = leadingInstructionCount(derived);
-  return [
-    ...derived.slice(0, insertIndex),
-    memoryItem,
-    ...derived.slice(insertIndex),
-  ];
+  return {
+    input: shapeDerivedInput(input, finalItems, memoryItem),
+    diff: {
+      droppedInputIds: rawDescriptors.filter((item) => !pruned.some((kept) => kept.ref === item.ref)).map((
+        item,
+      ) => item.ref),
+      keptInputIds: pruned.map((item) => item.ref),
+      rawInputTypeCounts: countDescriptorTypes(rawDescriptors),
+      rewrittenInputTypeCounts: countDescriptorTypes(await describeInputItems(finalItems)),
+      droppedInputTypeCounts: countDescriptorTypes(
+        rawDescriptors.filter((item) => !pruned.some((kept) => kept.ref === item.ref)),
+      ),
+      insertedSyntheticMemoryChars: 0,
+    },
+  };
 }
 
-function deriveCurrentTurnInput(input: unknown[]): unknown[] {
-  const instructionCount = leadingInstructionCount(input);
+function deriveCurrentTurnInput(input: InputItemDescriptor[]): InputItemDescriptor[] {
+  const instructionCount = leadingInstructionCount(input.map((item) => item.item));
   const instructions = input.slice(0, instructionCount);
   const rest = input.slice(instructionCount);
   const latestUserIndex = findLatestUserMessageIndex(rest);
@@ -114,13 +139,141 @@ function deriveCurrentTurnInput(input: unknown[]): unknown[] {
   ];
 }
 
-function findLatestUserMessageIndex(input: unknown[]): number {
+function findLatestUserMessageIndex(input: InputItemDescriptor[]): number {
   for (let index = input.length - 1; index >= 0; index -= 1) {
-    if (isUserMessageItem(input[index])) {
+    if (input[index].kind === "user_message" && !input[index].isSyntheticMemory) {
       return index;
     }
   }
   return -1;
+}
+
+function pruneHandledProtocolSegments(
+  input: InputItemDescriptor[],
+  handledInputIds: Set<string>,
+): InputItemDescriptor[] {
+  const instructionCount = leadingInstructionCount(input.map((item) => item.item));
+  const latestUserOffset = input.slice(instructionCount).findIndex((item) =>
+    item.kind === "user_message" && !item.isSyntheticMemory
+  );
+  if (latestUserOffset < 0) {
+    return input;
+  }
+
+  const latestUserIndex = instructionCount + latestUserOffset;
+  const head = input.slice(0, latestUserIndex + 1);
+  const tail = input.slice(latestUserIndex + 1);
+  const segments = splitProtocolSegments(tail);
+  if (segments.length < 2) {
+    return input;
+  }
+
+  const kept = [...head];
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    const isLastSegment = index === segments.length - 1;
+    if (isLastSegment || !canDropHandledSegment(segment, handledInputIds)) {
+      kept.push(...segment);
+    }
+  }
+  return kept;
+}
+
+function splitProtocolSegments(tail: InputItemDescriptor[]): InputItemDescriptor[][] {
+  const segments: InputItemDescriptor[][] = [];
+  let current: InputItemDescriptor[] = [];
+  for (const item of tail) {
+    current.push(item);
+    if (item.kind === "tool_output") {
+      segments.push(current);
+      current = [];
+    }
+  }
+  if (current.length > 0) {
+    segments.push(current);
+  }
+  return segments;
+}
+
+function canDropHandledSegment(
+  segment: InputItemDescriptor[],
+  handledInputIds: Set<string>,
+): boolean {
+  let hasHandledAnchor = false;
+  const outputsByCallId = new Map<string, InputItemDescriptor>();
+  for (const item of segment) {
+    if (item.kind === "tool_output" && item.callId) {
+      outputsByCallId.set(item.callId, item);
+    }
+  }
+
+  for (const item of segment) {
+    if (item.kind === "assistant_message" || item.kind === "tool_output") {
+      if (!item.id || !handledInputIds.has(item.id)) {
+        return false;
+      }
+      hasHandledAnchor = true;
+      continue;
+    }
+    if (item.kind === "tool_call") {
+      if (!item.callId) {
+        return false;
+      }
+      const output = outputsByCallId.get(item.callId);
+      if (!output?.id || !handledInputIds.has(output.id)) {
+        return false;
+      }
+      continue;
+    }
+    if (item.kind === "reasoning") {
+      continue;
+    }
+    return false;
+  }
+
+  return hasHandledAnchor;
+}
+
+function insertAfterInstructions(
+  input: unknown[],
+  memoryItem: Record<string, unknown>,
+): unknown[] {
+  const insertIndex = leadingInstructionCount(input);
+  return [
+    ...input.slice(0, insertIndex),
+    memoryItem,
+    ...input.slice(insertIndex),
+  ];
+}
+
+function shapeDerivedInput(
+  originalInput: unknown,
+  finalItems: unknown[],
+  memoryItem: Record<string, unknown> | null,
+): unknown {
+  if (Array.isArray(originalInput)) {
+    return finalItems;
+  }
+  if (typeof originalInput === "string") {
+    return memoryItem ? finalItems : originalInput;
+  }
+  return memoryItem ? finalItems : originalInput;
+}
+
+function countDescriptorTypes(input: InputItemDescriptor[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of input) {
+    const key = descriptorTypeKey(item);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function descriptorTypeKey(item: InputItemDescriptor): string {
+  if (item.kind === "instruction" || item.kind === "user_message" || item.kind === "assistant_message") {
+    return `message:${item.role ?? "unknown"}`;
+  }
+  return item.type || item.kind;
 }
 
 function formatChunk(chunk: MemoryChunk): string {
@@ -165,34 +318,6 @@ function compactPointer(pointer: Record<string, unknown>): Record<string, unknow
     }
   }
   return out;
-}
-
-function isSyntheticMemoryItem(item: unknown): boolean {
-  if (!item || typeof item !== "object") {
-    return false;
-  }
-  const record = item as Record<string, unknown>;
-  const content = record.content;
-  if (typeof content === "string") {
-    return content.includes("<context_memory>") && content.includes("</context_memory>");
-  }
-  if (!Array.isArray(content)) {
-    return false;
-  }
-  return content.some((part) =>
-    typeof part === "object" &&
-    part !== null &&
-    typeof (part as Record<string, unknown>).text === "string" &&
-    String((part as Record<string, unknown>).text).includes("<context_memory>")
-  );
-}
-
-function isUserMessageItem(item: unknown): boolean {
-  if (!item || typeof item !== "object") {
-    return false;
-  }
-  const record = item as Record<string, unknown>;
-  return record.role === "user" && !isSyntheticMemoryItem(item);
 }
 
 function leadingInstructionCount(input: unknown[]): number {

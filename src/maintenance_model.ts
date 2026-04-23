@@ -13,6 +13,17 @@ export type MaintenanceClients = {
   retention: (request: RetentionModelRequest) => Promise<unknown>;
 };
 
+export type MaintenanceModelSelection = {
+  classifier: string;
+  configuredOverride: string | null;
+  requestModel: string | null;
+  estimatedInputTokens: number;
+  chosenModel: string;
+  selectionReason: "configured_override" | "fits_small_window" | "overflow_to_large";
+  smallWindow: number;
+  largeWindow: number;
+};
+
 type JsonSchema = Record<string, unknown>;
 
 export const DEFAULT_SMALL_MAINTENANCE_MODEL = "gpt-5.4-mini";
@@ -36,9 +47,10 @@ export function createMaintenanceClients(
   config: ProxyConfig,
   requestModel: string | null,
   authHeader: string | null,
+  onSelection?: (selection: MaintenanceModelSelection) => Promise<void> | void,
 ): MaintenanceClients {
   const call = (system: string, payload: unknown, schema: JsonSchema, name: string) =>
-    callMaintenanceJson(config, requestModel, authHeader, system, payload, schema, name);
+    callMaintenanceJson(config, requestModel, authHeader, system, payload, schema, name, onSelection);
 
   return {
     taskUpdate: (request) =>
@@ -70,19 +82,23 @@ async function callMaintenanceJson(
   payload: unknown,
   schema: JsonSchema,
   schemaName: string,
+  onSelection?: (selection: MaintenanceModelSelection) => Promise<void> | void,
 ): Promise<unknown> {
   if (!authHeader) {
     throw new Error("No Authorization header or OPENAI_API_KEY available for maintenance calls");
   }
 
   const payloadText = stableJson(payload);
-  const model = selectMaintenanceModel({
+  const selection = chooseMaintenanceModel({
     configuredModel: config.maintenanceModel,
     requestModel,
     system,
     payloadText,
     schema,
+    classifier: schemaName,
   });
+  await onSelection?.(selection);
+  const model = selection.chosenModel;
   const upstreamBaseUrl = resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader);
   const response = await fetchMaintenanceJsonResponse(
     responsesUrl(upstreamBaseUrl),
@@ -169,24 +185,67 @@ export function selectMaintenanceModel(options: {
   payloadText: string;
   schema: JsonSchema;
 }): string {
-  if (options.configuredModel) {
-    return normalizeMaintenanceModel(options.configuredModel);
-  }
+  return chooseMaintenanceModel({
+    ...options,
+    classifier: "maintenance",
+  }).chosenModel;
+}
 
+function chooseMaintenanceModel(options: {
+  configuredModel: string | null;
+  requestModel: string | null;
+  system: string;
+  payloadText: string;
+  schema: JsonSchema;
+  classifier: string;
+}): MaintenanceModelSelection {
   const estimatedInputTokens = estimateMaintenanceInputTokens(
     options.system,
     options.payloadText,
     options.schema,
   );
-  const smallLimit = MAINTENANCE_MODEL_CONTEXT_WINDOWS[DEFAULT_SMALL_MAINTENANCE_MODEL] -
-    MAINTENANCE_OUTPUT_TOKEN_RESERVE;
+  const smallWindow = MAINTENANCE_MODEL_CONTEXT_WINDOWS[DEFAULT_SMALL_MAINTENANCE_MODEL];
+  const largeWindow = MAINTENANCE_MODEL_CONTEXT_WINDOWS[DEFAULT_LARGE_MAINTENANCE_MODEL];
+
+  if (options.configuredModel) {
+    return {
+      classifier: options.classifier,
+      configuredOverride: options.configuredModel,
+      requestModel: options.requestModel,
+      estimatedInputTokens,
+      chosenModel: normalizeMaintenanceModel(options.configuredModel),
+      selectionReason: "configured_override",
+      smallWindow,
+      largeWindow,
+    };
+  }
+
+  const smallLimit = smallWindow - MAINTENANCE_OUTPUT_TOKEN_RESERVE;
   if (estimatedInputTokens <= smallLimit) {
-    return DEFAULT_SMALL_MAINTENANCE_MODEL;
+    return {
+      classifier: options.classifier,
+      configuredOverride: null,
+      requestModel: options.requestModel,
+      estimatedInputTokens,
+      chosenModel: DEFAULT_SMALL_MAINTENANCE_MODEL,
+      selectionReason: "fits_small_window",
+      smallWindow,
+      largeWindow,
+    };
   }
 
   // Keep this as a fixed two-model policy for now. These are the smallest Codex-supported model
   // and the large-context model in the current GPT-5.4 family from the bundled/local catalog.
-  return DEFAULT_LARGE_MAINTENANCE_MODEL;
+  return {
+    classifier: options.classifier,
+    configuredOverride: null,
+    requestModel: options.requestModel,
+    estimatedInputTokens,
+    chosenModel: DEFAULT_LARGE_MAINTENANCE_MODEL,
+    selectionReason: "overflow_to_large",
+    smallWindow,
+    largeWindow,
+  };
 }
 
 export function normalizeMaintenanceModel(value: string): string {

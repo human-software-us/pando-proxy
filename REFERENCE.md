@@ -190,9 +190,9 @@ A per-session in-process lock serializes concurrent requests for the same sessio
 
 The current implementation eagerly maintains task-scoped memory and forwards a derived prompt view
 instead of the full raw Codex transcript. It removes any prior synthetic memory item, keeps leading
-`system`/`developer` messages, inserts the current synthetic `<context_memory>` item, then keeps
-only the latest raw user turn and items after it. That preserves current-turn tool protocol while
-dropping stale raw user/assistant history.
+`system`/`developer` messages, inserts the current synthetic `<context_memory>` item, keeps the
+latest raw user turn, and preserves only the still-needed tail of the current protocol state.
+Older handled assistant/tool protocol segments are dropped once retained memory covers them.
 
 The memory pass:
 
@@ -249,8 +249,11 @@ The derived prompt:
 1. Removes previous synthetic `<context_memory>` items.
 2. Keeps leading `system` and `developer` messages.
 3. Inserts the current synthetic memory item after those leading instructions.
-4. Keeps the latest raw user message and any following protocol items.
-5. Drops earlier raw user/assistant history from the upstream request.
+4. Keeps the latest raw user message.
+5. Preserves unfinished protocol state for the current tool cycle.
+6. Drops older handled assistant/tool protocol segments whose substance is already represented in
+   retained memory.
+7. Drops earlier raw user/assistant history from the upstream request.
 
 When no latest user message can be found, the proxy keeps the input shape unchanged except for
 synthetic-memory replacement. The canonical Codex transcript is not modified; this rewrite only

@@ -43,7 +43,12 @@ export async function runMaintenancePass(
   });
 
   const clients = instrumentMaintenanceClients(
-    createMaintenanceClients(config, requestModel, authHeader),
+    createMaintenanceClients(
+      config,
+      requestModel,
+      authHeader,
+      (selection) => logMemory(logContext, "maintenance_model_selected", selection),
+    ),
     logContext,
   );
 
@@ -173,6 +178,100 @@ export async function runMaintenancePass(
       handledInputIds: [...handled],
     },
     changed,
+  };
+}
+
+export async function runAssistantResponseReview(
+  responses: AssistantResponseExtraction[],
+  record: SessionRecord,
+  config: ProxyConfig,
+  authHeader: string | null,
+  requestModel: string | null,
+  logContext: MaintenanceLogContext = {},
+): Promise<MaintenanceResult> {
+  const handled = new Set(record.handledInputIds);
+  let state: MemoryState = record.memory;
+  const newAssistantResponses = responses.filter((response) => !handled.has(response.responseId));
+
+  await logMemory(logContext, "response_end_assistant_inputs", {
+    requestModel,
+    responseIds: responses.map((response) => response.responseId),
+    newResponseIds: newAssistantResponses.map((response) => response.responseId),
+    beforeState: summarizeState(state),
+    handledInputIds: [...handled],
+  });
+
+  if (newAssistantResponses.length === 0) {
+    await logMemory(logContext, "response_end_assistant_none", {
+      responseIds: responses.map((response) => response.responseId),
+      handledInputIds: [...handled],
+    });
+    return {
+      record,
+      changed: false,
+    };
+  }
+
+  const clients = instrumentMaintenanceClients(
+    createMaintenanceClients(
+      config,
+      requestModel,
+      authHeader,
+      (selection) => logMemory(logContext, "maintenance_model_selected", selection),
+    ),
+    logContext,
+  );
+
+  await logMemory(logContext, "assistant_responses_start", {
+    source: "response_end",
+    assistantResponses: newAssistantResponses.map(summarizeAssistantResponse),
+    beforeState: summarizeState(state),
+  });
+  const inbox = await chunkAssistantResponses(
+    newAssistantResponses,
+    state,
+    clients.assistantMemory,
+  );
+  await logMemory(logContext, "assistant_chunks_created", {
+    source: "response_end",
+    chunkIds: inbox.map((chunk) => chunk.id),
+    chunks: inbox.map(summarizeChunk),
+  });
+  const candidateIds = uniqueIds([
+    ...state.memoryLibrary.map((chunk) => chunk.id),
+    ...inbox.map((chunk) => chunk.id),
+  ]);
+  await logMemory(logContext, "assistant_retention_start", {
+    source: "response_end",
+    existingChunkIds: state.memoryLibrary.map((chunk) => chunk.id),
+    inboxChunkIds: inbox.map((chunk) => chunk.id),
+    candidateChunkIds: candidateIds,
+  });
+  state = await retainMemory(state, inbox, clients.retention);
+  await logMemory(logContext, "assistant_retention_applied", {
+    source: "response_end",
+    keptChunkIds: state.memoryLibrary.map((chunk) => chunk.id),
+    droppedChunkIds: candidateIds.filter((id) =>
+      !state.memoryLibrary.some((chunk) => chunk.id === id)
+    ),
+    afterState: summarizeState(state),
+  });
+  for (const response of newAssistantResponses) {
+    handled.add(response.responseId);
+  }
+
+  await logMemory(logContext, "response_end_assistant_applied", {
+    responseIds: newAssistantResponses.map((response) => response.responseId),
+    afterState: summarizeState(state),
+    handledInputIds: [...handled],
+  });
+
+  return {
+    record: {
+      memory: state,
+      handledInputIds: [...handled],
+    },
+    changed: true,
   };
 }
 

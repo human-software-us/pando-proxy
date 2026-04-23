@@ -248,9 +248,14 @@ drop the chunk before the resume test.
 
 The rewrite step builds a derived prompt view before forwarding upstream. It removes any prior
 synthetic memory item, keeps leading `system`/`developer` messages, inserts the latest
-`<context_memory>` item after those instructions, then keeps only the latest raw user turn and items
-after it. That keeps current-turn tool-call/tool-output protocol items while dropping stale raw
-transcript history.
+`<context_memory>` item after those instructions, keeps the latest raw user turn, preserves any
+unfinished current tool cycle, and drops older handled assistant/tool protocol segments whose
+substance is already represented in retained memory. That keeps the live protocol valid while
+avoiding replay of stale raw transcript history.
+
+The proxy also reviews completed assistant output items when an upstream response ends. Those
+assistant items are persisted and marked handled immediately so the next request can rely on the
+retained memory view instead of waiting for another inbound pass.
 
 `buildDerivedPrompt(..., { keepRawHistory: true })` preserves the old pass-through raw-history shape
 for callers that explicitly need it, but the proxy uses `keepRawHistory: false` by default when

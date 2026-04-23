@@ -20,7 +20,9 @@ The current implementation is the no-source-change proxy/wrapper path:
 - No-arg interactive use, prompt arguments, `resume`, and `fork` run through `interactive-remote` mode, where the wrapper starts `codex app-server`, inserts a websocket relay, and launches the normal Codex TUI against that relay.
 - Utility commands such as `help`, `--version`, `login`, `logout`, `mcp`, and `app-server` run in passthrough mode.
 - Logging is disabled by default. When enabled, JSONL logs include timestamps and full request/response payloads except exact credential fields.
-- Memory-enabled requests use a derived prompt view with `keepRawHistory: false`, so stale raw prior user/assistant history is removed from the upstream request while Codex's canonical transcript remains untouched.
+- Memory-enabled requests use a derived prompt view with `keepRawHistory: false`, so stale raw
+  prior user/assistant history and older handled assistant/tool protocol segments are removed from
+  the upstream request while Codex's canonical transcript remains untouched.
 
 ## Goal
 
@@ -565,8 +567,11 @@ In the proxy implementation, this synthetic memory item is inserted into the req
 
 For token savings, the proxy implements prompt rewriting as a derived prompt view. It removes prior
 synthetic memory items, keeps leading `system`/`developer` instructions, inserts the latest
-synthetic memory item, then keeps only the latest raw user turn and following protocol items. It
-does not corrupt the canonical Codex rollout or the proxy's memory snapshots.
+synthetic memory item, then keeps the latest raw user turn plus only the still-needed protocol
+tail. Older handled assistant/tool cycles can be dropped once retained memory covers them, while
+unfinished tool cycles stay intact. The proxy also reviews assistant message output at upstream
+response end so those items can be persisted and marked handled before the next request. It does
+not corrupt the canonical Codex rollout or the proxy's memory snapshots.
 
 The key distinction: memory retention decides what remains relevant; transcript persistence preserves what happened.
 

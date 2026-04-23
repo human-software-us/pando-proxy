@@ -28,12 +28,41 @@ export type ExtractedInputs = {
   toolResults: ToolResultEnvelope[];
 };
 
+export type InputItemDescriptor = {
+  index: number;
+  item: unknown;
+  type: string;
+  role: string | null;
+  kind:
+    | "instruction"
+    | "user_message"
+    | "assistant_message"
+    | "tool_call"
+    | "tool_output"
+    | "reasoning"
+    | "other";
+  id?: string;
+  callId?: string;
+  text?: string;
+  isSyntheticMemory: boolean;
+  isOperationalContext: boolean;
+  ref: string;
+};
+
+export function inputItems(input: unknown): unknown[] {
+  return Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+}
+
+export async function describeInputItems(input: unknown): Promise<InputItemDescriptor[]> {
+  const items = inputItems(input);
+  return await Promise.all(items.map((item, index) => describeInputItem(item, index)));
+}
+
 export async function extractInputs(
   body: Record<string, unknown>,
   state: MemoryState,
 ): Promise<ExtractedInputs> {
-  const input = body.input;
-  const items = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  const items = inputItems(body.input);
   const callsById = new Map<string, { toolName: string; params?: Record<string, unknown> }>();
 
   for (const item of items) {
@@ -63,55 +92,45 @@ export async function extractInputs(
   const userMessages: UserMessageExtraction[] = [];
   const assistantResponses: AssistantResponseExtraction[] = [];
   const toolResults: ToolResultEnvelope[] = [];
+  const descriptors = await describeInputItems(items);
 
-  for (let index = 0; index < items.length; index += 1) {
-    const item = items[index];
-    if (typeof item === "string") {
-      userMessages.push({
-        messageId: `user_${await shortHash(`string:${index}:${item}`)}`,
-        text: item,
-      });
-      continue;
-    }
-    if (!isRecord(item)) {
-      continue;
-    }
-
-    if (isUserMessage(item)) {
-      const text = extractMessageText(item);
+  for (const descriptor of descriptors) {
+    const item = descriptor.item;
+    if (descriptor.kind === "user_message") {
       if (
-        text.trim().length > 0 && !isSyntheticMemoryText(text) && !isOperationalContextText(text)
+        descriptor.text && descriptor.text.trim().length > 0 && !descriptor.isSyntheticMemory &&
+        !descriptor.isOperationalContext && descriptor.id
       ) {
         userMessages.push({
-          messageId: await itemId("user", index, item),
-          text,
+          messageId: descriptor.id,
+          text: descriptor.text,
         });
       }
       continue;
     }
 
-    if (isAssistantMessage(item)) {
-      const text = extractMessageText(item);
-      if (text.trim().length > 0) {
+    if (descriptor.kind === "assistant_message") {
+      if (descriptor.text && descriptor.text.trim().length > 0 && descriptor.id) {
         assistantResponses.push({
-          responseId: await itemId("assistant", index, item),
-          text,
+          responseId: descriptor.id,
+          text: descriptor.text,
         });
       }
       continue;
     }
 
-    if (isToolOutput(item)) {
+    if (descriptor.kind === "tool_output" && isRecord(item) && descriptor.id) {
       const callId = typeof item.call_id === "string"
         ? item.call_id
         : typeof item.id === "string"
         ? item.id
         : "";
       const call = callId ? callsById.get(callId) : undefined;
-      const toolName = extractToolName(item) ?? call?.toolName ?? `unknown_tool_${callId || index}`;
+      const toolName = extractToolName(item) ?? call?.toolName ??
+        `unknown_tool_${callId || descriptor.index}`;
       const { serverName } = splitQualifiedToolName(toolName);
       toolResults.push({
-        id: await itemId("tool", index, item),
+        id: descriptor.id,
         origin: item.type === "mcp_tool_call_output" || serverName ? "mcp" : "native",
         toolName,
         serverName,
@@ -123,6 +142,152 @@ export async function extractInputs(
   }
 
   return { userMessages, assistantResponses, toolResults };
+}
+
+async function describeInputItem(item: unknown, index: number): Promise<InputItemDescriptor> {
+  if (typeof item === "string") {
+    const id = `user_${await shortHash(`string:${index}:${item}`)}`;
+    return {
+      index,
+      item,
+      type: "string",
+      role: "user",
+      kind: "user_message",
+      id,
+      text: item,
+      isSyntheticMemory: isSyntheticMemoryText(item),
+      isOperationalContext: isOperationalContextText(item),
+      ref: id,
+    };
+  }
+  if (!isRecord(item)) {
+    return {
+      index,
+      item,
+      type: typeof item,
+      role: null,
+      kind: "other",
+      isSyntheticMemory: false,
+      isOperationalContext: false,
+      ref: `${typeof item}:${index}`,
+    };
+  }
+
+  const type = String(item.type ?? "");
+  const role = typeof item.role === "string" ? item.role : null;
+  const callId = typeof item.call_id === "string"
+    ? item.call_id
+    : typeof item.id === "string" && (type === "function_call" || type.endsWith("_tool_call"))
+    ? item.id
+    : undefined;
+
+  if (role === "system" || role === "developer") {
+    return {
+      index,
+      item,
+      type,
+      role,
+      kind: "instruction",
+      callId,
+      isSyntheticMemory: false,
+      isOperationalContext: false,
+      ref: `${type || "message"}:${role}:${index}`,
+    };
+  }
+
+  if (isUserMessage(item)) {
+    const text = extractMessageText(item);
+    const id = await inputItemId("user", index, item);
+    return {
+      index,
+      item,
+      type,
+      role,
+      kind: "user_message",
+      id,
+      callId,
+      text,
+      isSyntheticMemory: isSyntheticMemoryText(text),
+      isOperationalContext: isOperationalContextText(text),
+      ref: id,
+    };
+  }
+
+  if (isAssistantMessage(item)) {
+    const text = extractMessageText(item);
+    const id = await inputItemId("assistant", index, item);
+    return {
+      index,
+      item,
+      type,
+      role,
+      kind: "assistant_message",
+      id,
+      callId,
+      text,
+      isSyntheticMemory: false,
+      isOperationalContext: false,
+      ref: id,
+    };
+  }
+
+  if (isToolOutput(item)) {
+    const id = await inputItemId("tool", index, item);
+    return {
+      index,
+      item,
+      type,
+      role,
+      kind: "tool_output",
+      id,
+      callId,
+      isSyntheticMemory: false,
+      isOperationalContext: false,
+      ref: id,
+    };
+  }
+
+  if (
+    type === "function_call" || type === "custom_tool_call" || type === "mcp_tool_call" ||
+    "arguments" in item
+  ) {
+    return {
+      index,
+      item,
+      type,
+      role,
+      kind: "tool_call",
+      callId,
+      isSyntheticMemory: false,
+      isOperationalContext: false,
+      ref: `${type || "tool_call"}:${callId ?? index}`,
+    };
+  }
+
+  if (type === "reasoning") {
+    return {
+      index,
+      item,
+      type,
+      role,
+      kind: "reasoning",
+      isSyntheticMemory: false,
+      isOperationalContext: false,
+      ref: `reasoning:${index}`,
+    };
+  }
+
+  return {
+    index,
+    item,
+    type,
+    role,
+    kind: "other",
+    callId,
+    isSyntheticMemory: false,
+    isOperationalContext: false,
+    ref: `${type || "item"}:${index}`,
+  };
 }
 
 export function isPandoResult(
@@ -258,7 +423,7 @@ function parseMaybeJson(value: unknown): unknown {
   }
 }
 
-async function itemId(prefix: string, index: number, item: unknown): Promise<string> {
+export async function inputItemId(prefix: string, index: number, item: unknown): Promise<string> {
   const explicit = isRecord(item) && typeof item.id === "string" ? item.id : null;
   if (explicit) {
     return `${prefix}_${explicit}`;

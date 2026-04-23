@@ -40,7 +40,9 @@ transport and memory layer.
 - Memory is task-scoped. User messages, assistant responses, and tool outputs are retained only when
   they support live tasks.
 - Prefer derived context over raw history. Prior synthetic memory is removed, stale raw transcript
-  is dropped, and a fresh `<context_memory>` item is injected for the upstream model.
+  is dropped, and a fresh `<context_memory>` item is injected for the upstream model. In
+  particular, once prior assistant/tool protocol segments have been handled and covered by retained
+  memory, the rewrite step may drop those raw segments instead of replaying them upstream.
 - Use deterministic code where shapes are known. Pando tool outputs are chunked in code because
   their result formats are controlled.
 - Use model judgment where shapes are arbitrary. Non-Pando tool outputs and assistant responses use
@@ -69,8 +71,11 @@ Each inbound request is handled in this order:
    maintenance model with live task/user-message context.
 5. Run retention over existing and new chunks.
 6. Persist the updated session memory.
-7. Rewrite the upstream request with a fresh `<context_memory>` item and the current raw turn.
+7. Rewrite the upstream request with a fresh `<context_memory>` item and the current raw turn,
+   minus older handled protocol segments that are already represented in retained memory.
 8. Forward the request to the real upstream provider and stream the response back to Codex.
+9. When the upstream response ends, review any assistant message items immediately, persist them,
+   and mark them handled before the next inbound request.
 
 ## Non-Goals
 
