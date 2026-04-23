@@ -37,6 +37,9 @@ export async function extractNewRequestSources(
     if (!source || processedSourceIds.has(source.sourceId)) {
       continue;
     }
+    if (source.sourceKind !== "user") {
+      continue;
+    }
     out.push(source);
   }
 
