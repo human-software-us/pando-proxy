@@ -1,5 +1,10 @@
 import { stableJson } from "./json.ts";
 import { shortHash } from "./hash.ts";
+import {
+  MaintenanceExtraContextItem,
+  parseInfoRequestResponse,
+  resolveRequestedInfo,
+} from "./maintenance_info.ts";
 import { isRecord, MemoryChunk, MemoryState, unique } from "./memory_state.ts";
 import { AssistantResponseExtraction } from "./tool_results.ts";
 
@@ -8,6 +13,9 @@ export type AssistantMemoryClient = (request: AssistantMemoryRequest) => Promise
 export type AssistantMemoryRequest = {
   tasks: MemoryState["tasks"];
   activeTaskId: string | null;
+  keptUserMessages: MemoryState["keptUserMessages"];
+  infoRequestAttempt: boolean;
+  extraContext: MaintenanceExtraContextItem[];
   responses: AssistantResponseExtraction[];
   validationErrors?: string[];
 };
@@ -35,8 +43,38 @@ export async function chunkAssistantResponses(
   const first = await safeAssistantMemoryCall(client, {
     tasks: state.tasks,
     activeTaskId: state.activeTaskId,
+    keptUserMessages: state.keptUserMessages,
+    infoRequestAttempt: false,
+    extraContext: [],
     responses,
   });
+  const infoRequest = parseInfoRequestResponse(first);
+  if (infoRequest.needsMoreInfo) {
+    const second = await safeAssistantMemoryCall(client, {
+      tasks: state.tasks,
+      activeTaskId: state.activeTaskId,
+      keptUserMessages: state.keptUserMessages,
+      infoRequestAttempt: true,
+      extraContext: resolveRequestedInfo(infoRequest.requestedInfo, {
+        tasks: state.tasks,
+        keptUserMessages: state.keptUserMessages,
+        memoryChunks: state.memoryLibrary,
+        assistantResponses: responses,
+      }),
+      responses,
+    });
+    if (parseInfoRequestResponse(second).needsMoreInfo) {
+      throw new Error(
+        "Assistant memory model requested more info after its single allowed request",
+      );
+    }
+    const secondParsed = validateAssistantMemoryResponse(second, responses, state);
+    if (!secondParsed.ok) {
+      throw new Error(`Assistant memory validation failed: ${secondParsed.errors.join("; ")}`);
+    }
+    return await materializeAssistantChunks(secondParsed.response, responses);
+  }
+
   const parsed = validateAssistantMemoryResponse(first, responses, state);
   if (parsed.ok) {
     return await materializeAssistantChunks(parsed.response, responses);
@@ -45,15 +83,23 @@ export async function chunkAssistantResponses(
   const second = await safeAssistantMemoryCall(client, {
     tasks: state.tasks,
     activeTaskId: state.activeTaskId,
+    keptUserMessages: state.keptUserMessages,
+    infoRequestAttempt: false,
+    extraContext: [],
     responses,
     validationErrors: parsed.errors,
   });
+  if (parseInfoRequestResponse(second).needsMoreInfo) {
+    throw new Error(
+      "Assistant memory model requested more info instead of fixing validation errors",
+    );
+  }
   const reparsed = validateAssistantMemoryResponse(second, responses, state);
   if (reparsed.ok) {
     return await materializeAssistantChunks(reparsed.response, responses);
   }
 
-  return [];
+  throw new Error(`Assistant memory validation failed: ${reparsed.errors.join("; ")}`);
 }
 
 export function validateAssistantMemoryResponse(

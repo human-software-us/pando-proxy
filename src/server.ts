@@ -2,12 +2,21 @@ import { authHeaderFor, parseJsonBody, requestModel, sessionKeyFor } from "./cod
 import { ProxyConfig } from "./config.ts";
 import { createLogger, loggableBody, redactHeaders } from "./logger.ts";
 import { runMaintenancePass } from "./memory_pipeline.ts";
+import {
+  estimateTokensForValue,
+  memoryStateMetrics,
+  METRICS_EVENT_PREFIX,
+  METRICS_MARKER,
+  requestContextMetrics,
+  TokenUsageTracker,
+} from "./metrics.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
 import { SessionStore } from "./store.ts";
 import { forwardResponsesRequest } from "./upstream.ts";
 
 export function createHandler(config: ProxyConfig, store = new SessionStore(config.stateDir)) {
   const logger = createLogger(config.logFile);
+  const usageTracker = new TokenUsageTracker();
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
 
@@ -31,16 +40,32 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
     }
 
     const authHeader = authHeaderFor(request, config.apiKey);
+    const sessionKey = await sessionKeyFor(request, body);
+    const requestId = crypto.randomUUID();
     await logger.log("incoming_request", {
+      requestId,
+      sessionKey,
       method: request.method,
       path: url.pathname,
       headers: redactHeaders(request.headers),
       body: loggableBody(body),
       memoryEnabled: config.memoryEnabled,
     });
+    await logger.log(`${METRICS_EVENT_PREFIX}incoming_context`, {
+      marker: METRICS_MARKER,
+      requestId,
+      sessionKey,
+      memoryEnabled: config.memoryEnabled,
+      ...requestContextMetrics(body),
+    });
     if (!config.memoryEnabled) {
       try {
-        return await forwardResponsesRequest(config, { authHeader, body, logger });
+        return await forwardResponsesRequest(config, {
+          authHeader,
+          body,
+          logger,
+          metrics: upstreamMetricsOptions(sessionKey, requestId, body, usageTracker),
+        });
       } catch (error) {
         return jsonResponse(
           {
@@ -51,8 +76,6 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
         );
       }
     }
-
-    const sessionKey = await sessionKeyFor(request, body);
 
     try {
       const rewritten = await store.withLock(sessionKey, async () => {
@@ -68,6 +91,7 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
         if (result.changed) {
           await store.save(sessionKey, result.record);
           await logger.log("memory_state_saved", {
+            requestId,
             sessionKey,
             taskUpdateSeq: result.record.memory.taskUpdateSeq,
             taskIds: result.record.memory.tasks.map((task) => task.id),
@@ -79,19 +103,46 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
           });
         } else {
           await logger.log("memory_state_unchanged", {
+            requestId,
             sessionKey,
             taskUpdateSeq: result.record.memory.taskUpdateSeq,
             handledInputIds: result.record.handledInputIds,
           });
         }
-        return rewriteRequestWithMemory(
+        await logger.log(`${METRICS_EVENT_PREFIX}memory_state`, {
+          marker: METRICS_MARKER,
+          requestId,
+          sessionKey,
+          changed: result.changed,
+          ...memoryStateMetrics(result.record.memory, result.record.handledInputIds),
+        });
+        const rewritten = rewriteRequestWithMemory(
           body,
           result.record.memory,
           config.syntheticCharBudget,
         );
+        await logger.log(`${METRICS_EVENT_PREFIX}rewritten_context`, {
+          marker: METRICS_MARKER,
+          requestId,
+          sessionKey,
+          rawApproxInputTokens: estimateTokensForValue(body),
+          rewrittenApproxInputTokens: estimateTokensForValue(rewritten),
+          approxInputTokenDelta: estimateTokensForValue(rewritten) - estimateTokensForValue(body),
+          rawInputItemCount: Array.isArray(body.input) ? body.input.length : undefined,
+          rewrittenInputItemCount: Array.isArray(rewritten.input)
+            ? rewritten.input.length
+            : undefined,
+          ...requestContextMetrics(rewritten),
+        });
+        return rewritten;
       });
 
-      return await forwardResponsesRequest(config, { authHeader, body: rewritten, logger });
+      return await forwardResponsesRequest(config, {
+        authHeader,
+        body: rewritten,
+        logger,
+        metrics: upstreamMetricsOptions(sessionKey, requestId, rewritten, usageTracker),
+      });
     } catch (error) {
       return jsonResponse(
         {
@@ -101,6 +152,21 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
         502,
       );
     }
+  };
+}
+
+function upstreamMetricsOptions(
+  sessionKey: string,
+  requestId: string,
+  body: Record<string, unknown>,
+  usageTracker: TokenUsageTracker,
+) {
+  return {
+    sessionKey,
+    requestId,
+    approxInputTokens: estimateTokensForValue(body),
+    onUsage: (usage: Parameters<TokenUsageTracker["add"]>[1]) =>
+      usageTracker.add(sessionKey, usage),
   };
 }
 

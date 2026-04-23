@@ -3,6 +3,7 @@ import {
   buildRemoteCodexArgs,
   classifyCodexRunMode,
   ensureExecJsonArg,
+  findCodexCommand,
   hasCodexRemoteArg,
 } from "./codex_modes.ts";
 import { CliOptions, expandHome, loadConfig, ProxyConfig } from "./config.ts";
@@ -12,6 +13,9 @@ import { startWebSocketRelayOnAvailablePort } from "./websocket_relay.ts";
 
 export const DEFAULT_WRAPPER_PORT_START = 40123;
 export const PANDO_PROVIDER_ID = "pando-proxy";
+export const CODEX_ALIAS_COMMAND = "npx -y pando-proxy";
+export const WRAPPER_PREFERENCES_RELATIVE_PATH = ".pando-proxy/wrapper-preferences.json";
+const SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS = 1_500;
 
 export type WrapperOptions = CliOptions & {
   portStart?: number;
@@ -35,6 +39,38 @@ type StartedCodexAppServer = {
   url: string;
   port: number;
   isExited: () => boolean;
+};
+
+export type WrapperPreferences = {
+  runCount: number;
+  firstRunAt?: string;
+  lastRunAt?: string;
+  codexAliasPrompt?: {
+    response: "yes" | "no";
+    respondedAt: string;
+    install?: CodexAliasInstallResult;
+  };
+};
+
+export type CodexAliasInstallResult = {
+  status: "installed" | "already_present" | "failed";
+  path?: string;
+  shell?: string;
+  message?: string;
+};
+
+export type CodexAliasTarget = {
+  path: string;
+  shell: string;
+  snippet: string;
+};
+
+export type CodexAliasPromptOptions = {
+  homeDir?: string | null;
+  shell?: string | null;
+  isInteractive?: boolean;
+  confirmAlias?: (message: string) => boolean;
+  now?: () => Date;
 };
 
 export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
@@ -106,6 +142,8 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     return 0;
   }
 
+  await maybeOfferCodexAlias();
+
   const baseConfig = loadConfig(parsed.options);
   const logFile = await resolveWrapperLogFile(parsed.options, baseConfig.stateDir);
   const portStart = parsed.options.portStart ?? DEFAULT_WRAPPER_PORT_START;
@@ -113,6 +151,7 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   const logger = createLogger(logFile);
   const observer = new CodexEventObserver(logger);
   const mode = classifyCodexRunMode(parsed.codexArgs);
+  const cleanup = installProxyCleanup(started.server, logger);
 
   if (logFile) {
     console.error(`Pando Proxy log: ${logFile}`);
@@ -149,8 +188,296 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     }
     throw error;
   } finally {
-    await started.server.shutdown();
+    await cleanup.shutdown("wrapper_exit");
+    cleanup.dispose();
   }
+}
+
+export async function maybeOfferCodexAlias(
+  options: CodexAliasPromptOptions = {},
+): Promise<void> {
+  const homeDir = options.homeDir ?? userHomeDir();
+  if (!homeDir) {
+    return;
+  }
+
+  const now = (options.now ?? (() => new Date()))().toISOString();
+  const preferencesPath = wrapperPreferencesPath(homeDir);
+  const preferences = await loadWrapperPreferences(preferencesPath);
+  const previousRunCount = preferences.runCount;
+
+  preferences.runCount += 1;
+  preferences.firstRunAt ??= now;
+  preferences.lastRunAt = now;
+
+  if (preferences.codexAliasPrompt?.response || previousRunCount < 1) {
+    await saveWrapperPreferences(preferencesPath, preferences);
+    return;
+  }
+
+  if (!(options.isInteractive ?? isInteractiveTerminal())) {
+    await saveWrapperPreferences(preferencesPath, preferences);
+    return;
+  }
+
+  const confirmAlias = options.confirmAlias ?? ((message: string) => confirm(message));
+  const accepted = confirmAlias(
+    `pando-proxy: alias "codex" to "${CODEX_ALIAS_COMMAND}" for this user?`,
+  );
+
+  if (!accepted) {
+    preferences.codexAliasPrompt = { response: "no", respondedAt: now };
+    await saveWrapperPreferences(preferencesPath, preferences);
+    return;
+  }
+
+  let install: CodexAliasInstallResult;
+  try {
+    install = await installCodexAlias(homeDir, options.shell ?? Deno.env.get("SHELL") ?? null);
+    if (install.status === "installed") {
+      console.error(
+        `pando-proxy: added codex alias to ${install.path}. Restart your shell or source that file to use it.`,
+      );
+    } else if (install.status === "already_present") {
+      console.error(`pando-proxy: codex alias already exists in ${install.path}.`);
+    }
+  } catch (error) {
+    install = {
+      status: "failed",
+      message: messageFor(error),
+    };
+    console.error(`pando-proxy: failed to add codex alias: ${install.message}`);
+  }
+
+  preferences.codexAliasPrompt = {
+    response: "yes",
+    respondedAt: now,
+    install,
+  };
+  await saveWrapperPreferences(preferencesPath, preferences);
+}
+
+export async function installCodexAlias(
+  homeDir: string,
+  shell: string | null,
+  os = Deno.build.os,
+): Promise<CodexAliasInstallResult> {
+  const target = codexAliasTarget(homeDir, shell, os);
+  await Deno.mkdir(dirname(target.path), { recursive: true });
+
+  let existing = "";
+  try {
+    existing = await Deno.readTextFile(target.path);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+
+  if (codexAliasAlreadyPresent(existing)) {
+    return { status: "already_present", path: target.path, shell: target.shell };
+  }
+
+  const separator = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
+  await Deno.writeTextFile(target.path, `${separator}${target.snippet}`, {
+    append: true,
+    create: true,
+  });
+
+  return { status: "installed", path: target.path, shell: target.shell };
+}
+
+export function codexAliasTarget(
+  homeDir: string,
+  shell: string | null,
+  os = Deno.build.os,
+): CodexAliasTarget {
+  if (os === "windows") {
+    return {
+      path: joinPath(homeDir, "Documents/PowerShell/Microsoft.PowerShell_profile.ps1"),
+      shell: "powershell",
+      snippet: aliasSnippet(`function codex { npx -y pando-proxy @args }`),
+    };
+  }
+
+  const shellName = basename(shell ?? "").toLowerCase();
+  if (shellName === "fish") {
+    return {
+      path: joinPath(homeDir, ".config/fish/config.fish"),
+      shell: "fish",
+      snippet: aliasSnippet(`alias codex "${CODEX_ALIAS_COMMAND}"`),
+    };
+  }
+
+  if (shellName === "bash") {
+    return {
+      path: joinPath(homeDir, os === "darwin" ? ".bash_profile" : ".bashrc"),
+      shell: "bash",
+      snippet: aliasSnippet(`alias codex='${CODEX_ALIAS_COMMAND}'`),
+    };
+  }
+
+  if (shellName === "zsh" || shellName === "") {
+    return {
+      path: joinPath(homeDir, ".zshrc"),
+      shell: "zsh",
+      snippet: aliasSnippet(`alias codex='${CODEX_ALIAS_COMMAND}'`),
+    };
+  }
+
+  return {
+    path: joinPath(homeDir, ".profile"),
+    shell: shellName,
+    snippet: aliasSnippet(`alias codex='${CODEX_ALIAS_COMMAND}'`),
+  };
+}
+
+export function wrapperPreferencesPath(homeDir: string): string {
+  return joinPath(homeDir, WRAPPER_PREFERENCES_RELATIVE_PATH);
+}
+
+async function loadWrapperPreferences(path: string): Promise<WrapperPreferences> {
+  try {
+    return parseWrapperPreferences(await Deno.readTextFile(path));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { runCount: 0 };
+    }
+    throw error;
+  }
+}
+
+function parseWrapperPreferences(text: string): WrapperPreferences {
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") {
+      return { runCount: 0 };
+    }
+    const record = parsed as Record<string, unknown>;
+    return {
+      ...record,
+      runCount: typeof record.runCount === "number" && record.runCount >= 0
+        ? Math.floor(record.runCount)
+        : 0,
+    } as WrapperPreferences;
+  } catch {
+    return { runCount: 0 };
+  }
+}
+
+async function saveWrapperPreferences(
+  path: string,
+  preferences: WrapperPreferences,
+): Promise<void> {
+  await Deno.mkdir(dirname(path), { recursive: true });
+  await Deno.writeTextFile(path, `${JSON.stringify(preferences, null, 2)}\n`);
+}
+
+function codexAliasAlreadyPresent(text: string): boolean {
+  return text.includes(">>> pando-proxy codex alias >>>") ||
+    /alias\s+codex=.*pando-proxy/.test(text) ||
+    /function\s+codex\s*\{[^}]*pando-proxy/s.test(text);
+}
+
+function aliasSnippet(aliasLine: string): string {
+  return [
+    "# >>> pando-proxy codex alias >>>",
+    aliasLine,
+    "# <<< pando-proxy codex alias <<<",
+    "",
+  ].join("\n");
+}
+
+function userHomeDir(): string | null {
+  return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? null;
+}
+
+function isInteractiveTerminal(): boolean {
+  try {
+    return Deno.stdin.isTerminal() && Deno.stderr.isTerminal();
+  } catch {
+    return false;
+  }
+}
+
+function installProxyCleanup(
+  server: Deno.HttpServer,
+  logger: ReturnType<typeof createLogger>,
+): {
+  shutdown: (reason: string, timeoutMs?: number) => Promise<void>;
+  dispose: () => void;
+} {
+  let shutdown: Promise<void> | null = null;
+  let signalExitStarted = false;
+  const signalHandlers: Array<{ signal: Deno.Signal; handler: () => void }> = [];
+
+  const shutdownOnce = (reason: string, timeoutMs?: number): Promise<void> => {
+    shutdown ??= shutdownProxyServer(server, logger, reason, timeoutMs);
+    return shutdown;
+  };
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const handler = () => {
+      if (signalExitStarted) {
+        Deno.exit(exitCodeForSignal(signal));
+      }
+      signalExitStarted = true;
+      void (async () => {
+        await logger.log("wrapper_signal", { signal }).catch(() => {});
+        await shutdownOnce(`signal:${signal}`, SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS);
+        Deno.exit(exitCodeForSignal(signal));
+      })();
+    };
+
+    try {
+      Deno.addSignalListener(signal, handler);
+      signalHandlers.push({ signal, handler });
+    } catch {
+      // Some platforms do not support every signal. Normal finally cleanup still applies.
+    }
+  }
+
+  return {
+    shutdown: shutdownOnce,
+    dispose: () => {
+      for (const { signal, handler } of signalHandlers) {
+        try {
+          Deno.removeSignalListener(signal, handler);
+        } catch {
+          // Listener may already have been removed during process teardown.
+        }
+      }
+    },
+  };
+}
+
+async function shutdownProxyServer(
+  server: Deno.HttpServer,
+  logger: ReturnType<typeof createLogger>,
+  reason: string,
+  timeoutMs?: number,
+): Promise<void> {
+  try {
+    const shutdown = server.shutdown().then(() => "shutdown" as const);
+    const result = timeoutMs === undefined ? await shutdown : await withTimeout(
+      shutdown,
+      timeoutMs,
+      "timeout" as const,
+    );
+    await logger.log("wrapper_proxy_shutdown", {
+      reason,
+      completed: result === "shutdown",
+    }).catch(() => {});
+  } catch (error) {
+    await logger.log("wrapper_proxy_shutdown_error", {
+      reason,
+      message: messageFor(error),
+    }).catch(() => {});
+  }
+}
+
+function exitCodeForSignal(signal: Deno.Signal): number {
+  return signal === "SIGINT" ? 130 : 143;
 }
 
 async function runCodexPassthrough(
@@ -171,7 +498,7 @@ async function runCodexExecJson(
   logger: ReturnType<typeof createLogger>,
   observer: CodexEventObserver,
 ): Promise<number> {
-  const args = buildCodexArgs(ensureExecJsonArg(codexArgs), config);
+  const args = buildCodexExecArgs(ensureExecJsonArg(codexArgs), config);
   await logger.log("wrapper_codex_start", { mode: "exec-json", codexArgs: args });
 
   try {
@@ -420,24 +747,42 @@ export async function resolveWrapperLogFile(
 }
 
 export function buildCodexArgs(codexArgs: string[], config: ProxyConfig): string[] {
+  return [...codexProviderOverrideArgs(config), ...codexArgs];
+}
+
+export function buildCodexExecArgs(codexArgs: string[], config: ProxyConfig): string[] {
+  const command = findCodexCommand(codexArgs);
+  if (!command || (command.name !== "exec" && command.name !== "e")) {
+    return buildCodexArgs(codexArgs, config);
+  }
+
+  return [
+    ...codexArgs.slice(0, command.index + 1),
+    ...codexProviderOverrideArgs(config),
+    ...codexArgs.slice(command.index + 1),
+  ];
+}
+
+export function codexProviderOverrideArgs(config: Pick<ProxyConfig, "host" | "port">): string[] {
+  return ["-c", `model_provider="${PANDO_PROVIDER_ID}"`, ...codexProviderConfigArgs(config)];
+}
+
+export function codexProviderConfigArgs(config: Pick<ProxyConfig, "host" | "port">): string[] {
+  const prefix = `model_providers.${PANDO_PROVIDER_ID}`;
   return [
     "-c",
-    `model_provider="${PANDO_PROVIDER_ID}"`,
+    `${prefix}.name="Pando Memory Proxy"`,
     "-c",
-    codexProviderConfigArg(config),
-    ...codexArgs,
+    `${prefix}.base_url="http://${config.host}:${config.port}/v1"`,
+    "-c",
+    `${prefix}.wire_api="responses"`,
+    "-c",
+    `${prefix}.requires_openai_auth=true`,
   ];
 }
 
 export function codexProviderConfigArg(config: Pick<ProxyConfig, "host" | "port">): string {
-  return [
-    `model_providers.${PANDO_PROVIDER_ID}={`,
-    'name = "Pando Memory Proxy",',
-    `base_url = "http://${config.host}:${config.port}/v1",`,
-    'wire_api = "responses",',
-    "requires_openai_auth = true",
-    "}",
-  ].join(" ");
+  return codexProviderConfigArgs(config).join(" ");
 }
 
 export async function createUniqueLogFile(stateDir: string): Promise<string> {
@@ -478,7 +823,7 @@ Proxy wrapper options:
   --proxy-host <host>                Default: 127.0.0.1
   --proxy-port-start <port>          Default: ${DEFAULT_WRAPPER_PORT_START}
   --proxy-upstream-base-url <url>    Default: auto
-  --proxy-maintenance-model <model>  Default: incoming request model
+  --proxy-maintenance-model <small|large> Default: auto small/large selector
   --proxy-state-dir <path>           Default: ~/.pando-proxy
   --proxy-no-memory                  Bypass memory maintenance/injection
   --proxy-log                        Enable full JSONL logging to ~/.pando-proxy/logs
@@ -534,10 +879,11 @@ async function waitForTcpOrExit(
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    const exited = await Promise.race([
+    const exited = await withTimeout(
       status.then((commandStatus) => ({ exited: true as const, status: commandStatus })),
-      delay(50).then(() => ({ exited: false as const })),
-    ]);
+      50,
+      { exited: false as const },
+    );
     if (exited.exited) {
       throw new Error(`codex app-server exited before listening with code ${exited.status.code}`);
     }
@@ -569,10 +915,7 @@ async function stopChild(
     }
   }
 
-  await Promise.race([
-    status.catch(() => undefined),
-    delay(1_000),
-  ]);
+  await withTimeout(status.catch(() => undefined), 1_000, undefined);
 
   if (!isExited()) {
     try {
@@ -593,6 +936,31 @@ function isConnectionRefused(error: unknown): boolean {
     ));
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function withTimeout<T, F>(promise: Promise<T>, ms: number, fallback: F): Promise<T | F> {
+  let timer: number | undefined;
+  const timeout = new Promise<F>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  });
+}
+
+function joinPath(root: string, relative: string): string {
+  return `${root.replace(/[\\\/]+$/, "")}/${relative.replace(/^[\\\/]+/, "")}`;
+}
+
+function dirname(path: string): string {
+  const normalized = path.replaceAll("\\", "/");
+  const index = normalized.lastIndexOf("/");
+  return index >= 0 ? normalized.slice(0, index) : ".";
+}
+
+function basename(path: string): string {
+  const normalized = path.replaceAll("\\", "/").replace(/[\/]+$/, "");
+  const index = normalized.lastIndexOf("/");
+  return index >= 0 ? normalized.slice(index + 1) : normalized;
 }

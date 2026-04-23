@@ -187,6 +187,8 @@ function instrumentMaintenanceClients(
         latestUserMessageId: request.latestUserMessage.messageId,
         taskIds: request.tasks.map((task) => task.id),
         keptUserMessageIds: request.keptUserMessages.map((message) => message.messageId),
+        infoRequestAttempt: request.infoRequestAttempt,
+        extraContext: request.extraContext.map(summarizeExtraContext),
         validationErrors: request.validationErrors,
       });
       try {
@@ -208,6 +210,9 @@ function instrumentMaintenanceClients(
       await logMemory(logContext, "assistant_memory_model_request", {
         taskIds: request.tasks.map((task) => task.id),
         activeTaskId: request.activeTaskId,
+        keptUserMessageIds: request.keptUserMessages.map((message) => message.messageId),
+        infoRequestAttempt: request.infoRequestAttempt,
+        extraContext: request.extraContext.map(summarizeExtraContext),
         responseIds: request.responses.map((response) => response.responseId),
         assistantResponses: request.responses.map(summarizeAssistantResponse),
         validationErrors: request.validationErrors,
@@ -229,6 +234,9 @@ function instrumentMaintenanceClients(
       await logMemory(logContext, "chunk_batch_model_request", {
         taskIds: request.tasks.map((task) => task.id),
         activeTaskId: request.activeTaskId,
+        keptUserMessageIds: request.keptUserMessages.map((message) => message.messageId),
+        infoRequestAttempt: request.infoRequestAttempt,
+        extraContext: request.extraContext.map(summarizeExtraContext),
         resultIds: request.results.map((result) => result.id),
         results: request.results.map(summarizeToolResult),
         validationErrors: request.validationErrors,
@@ -340,6 +348,14 @@ function summarizeChunk(chunk: MemoryChunk): Record<string, unknown> {
     itemIndex: typeof pointer.itemIndex === "number" ? pointer.itemIndex : undefined,
     changedPathCount: Array.isArray(pointer.changedPaths) ? pointer.changedPaths.length : undefined,
     pointerKeys: Object.keys(pointer).sort(),
+  };
+}
+
+function summarizeExtraContext(item: Record<string, unknown>): Record<string, unknown> {
+  return {
+    type: item.type,
+    id: item.id,
+    dataShape: shapeOf(item.data),
   };
 }
 

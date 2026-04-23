@@ -1,4 +1,4 @@
-import { applyTaskUpdate, validateTaskUpdate } from "../src/task_update.ts";
+import { applyTaskUpdate, onNewUserMessage, validateTaskUpdate } from "../src/task_update.ts";
 import { MemoryState } from "../src/memory_state.ts";
 
 Deno.test("task update validation enforces complete previous-task and message actions", () => {
@@ -66,6 +66,75 @@ Deno.test("task update apply remaps merged task ids and prunes completed tasks",
   assertEquals(next.activeTaskId, "task_2");
   assertEquals(next.keptUserMessages[0].taskIds, ["task_2"]);
   assertEquals(next.memoryLibrary[0].taskIds, ["task_2"]);
+});
+
+Deno.test("task update allows one request for extra memory context", async () => {
+  const previous: MemoryState = {
+    taskUpdateSeq: 1,
+    tasks: [{ id: "task_1", text: "Inspect previous result", status: "in_progress", kind: "do" }],
+    activeTaskId: "task_1",
+    keptUserMessages: [{
+      messageId: "user_1",
+      summary: "Inspect previous result",
+      taskIds: ["task_1"],
+    }],
+    memoryLibrary: [{
+      id: "chunk_tool",
+      title: "Tool result",
+      summary: "The tool returned 4 rows.",
+      kind: "tool/result",
+      taskIds: ["task_1"],
+      source: "tool",
+    }],
+  };
+  const requests: unknown[] = [];
+
+  const next = await onNewUserMessage(
+    { messageId: "user_2", text: "If that result had more than 3 rows, continue." },
+    previous,
+    (request) => {
+      requests.push(request);
+      if (!request.infoRequestAttempt) {
+        return Promise.resolve({
+          needsMoreInfo: true,
+          requestedInfo: [{
+            type: "all_memory_chunks",
+            id: null,
+            reason: "Need prior tool result details referenced by the user.",
+          }],
+        });
+      }
+      assertEquals(request.extraContext[0].type, "all_memory_chunks");
+      return Promise.resolve({
+        needsMoreInfo: false,
+        requestedInfo: [],
+        taskUpdateSeq: 2,
+        latestUserMessageId: "user_2",
+        result: "same_as_before",
+        tasksAfter: previous.tasks,
+        activeTaskId: "task_1",
+        existingTaskActions: [{ id: "task_1", action: "keep" }],
+        userMessageActions: [
+          {
+            messageId: "user_1",
+            action: "keep",
+            taskIds: ["task_1"],
+            summary: "Inspect previous result",
+          },
+          {
+            messageId: "user_2",
+            action: "keep",
+            taskIds: ["task_1"],
+            summary: "Continue if the prior result had more than 3 rows.",
+          },
+        ],
+      });
+    },
+  );
+
+  assertEquals(requests.length, 2);
+  assertEquals(next.tasks.length, 1);
+  assertEquals(next.keptUserMessages.map((message) => message.messageId), ["user_1", "user_2"]);
 });
 
 function assert(value: unknown, message = "Assertion failed"): asserts value {

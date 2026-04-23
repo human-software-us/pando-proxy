@@ -79,7 +79,9 @@ export async function extractInputs(
 
     if (isUserMessage(item)) {
       const text = extractMessageText(item);
-      if (text.trim().length > 0 && !isSyntheticMemoryText(text)) {
+      if (
+        text.trim().length > 0 && !isSyntheticMemoryText(text) && !isOperationalContextText(text)
+      ) {
         userMessages.push({
           messageId: await itemId("user", index, item),
           text,
@@ -206,6 +208,12 @@ function extractMessageText(item: Record<string, unknown>): string {
 
 function isSyntheticMemoryText(text: string): boolean {
   return text.includes("<context_memory>") && text.includes("</context_memory>");
+}
+
+function isOperationalContextText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith("<environment_context>") &&
+    trimmed.endsWith("</environment_context>");
 }
 
 function extractToolName(item: Record<string, unknown>): string | null {

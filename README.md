@@ -54,7 +54,9 @@ npx -y pando-proxy serve --no-memory --log-file /tmp/pando-proxy.jsonl
 ```
 
 See [LIVE_E2E.md](./LIVE_E2E.md) for a live end-to-end test procedure and
-[MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md) for memory/logging operational details.
+[MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md) for memory/logging operational details. When logging
+is enabled, searchable metrics events use the `pando_proxy_metrics_` prefix and
+`PANDO_PROXY_METRICS` marker.
 
 See [REFERENCE.md](./REFERENCE.md) for the complete flag, environment variable, auth, state, and
 development reference.

@@ -255,7 +255,10 @@ Then run Codex manually with equivalent provider overrides:
 ```sh
 codex \
   -c 'model_provider="pando-proxy"' \
-  -c 'model_providers.pando-proxy={ name = "Pando Memory Proxy", base_url = "http://127.0.0.1:8787/v1", wire_api = "responses", requires_openai_auth = true }' \
+  -c 'model_providers.pando-proxy.name="Pando Memory Proxy"' \
+  -c 'model_providers.pando-proxy.base_url="http://127.0.0.1:8787/v1"' \
+  -c 'model_providers.pando-proxy.wire_api="responses"' \
+  -c 'model_providers.pando-proxy.requires_openai_auth=true' \
   exec "Reply with exactly: pando proxy manual ok"
 ```
 

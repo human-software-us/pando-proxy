@@ -1,5 +1,10 @@
 import { compactJson, stableJson } from "./json.ts";
 import { shortHash } from "./hash.ts";
+import {
+  MaintenanceExtraContextItem,
+  parseInfoRequestResponse,
+  resolveRequestedInfo,
+} from "./maintenance_info.ts";
 import { isRecord, MemoryChunk, MemoryState, unique } from "./memory_state.ts";
 import {
   isPandoResult,
@@ -14,6 +19,9 @@ export type BatchChunkClient = (request: BatchChunkRequest) => Promise<unknown>;
 export type BatchChunkRequest = {
   tasks: MemoryState["tasks"];
   activeTaskId: string | null;
+  keptUserMessages: MemoryState["keptUserMessages"];
+  infoRequestAttempt: boolean;
+  extraContext: MaintenanceExtraContextItem[];
   results: ToolResultEnvelope[];
   validationErrors?: string[];
 };
@@ -117,8 +125,38 @@ export async function chunkNonPandoInBatches(
     const first = await safeChunkBatch(client, {
       tasks: state.tasks,
       activeTaskId: state.activeTaskId,
+      keptUserMessages: state.keptUserMessages,
+      infoRequestAttempt: false,
+      extraContext: [],
       results: batch,
     });
+    const infoRequest = parseInfoRequestResponse(first);
+    if (infoRequest.needsMoreInfo) {
+      const second = await safeChunkBatch(client, {
+        tasks: state.tasks,
+        activeTaskId: state.activeTaskId,
+        keptUserMessages: state.keptUserMessages,
+        infoRequestAttempt: true,
+        extraContext: resolveRequestedInfo(infoRequest.requestedInfo, {
+          tasks: state.tasks,
+          keptUserMessages: state.keptUserMessages,
+          memoryChunks: state.memoryLibrary,
+          toolResults: batch,
+        }),
+        results: batch,
+      });
+      if (parseInfoRequestResponse(second).needsMoreInfo) {
+        throw new Error("Chunking model requested more info after its single allowed request");
+      }
+      const secondParsed = validateBatchChunkResponse(second, batch, state);
+      if (!secondParsed.ok) {
+        throw new Error(`Chunking validation failed: ${secondParsed.errors.join("; ")}`);
+      }
+      chunks.push(...await materializeBatchChunks(secondParsed.response, batch, resultOffset));
+      resultOffset += batch.length;
+      continue;
+    }
+
     const parsed = validateBatchChunkResponse(first, batch, state);
     if (parsed.ok) {
       chunks.push(...await materializeBatchChunks(parsed.response, batch, resultOffset));
@@ -126,14 +164,20 @@ export async function chunkNonPandoInBatches(
       const second = await safeChunkBatch(client, {
         tasks: state.tasks,
         activeTaskId: state.activeTaskId,
+        keptUserMessages: state.keptUserMessages,
+        infoRequestAttempt: false,
+        extraContext: [],
         results: batch,
         validationErrors: parsed.errors,
       });
+      if (parseInfoRequestResponse(second).needsMoreInfo) {
+        throw new Error("Chunking model requested more info instead of fixing validation errors");
+      }
       const reparsed = validateBatchChunkResponse(second, batch, state);
       if (reparsed.ok) {
         chunks.push(...await materializeBatchChunks(reparsed.response, batch, resultOffset));
       } else {
-        chunks.push(...await fallbackNonPandoChunks(batch, state));
+        throw new Error(`Chunking validation failed: ${reparsed.errors.join("; ")}`);
       }
     }
     resultOffset += batch.length;
@@ -175,6 +219,9 @@ export function validateBatchChunkResponse(
     if (!chunk.summary.trim()) {
       errors.push("Chunk summary is required");
     }
+    if (chunk.taskIds.length === 0) {
+      errors.push(`Chunk ${chunk.title || "(untitled)"} requires taskIds`);
+    }
     for (const taskId of chunk.taskIds) {
       if (!live.has(taskId)) {
         errors.push(`Chunk references missing task ${taskId}`);
@@ -190,6 +237,7 @@ function isAnalysisStylePandoTool(baseName: string): boolean {
     baseName.startsWith("list_") ||
     baseName.startsWith("analyze_") ||
     baseName.startsWith("get_") ||
+    baseName === "workspace_overview" ||
     baseName === "query_db" ||
     baseName.includes("namespace");
 }
@@ -282,6 +330,9 @@ function getArrayByKeys(content: unknown, keys: string[]): unknown[] {
       return value;
     }
   }
+  if (isRecord(content.data)) {
+    return getArrayByKeys(content.data, keys);
+  }
   return [];
 }
 
@@ -334,6 +385,12 @@ function extractPagination(content: unknown): unknown {
       pagination[key] = content[key];
     }
   }
+  if (Object.keys(pagination).length === 0 && isRecord(content.page)) {
+    return extractPagination(content.page);
+  }
+  if (Object.keys(pagination).length === 0 && isRecord(content.data)) {
+    return extractPagination(content.data);
+  }
   return Object.keys(pagination).length > 0 ? pagination : undefined;
 }
 
@@ -372,6 +429,12 @@ function collectChangedPaths(value: unknown, paths: Set<string>): void {
       }
     }
   }
+
+  for (const nested of Object.values(value)) {
+    if (Array.isArray(nested) || isRecord(nested)) {
+      collectChangedPaths(nested, paths);
+    }
+  }
 }
 
 function defaultChunkTaskIds(state: MemoryState): string[] {
@@ -405,28 +468,6 @@ async function materializeBatchChunks(
       source: "tool" as const,
     };
   }));
-}
-
-async function fallbackNonPandoChunks(
-  results: ToolResultEnvelope[],
-  state: MemoryState,
-): Promise<MemoryChunk[]> {
-  const taskIds = defaultChunkTaskIds(state);
-  if (taskIds.length === 0) {
-    return [];
-  }
-  return await Promise.all(results.map(async (result) => ({
-    id: `chunk_${await shortHash(`${result.id}:fallback:${stableJson(result.content)}`)}`,
-    title: `${result.toolName} result`,
-    summary: summarizeToolContent(result.content, 900),
-    kind: "tool/fallback",
-    taskIds,
-    pointer: {
-      sourceResultId: result.id,
-      toolName: result.toolName,
-    },
-    source: "tool" as const,
-  })));
 }
 
 async function safeChunkBatch(

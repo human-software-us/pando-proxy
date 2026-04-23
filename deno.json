@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test --allow-net --allow-read --allow-write --allow-env",
+    "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test --allow-net --allow-read --allow-write --allow-env --allow-run",
     "dev": "deno run --allow-net --allow-env --allow-read --allow-write src/main.ts serve",
     "compile": "deno compile --allow-net --allow-env --allow-read --allow-write --allow-run --output pando-proxy src/main.ts"
   },

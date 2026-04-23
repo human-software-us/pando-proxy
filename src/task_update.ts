@@ -7,6 +7,11 @@ import {
   unique,
   UserMessageMemory,
 } from "./memory_state.ts";
+import {
+  MaintenanceExtraContextItem,
+  parseInfoRequestResponse,
+  resolveRequestedInfo,
+} from "./maintenance_info.ts";
 
 export type UserMessageInput = {
   messageId: string;
@@ -41,6 +46,8 @@ export type TaskUpdateModelRequest = {
   latestUserMessage: UserMessageInput;
   tasks: Task[];
   keptUserMessages: UserMessageMemory[];
+  infoRequestAttempt: boolean;
+  extraContext: MaintenanceExtraContextItem[];
   validationErrors?: string[];
 };
 
@@ -54,7 +61,33 @@ export async function onNewUserMessage(
     latestUserMessage: message,
     tasks: state.tasks,
     keptUserMessages: state.keptUserMessages,
+    infoRequestAttempt: false,
+    extraContext: [],
   });
+  const infoRequest = parseInfoRequestResponse(first);
+  if (infoRequest.needsMoreInfo) {
+    const second = await client({
+      previousSeq: state.taskUpdateSeq,
+      latestUserMessage: message,
+      tasks: state.tasks,
+      keptUserMessages: state.keptUserMessages,
+      infoRequestAttempt: true,
+      extraContext: resolveRequestedInfo(infoRequest.requestedInfo, {
+        tasks: state.tasks,
+        keptUserMessages: state.keptUserMessages,
+        memoryChunks: state.memoryLibrary,
+      }),
+    });
+    if (parseInfoRequestResponse(second).needsMoreInfo) {
+      throw new Error("Task update model requested more info after its single allowed request");
+    }
+    const secondResult = parseAndValidateTaskUpdate(second, state, message);
+    if (!secondResult.ok) {
+      throw new Error(`Task update validation failed: ${secondResult.errors.join("; ")}`);
+    }
+    return applyTaskUpdate(state, message, secondResult.update);
+  }
+
   const firstResult = parseAndValidateTaskUpdate(first, state, message);
   if (firstResult.ok) {
     return applyTaskUpdate(state, message, firstResult.update);
@@ -65,8 +98,13 @@ export async function onNewUserMessage(
     latestUserMessage: message,
     tasks: state.tasks,
     keptUserMessages: state.keptUserMessages,
+    infoRequestAttempt: false,
+    extraContext: [],
     validationErrors: firstResult.errors,
   });
+  if (parseInfoRequestResponse(second).needsMoreInfo) {
+    throw new Error("Task update model requested more info instead of fixing validation errors");
+  }
   const secondResult = parseAndValidateTaskUpdate(second, state, message);
   if (!secondResult.ok) {
     throw new Error(`Task update validation failed: ${secondResult.errors.join("; ")}`);

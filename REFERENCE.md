@@ -40,19 +40,26 @@ Any first argument other than `serve` or `doctor` is treated as a Codex argument
 
 Wrapper flags must appear before the first Codex argument.
 
-| Flag                                | Default                | Behavior                                                              |
-| ----------------------------------- | ---------------------- | --------------------------------------------------------------------- |
-| `--proxy-host <host>`               | `127.0.0.1`            | Host for the local proxy.                                             |
-| `--proxy-port-start <port>`         | `40123`                | First port to try; the wrapper increments until a free port is found. |
-| `--proxy-upstream-base-url <url>`   | `auto`                 | Upstream base URL override.                                           |
-| `--proxy-maintenance-model <model>` | incoming request model | Model used for internal memory maintenance calls.                     |
-| `--proxy-state-dir <path>`          | `~/.pando-proxy`       | State, session, and auto-log root.                                    |
-| `--proxy-no-memory`                 | memory enabled         | Bypass memory maintenance and prompt injection.                       |
-| `--proxy-log`                       | off                    | Create a unique full JSONL log under `<state-dir>/logs`.              |
-| `--proxy-log-file <path>`           | off                    | Write full JSONL logs to an explicit file.                            |
-| `--proxy-help`, `--help`, `-h`      |                        | Show wrapper help.                                                    |
+| Flag                                      | Default          | Behavior                                                              |
+| ----------------------------------------- | ---------------- | --------------------------------------------------------------------- |
+| `--proxy-host <host>`                     | `127.0.0.1`      | Host for the local proxy.                                             |
+| `--proxy-port-start <port>`               | `40123`          | First port to try; the wrapper increments until a free port is found. |
+| `--proxy-upstream-base-url <url>`         | `auto`           | Upstream base URL override.                                           |
+| `--proxy-maintenance-model <small/large>` | auto small/large | Force one of the two built-in maintenance models.                     |
+| `--proxy-state-dir <path>`                | `~/.pando-proxy` | State, session, and auto-log root.                                    |
+| `--proxy-no-memory`                       | memory enabled   | Bypass memory maintenance and prompt injection.                       |
+| `--proxy-log`                             | off              | Create a unique full JSONL log under `<state-dir>/logs`.              |
+| `--proxy-log-file <path>`                 | off              | Write full JSONL logs to an explicit file.                            |
+| `--proxy-help`, `--help`, `-h`            |                  | Show wrapper help.                                                    |
 
 Everything after `--` is passed to Codex unchanged.
+
+On the first wrapper run, pando-proxy records local wrapper preferences under
+`~/.pando-proxy/wrapper-preferences.json`. On the second interactive wrapper run, if no previous
+answer is recorded, it asks whether to add a shell alias so `codex` expands to `npx -y pando-proxy`.
+A yes or no answer is saved in that preferences file and is not asked again. When accepted, the
+wrapper appends a marked alias block to the detected shell startup file, such as `~/.zshrc`,
+`~/.bash_profile`, `~/.bashrc`, `~/.config/fish/config.fish`, or the PowerShell profile.
 
 Examples:
 
@@ -70,15 +77,15 @@ npx -y pando-proxy app-server --listen ws://127.0.0.1:45123
 
 `serve` and `doctor` use the non-prefixed flags below:
 
-| Flag                          | Default                | Behavior                                          |
-| ----------------------------- | ---------------------- | ------------------------------------------------- |
-| `--host <host>`               | `127.0.0.1`            | Host for the proxy server.                        |
-| `--port <port>`               | `8787`                 | Fixed proxy port.                                 |
-| `--upstream-base-url <url>`   | `auto`                 | Upstream base URL override.                       |
-| `--maintenance-model <model>` | incoming request model | Model used for internal memory maintenance calls. |
-| `--state-dir <path>`          | `~/.pando-proxy`       | State and session root.                           |
-| `--no-memory`                 | memory enabled         | Bypass memory maintenance and prompt injection.   |
-| `--log-file <path>`           | none                   | Enable full JSONL logging to an explicit file.    |
+| Flag                                | Default          | Behavior                                          |
+| ----------------------------------- | ---------------- | ------------------------------------------------- |
+| `--host <host>`                     | `127.0.0.1`      | Host for the proxy server.                        |
+| `--port <port>`                     | `8787`           | Fixed proxy port.                                 |
+| `--upstream-base-url <url>`         | `auto`           | Upstream base URL override.                       |
+| `--maintenance-model <small/large>` | auto small/large | Force one of the two built-in maintenance models. |
+| `--state-dir <path>`                | `~/.pando-proxy` | State and session root.                           |
+| `--no-memory`                       | memory enabled   | Bypass memory maintenance and prompt injection.   |
+| `--log-file <path>`                 | none             | Enable full JSONL logging to an explicit file.    |
 
 ## Environment Variables
 
@@ -89,7 +96,7 @@ CLI flags take precedence over environment variables.
 | `PANDO_PROXY_HOST`                   | wrapper, serve, doctor | Host default.                                                          |
 | `PANDO_PROXY_PORT`                   | serve, doctor          | Fixed port default.                                                    |
 | `PANDO_PROXY_UPSTREAM_BASE_URL`      | all modes              | Upstream base URL default.                                             |
-| `PANDO_PROXY_MAINTENANCE_MODEL`      | memory mode            | Maintenance model default.                                             |
+| `PANDO_PROXY_MAINTENANCE_MODEL`      | memory mode            | Force `small` or `large` maintenance model.                            |
 | `PANDO_PROXY_STATE_DIR`              | all modes              | State root default.                                                    |
 | `PANDO_PROXY_SYNTHETIC_CHAR_BUDGET`  | memory mode            | Max characters for injected `<context_memory>`. Default: `12000`.      |
 | `PANDO_PROXY_MAINTENANCE_TIMEOUT_MS` | memory mode            | Timeout for each maintenance model call. Default: `60000`.             |
@@ -99,18 +106,29 @@ CLI flags take precedence over environment variables.
 
 The supported path form `~/...` expands using `HOME`.
 
+Default maintenance model selection is fixed in the binary:
+
+| Model          | Approx input window | Use                                                                        |
+| -------------- | ------------------- | -------------------------------------------------------------------------- |
+| `gpt-5.4-mini` | `272000` tokens     | Default for ChatGPT/Codex maintenance calls.                               |
+| `gpt-5.4`      | `1000000` tokens    | Used when estimated maintenance input would exceed the small-model window. |
+
+The estimate is character based and reserves output space. `PANDO_PROXY_MAINTENANCE_MODEL` or
+`--proxy-maintenance-model` accepts only `small`, `large`, `gpt-5.4-mini`, or `gpt-5.4`; any value
+outside those two built-in model choices fails before making the maintenance call.
+
 ## Auth and Upstream Selection
 
-The wrapper configures Codex with:
+The wrapper configures Codex with process-local `-c` overrides equivalent to:
 
-```toml
-model_provider = "pando-proxy"
-model_providers.pando-proxy = {
-  name = "Pando Memory Proxy",
-  base_url = "http://127.0.0.1:<port>/v1",
-  wire_api = "responses",
-  requires_openai_auth = true
-}
+```sh
+codex \
+  -c 'model_provider="pando-proxy"' \
+  -c 'model_providers.pando-proxy.name="Pando Memory Proxy"' \
+  -c 'model_providers.pando-proxy.base_url="http://127.0.0.1:<port>/v1"' \
+  -c 'model_providers.pando-proxy.wire_api="responses"' \
+  -c 'model_providers.pando-proxy.requires_openai_auth=true' \
+  ...
 ```
 
 Because `requires_openai_auth = true`, Codex sends its existing login or API-key authorization to
@@ -185,12 +203,20 @@ The memory pass:
 - reviews unhandled assistant responses and creates task-linked assistant chunks only for durable
   information that still supports live tasks,
 - chunks Pando tool results in code,
-- chunks non-Pando tool results with batched maintenance model calls and, after one invalid retry,
-  falls back to a conservative local chunk for each result,
+- chunks non-Pando tool results with batched maintenance model calls. The chunking payload includes
+  live tasks, active task, retained user-message summaries, tool metadata, and JSON-parsed output
+  when possible so structured outputs can be split into retention-sized chunks. After one invalid
+  retry, it falls back to a conservative local chunk for each result,
 - asks the maintenance model what chunks to retain,
 - after one invalid retention retry, falls back to mechanically keeping chunks that reference live
   tasks or the active task,
 - prunes retained messages/chunks to live task IDs.
+
+The task-update, assistant-memory, and non-Pando chunking calls each allow at most one model request
+for more data. The first call receives the minimal normal classifier payload and can return either a
+final decision or `needsMoreInfo: true` with `requestedInfo`. If it asks for data, the proxy
+supplies actual requested items in `extraContext` and makes one second call. The second call must
+return the final decision.
 
 Live tasks have:
 
@@ -258,6 +284,20 @@ case-insensitively:
 - `x-api-key`
 
 There is no regex-based secret detection. Non-credential payload content is logged as-is.
+
+Every JSONL event includes an ISO timestamp in `ts`. Searchable state/size metrics use event names
+starting with `pando_proxy_metrics_` and include `marker: "PANDO_PROXY_METRICS"`.
+
+Current metrics events:
+
+- `pando_proxy_metrics_incoming_context`
+- `pando_proxy_metrics_memory_state`
+- `pando_proxy_metrics_rewritten_context`
+- `pando_proxy_metrics_upstream_response`
+
+These log approximate context token counts from request/body size. When upstream Responses events
+include a `usage` object, `pando_proxy_metrics_upstream_response` also logs actual usage and
+in-process cumulative session usage. It includes `termination: "end"` or `"cancel"`.
 
 Upstream streaming logs can end with either:
 

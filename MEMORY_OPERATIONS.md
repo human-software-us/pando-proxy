@@ -119,6 +119,60 @@ Important events:
 These events intentionally use IDs and compact metadata for memory internals. The full upstream
 request and response logs contain the raw transcript/tool payloads when logging is enabled.
 
+Searchable metrics events use the `pando_proxy_metrics_` event prefix and include
+`marker: "PANDO_PROXY_METRICS"`:
+
+- `pando_proxy_metrics_incoming_context`: raw inbound request size, approximate input tokens, model,
+  input item counts, message counts, and tool call/output counts.
+- `pando_proxy_metrics_memory_state`: task, retained user-message, memory chunk, handled-input, and
+  approximate memory-state token counts after maintenance.
+- `pando_proxy_metrics_rewritten_context`: raw versus rewritten approximate input tokens and input
+  item counts after memory prompt injection/history dropping.
+- `pando_proxy_metrics_upstream_response`: upstream response bytes, approximate output tokens, and,
+  when the Responses API stream includes `usage`, actual input/output/total token usage plus
+  in-process cumulative usage for the session. This event is emitted on normal stream end and
+  best-effort on stream cancel, with `termination: "end" | "cancel"`.
+
+## Classification Call Flow
+
+The proxy does not ask the main work model to classify memory. Before every upstream Codex model
+request, the memory manager extracts inputs from the request and makes separate Responses calls
+through the same upstream/auth path Codex is already using:
+
+1. User messages call `task_update`, which creates, keeps, merges, completes, or drops live tasks
+   and decides which user-message summaries remain attached to those tasks.
+2. Assistant messages from previous turns call `assistant_memory`, which decides whether any durable
+   assistant output should become task-linked memory chunks.
+3. Non-Pando tool outputs call `chunk_batch`, which receives live tasks, retained user-message
+   summaries, tool metadata, and JSON-parsed output when possible. It should split structured
+   collections such as search results, arrays, rows, or match sets into semantic task-linked chunks
+   when those items may be retained or dropped independently. Pando tool outputs are chunked
+   deterministically in code by tool/result shape instead.
+4. Assistant and tool chunks then call `retention_decision`, which keeps only chunks still useful
+   for live tasks.
+
+The order is deliberate: user-message task updates run first, assistant-response review runs next,
+and tool-output chunking runs after that. This lets a new user message such as "nevermind, do X"
+drop old tasks before assistant or tool output is classified and retained.
+
+Task update, assistant-response review, and non-Pando tool chunking use the same two-step contract:
+
+1. The first maintenance call receives the minimal normal payload for that classifier and
+   `infoRequestAttempt: false`.
+2. It must either return the final structured decision with `needsMoreInfo: false`, or request more
+   data with `needsMoreInfo: true` and `requestedInfo`.
+3. If it requests data, the proxy materializes the requested data into `extraContext` and makes one
+   second call with `infoRequestAttempt: true`.
+4. The second call must return the final decision. A second request for more data fails the
+   maintenance pass with a clear error.
+
+Supported `requestedInfo` types are:
+
+- task/user context: `live_tasks`, `kept_user_messages`
+- retained memory: `all_memory_chunks`, `memory_chunk`, `assistant_chunks`, `tool_chunks`
+- tool outputs: `all_tool_results`, `tool_result`
+- assistant output: `all_assistant_responses`, `assistant_response`
+
 ## Assistant Response Review
 
 Assistant responses are reviewed on the next inbound request, after user-message task updates run.
@@ -126,6 +180,13 @@ That timing lets the latest user message drop or replace old tasks before assist
 considered. The assistant-memory maintenance call can create chunks only for durable information
 that still supports live tasks, such as decisions, implementation facts, test results, unresolved
 errors, or explicit next steps.
+
+The assistant-memory first call receives live tasks, `activeTaskId`, retained user-message
+summaries, unhandled assistant response text/previews from prior turns, and empty `extraContext`. It
+is asked to keep only durable task-relevant assistant facts. If the assistant text refers to prior
+tool output, retained chunks, or earlier assistant output and the preview is not enough, it can
+request that data once. The second call receives the requested data and must produce final assistant
+chunks or no chunks.
 
 Generic assistant narration, repeated user instructions, and assistant output for completed or
 dropped tasks should produce no chunks. Any assistant chunks that are created are passed through the
@@ -138,7 +199,14 @@ the upstream backend currently requires:
 
 - a top-level `instructions` field for the maintenance system prompt,
 - `stream: true`,
+- `text.format` JSON-schema structured outputs,
 - SSE response parsing.
+
+By default, maintenance calls do not use the user's main Codex model. The binary uses `gpt-5.4-mini`
+for normal ChatGPT/Codex maintenance payloads and switches to `gpt-5.4` only when the estimated
+input would exceed the small-model context window. `--proxy-maintenance-model` and
+`PANDO_PROXY_MAINTENANCE_MODEL` can force only `small`/`gpt-5.4-mini` or `large`/`gpt-5.4`; no other
+maintenance models are accepted.
 
 The maintenance parser accepts both normal JSON Responses API payloads and SSE payloads. It treats a
 body as SSE when either the content type is `text/event-stream` or the body starts with `event:` /

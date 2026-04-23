@@ -49,7 +49,7 @@ Serve/doctor options:
   --host <host>                   Default: 127.0.0.1
   --port <port>                   Default: 8787
   --upstream-base-url <url>       Default: auto
-  --maintenance-model <model>     Default: incoming request model
+  --maintenance-model <small|large> Default: auto small/large selector
   --state-dir <path>              Default: ~/.pando-proxy
   --no-memory                     Bypass memory maintenance/injection
   --log-file <path>               Write redacted proxy events as JSONL

@@ -4,6 +4,7 @@ import { SessionStore } from "../src/store.ts";
 
 Deno.test("E2E pass-through mode forwards Codex-like request auth and SSE unchanged", async () => {
   const tempDir = await Deno.makeTempDir();
+  const logFile = `${tempDir}/proxy.jsonl`;
   const captured: {
     authorization: string | null;
     body: Record<string, unknown> | null;
@@ -23,7 +24,7 @@ Deno.test("E2E pass-through mode forwards Codex-like request auth and SSE unchan
       [
         'event: response.output_text.delta\ndata: {"delta":"hello"}',
         "",
-        'event: response.completed\ndata: {"response":{"id":"resp_1"}}',
+        'event: response.completed\ndata: {"response":{"id":"resp_1","usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}}',
         "",
       ].join("\n"),
       {
@@ -45,7 +46,7 @@ Deno.test("E2E pass-through mode forwards Codex-like request auth and SSE unchan
     syntheticCharBudget: 4_000,
     maintenanceTimeoutMs: 5_000,
     memoryEnabled: false,
-    logFile: null,
+    logFile,
   };
   const proxy = Deno.serve({
     hostname: "127.0.0.1",
@@ -93,18 +94,65 @@ Deno.test("E2E pass-through mode forwards Codex-like request auth and SSE unchan
       [
         'event: response.output_text.delta\ndata: {"delta":"hello"}',
         "",
-        'event: response.completed\ndata: {"response":{"id":"resp_1"}}',
+        'event: response.completed\ndata: {"response":{"id":"resp_1","usage":{"input_tokens":12,"output_tokens":4,"total_tokens":16}}}',
         "",
       ].join("\n"),
     );
     assertEquals(captured.authorization, "Bearer codex-existing-auth");
     assertEquals(captured.body, requestBody);
+
+    const logEntries = await waitForLogEvent(logFile, "pando_proxy_metrics_upstream_response");
+    const incomingMetrics = logEntries.find((entry) =>
+      entry.event === "pando_proxy_metrics_incoming_context"
+    );
+    const responseMetrics = logEntries.find((entry) =>
+      entry.event === "pando_proxy_metrics_upstream_response"
+    );
+    assert(typeof incomingMetrics?.ts === "string");
+    assertEquals(incomingMetrics?.marker, "PANDO_PROXY_METRICS");
+    assertEquals(incomingMetrics?.userMessageCount, 1);
+    assert(typeof responseMetrics?.ts === "string");
+    assertEquals(responseMetrics?.marker, "PANDO_PROXY_METRICS");
+    assertEquals(responseMetrics?.termination, "end");
+    assertEquals(responseMetrics?.actualTotalTokens, 16);
+    assertEquals(responseMetrics?.cumulativeUsage, {
+      responsesWithUsage: 1,
+      inputTokens: 12,
+      outputTokens: 4,
+      totalTokens: 16,
+    });
   } finally {
     await proxy.shutdown();
     await upstream.shutdown();
     await Deno.remove(tempDir, { recursive: true });
   }
 });
+
+async function readJsonl(path: string): Promise<Array<Record<string, unknown>>> {
+  const text = await Deno.readTextFile(path);
+  return text.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
+async function waitForLogEvent(
+  path: string,
+  event: string,
+): Promise<Array<Record<string, unknown>>> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 1_000) {
+    const entries = await readJsonl(path).catch(() => []);
+    if (entries.some((entry) => entry.event === event)) {
+      return entries;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return await readJsonl(path);
+}
+
+function assert(value: unknown, message = "Assertion failed"): asserts value {
+  if (!value) {
+    throw new Error(message);
+  }
+}
 
 function assertEquals(actual: unknown, expected: unknown): void {
   const actualJson = JSON.stringify(actual);

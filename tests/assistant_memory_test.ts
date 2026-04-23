@@ -46,6 +46,76 @@ Deno.test("assistant responses materialize task-linked chunks", async () => {
   assertEquals(chunks[0].pointer?.sourceResponseId, "assistant_1");
 });
 
+Deno.test("assistant response review allows one request for extra context", async () => {
+  const calls: unknown[] = [];
+  const chunks = await chunkAssistantResponses(
+    [{ responseId: "assistant_1", text: "That failed because of the previous tool result." }],
+    {
+      ...state(),
+      memoryLibrary: [{
+        id: "chunk_tool",
+        title: "Tool result",
+        summary: "The tool returned a permission error.",
+        kind: "tool/error",
+        taskIds: ["task_1"],
+        source: "tool",
+      }],
+    },
+    (request) => {
+      calls.push(request);
+      if (!request.infoRequestAttempt) {
+        return Promise.resolve({
+          needsMoreInfo: true,
+          requestedInfo: [{
+            type: "all_memory_chunks",
+            id: null,
+            reason: "Need the referenced previous tool result.",
+          }],
+        });
+      }
+      assertEquals(request.extraContext[0].type, "all_memory_chunks");
+      return Promise.resolve({
+        needsMoreInfo: false,
+        requestedInfo: [],
+        chunks: [{
+          sourceResponseIndex: 0,
+          title: "Permission error diagnosis",
+          summary: "Assistant connected the failure to the prior permission error.",
+          kind: "diagnosis",
+          taskIds: ["task_1"],
+          pointer: null,
+        }],
+      });
+    },
+  );
+
+  assertEquals(calls.length, 2);
+  assertEquals(chunks.length, 1);
+  assertEquals(chunks[0].kind, "assistant/diagnosis");
+});
+
+Deno.test("assistant response review fails if model requests info twice", async () => {
+  let threw = false;
+  try {
+    await chunkAssistantResponses(
+      [{ responseId: "assistant_1", text: "Need previous context." }],
+      state(),
+      () =>
+        Promise.resolve({
+          needsMoreInfo: true,
+          requestedInfo: [{
+            type: "all_memory_chunks",
+            id: null,
+            reason: "Need context.",
+          }],
+        }),
+    );
+  } catch (error) {
+    threw = String(error).includes("single allowed request");
+  }
+  assert(threw);
+});
+
 function state(): MemoryState {
   return {
     taskUpdateSeq: 1,

@@ -149,6 +149,7 @@ Batching is preferred when possible:
 type BatchChunkRequest = {
   tasks: Task[];
   activeTaskId: string | null;
+  keptUserMessages: UserMessageMemory[];
   results: ToolResultEnvelope[];
 };
 
@@ -163,6 +164,21 @@ type BatchChunkResponse = {
   }>;
 };
 ```
+
+The chunking model receives the live task list, active task, compact retained user-message
+summaries, tool names/params, and JSON-parsed tool output when possible. Its job is to choose
+semantic retention units, not just summarize each whole result. Search results, arrays, rows, match
+sets, and other independently useful structured items should usually become separate small chunks or
+small related groups. A single larger chunk is appropriate for one coherent artifact or short command
+output. When unsure, prefer more small task-linked chunks over one broad chunk so retention can keep
+only the few useful items later.
+
+Task updates, assistant-response review, and non-pando tool chunking share a bounded two-step
+maintenance contract. The first call gets the minimal normal payload and may either return the final
+structured decision or set `needsMoreInfo: true` with `requestedInfo`. The proxy then materializes
+that requested data into `extraContext` and makes exactly one second call. The second call must
+return the final structured decision; another data request is an error. The model is instructed to
+err toward requesting more rather than less because it has only one chance.
 
 Batching saves latency, not tokens. If the combined raw content is too large, split by size and run multiple batches.
 
@@ -355,7 +371,10 @@ The wrapper passes overrides equivalent to:
 ```sh
 codex \
   -c 'model_provider="pando-proxy"' \
-  -c 'model_providers.pando-proxy={ name = "Pando Memory Proxy", base_url = "http://127.0.0.1:<port>/v1", wire_api = "responses", requires_openai_auth = true }' \
+  -c 'model_providers.pando-proxy.name="Pando Memory Proxy"' \
+  -c 'model_providers.pando-proxy.base_url="http://127.0.0.1:<port>/v1"' \
+  -c 'model_providers.pando-proxy.wire_api="responses"' \
+  -c 'model_providers.pando-proxy.requires_openai_auth=true' \
   ...
 ```
 
@@ -586,7 +605,12 @@ The proxy needs model calls for four maintenance tasks:
 - non-pando chunking,
 - retention.
 
-Use a smaller/cheaper model by default, configurable separately from the user's main Codex model. These maintenance calls should not expose tools. They should request strict JSON output and then validate it locally.
+Use a smaller/cheaper model by default, selected separately from the user's main Codex model.
+The current binary uses a fixed two-model table for ChatGPT/Codex auth: `gpt-5.4-mini` by default,
+and `gpt-5.4` when a conservative character-based token estimate would exceed the small model's
+context window.
+These maintenance calls should not expose tools. They should request strict JSON-schema structured
+output and then validate it locally.
 
 Current implementation policy:
 

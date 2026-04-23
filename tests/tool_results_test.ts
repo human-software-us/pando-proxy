@@ -37,6 +37,30 @@ Deno.test("extractInputs ignores synthetic memory and maps tool output to preced
   assertEquals(extracted.toolResults[0].params, { name: "main" });
 });
 
+Deno.test("extractInputs ignores environment context user messages", async () => {
+  const extracted = await extractInputs({
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [{
+          type: "input_text",
+          text:
+            "<environment_context>\n  <cwd>/repo</cwd>\n  <shell>zsh</shell>\n</environment_context>",
+        }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Do the actual task." }],
+      },
+    ],
+  }, emptyMemoryState());
+
+  assertEquals(extracted.userMessages.length, 1);
+  assertEquals(extracted.userMessages[0].text, "Do the actual task.");
+});
+
 Deno.test("extractInputs captures assistant response text for next-turn review", async () => {
   const extracted = await extractInputs({
     input: [
