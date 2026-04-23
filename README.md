@@ -1,6 +1,10 @@
 # pando-proxy
 
-Run Codex through a local memory proxy.
+Run Codex through a local task-memory proxy with one `npx` command.
+
+`pando-proxy` starts a localhost proxy, runs the system `codex` command with process-local provider
+overrides, and rewrites upstream model requests so Codex gets compact task-scoped memory instead of
+stale raw transcript history.
 
 ## Usage
 
@@ -18,6 +22,20 @@ The wrapper starts a localhost proxy on the first available port at or above `40
 system `codex` command with process-local provider overrides pointing at that proxy. Logging is off
 by default. The first non-proxy argument is passed to Codex, so forms like `exec`, `resume`,
 `help exec`, and `app-server` keep their normal Codex meaning.
+
+Memory is enabled by default. Use `--proxy-no-memory` for a pure pass-through transport check.
+
+## Design
+
+pando-proxy is designed to be invisible in normal Codex use:
+
+- Codex remains the UI and command surface.
+- Codex-provided authorization is preferred; API keys are only a fallback when Codex sends no
+  authorization header.
+- The wrapper does not edit Codex config files.
+- Logging is explicit and disabled by default.
+- Memory is task-scoped, eager, and derived from user messages, assistant responses, and tool
+  outputs.
 
 ## Modes
 
@@ -58,5 +76,12 @@ See [LIVE_E2E.md](./LIVE_E2E.md) for a live end-to-end test procedure and
 is enabled, searchable metrics events use the `pando_proxy_metrics_` prefix and
 `PANDO_PROXY_METRICS` marker.
 
-See [REFERENCE.md](./REFERENCE.md) for the complete flag, environment variable, auth, state, and
-development reference.
+Documentation:
+
+| Document                                               | Purpose                                                     |
+| ------------------------------------------------------ | ----------------------------------------------------------- |
+| [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md)         | Goals, intent, and design principles.                       |
+| [REFERENCE.md](./REFERENCE.md)                         | Complete flag, environment, auth, state, and dev reference. |
+| [MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md)         | Memory maintenance, logging, and metrics behavior.          |
+| [LIVE_E2E.md](./LIVE_E2E.md)                           | Live end-to-end test procedure.                             |
+| [CONTEXT_MEMORY_DESIGN.md](./CONTEXT_MEMORY_DESIGN.md) | Detailed context-memory design notes.                       |

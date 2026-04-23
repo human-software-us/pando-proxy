@@ -15,6 +15,7 @@
     "src",
     "deno.json",
     "README.md",
+    "DESIGN_PRINCIPLES.md",
     "REFERENCE.md",
     "MEMORY_OPERATIONS.md",
     "LIVE_E2E.md",
