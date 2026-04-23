@@ -1,19 +1,23 @@
 import type { ProxyConfig } from "./config.ts";
+import { stableJson } from "./json.ts";
+import { chronologicalChunks, type ChunkRecord, type MemoryState } from "./memory_state.ts";
 import { itemTypeCounts, type InputItemDescriptor, describeInputItems, inputItems } from "./tool_results.ts";
-import type { MemoryState, PieceRecord } from "./memory_state.ts";
 
 export type RewriteDiff = {
   droppedInputIds: string[];
   keptInputIds: string[];
   rawInputTypeCounts: Record<string, number>;
   rewrittenInputTypeCounts: Record<string, number>;
-  insertedTaskCount: number;
-  indexedPieceCount: number;
+  insertedMemory: boolean;
+  inlineChunkCount: number;
+  omittedChunkCount: number;
 };
 
 export type RewriteResult = {
   body: Record<string, unknown>;
   diff: RewriteDiff;
+  inlineChunkIds: string[];
+  omittedChunkIds: string[];
 };
 
 export async function rewriteRequestWithMemory(
@@ -22,10 +26,11 @@ export async function rewriteRequestWithMemory(
   config: ProxyConfig,
 ): Promise<RewriteResult> {
   const raw = await describeInputItems(body.input);
-  const filtered = raw.filter((item) => !item.isSyntheticTaskMemory);
+  const filtered = raw.filter((item) => !item.isSyntheticMemory);
   const instructions = leadingInstructions(filtered);
   const tail = currentRoundTail(filtered);
-  const memoryItem = makeTaskMemoryItem(memory, config);
+  const selection = selectPromptChunks(memory, config.maxIndexedPiecesPerTask);
+  const memoryItem = makeWorkingMemoryItem(memory, selection.inlineChunks);
   const rewrittenItems = [
     ...instructions.map((item) => item.item),
     ...(memoryItem ? [memoryItem] : []),
@@ -35,7 +40,7 @@ export async function rewriteRequestWithMemory(
   const rewrittenBody = {
     ...body,
     input: rewrittenItems,
-    tools: injectContextGetTool(body.tools, memory),
+    tools: injectMemoryTool(body.tools, selection.omittedChunks),
   };
   const rewrittenDescriptors = await describeInputItems(rewrittenItems);
 
@@ -47,9 +52,12 @@ export async function rewriteRequestWithMemory(
       keptInputIds: [...instructions, ...tail].map((item) => item.ref),
       rawInputTypeCounts: itemTypeCounts(raw),
       rewrittenInputTypeCounts: itemTypeCounts(rewrittenDescriptors),
-      insertedTaskCount: memory.tasks.length,
-      indexedPieceCount: memory.pieces.length,
+      insertedMemory: Boolean(memoryItem),
+      inlineChunkCount: selection.inlineChunks.length,
+      omittedChunkCount: selection.omittedChunks.length,
     },
+    inlineChunkIds: selection.inlineChunks.map((chunk) => chunk.id),
+    omittedChunkIds: selection.omittedChunks.map((chunk) => chunk.id),
   };
 }
 
@@ -58,7 +66,7 @@ export async function buildDerivedPrompt(
   memoryItem: Record<string, unknown> | null,
 ): Promise<{ input: unknown; diff: RewriteDiff }> {
   const raw = await describeInputItems(input);
-  const filtered = raw.filter((item) => !item.isSyntheticTaskMemory);
+  const filtered = raw.filter((item) => !item.isSyntheticMemory);
   const instructions = leadingInstructions(filtered);
   const tail = currentRoundTail(filtered);
   const items = [
@@ -76,83 +84,95 @@ export async function buildDerivedPrompt(
       keptInputIds: [...instructions, ...tail].map((item) => item.ref),
       rawInputTypeCounts: itemTypeCounts(raw),
       rewrittenInputTypeCounts: itemTypeCounts(rewrittenDescriptors),
-      insertedTaskCount: memoryItem ? 1 : 0,
-      indexedPieceCount: 0,
+      insertedMemory: Boolean(memoryItem),
+      inlineChunkCount: 0,
+      omittedChunkCount: 0,
     },
   };
 }
 
-export function makeTaskMemoryItem(
+export function makeWorkingMemoryItem(
   memory: MemoryState,
-  config: Pick<ProxyConfig, "maxIndexedPiecesPerTask">,
+  inlineChunks: ChunkRecord[],
 ): Record<string, unknown> | null {
-  if (memory.tasks.length === 0) {
+  if (!memory.objective && inlineChunks.length === 0) {
     return null;
   }
 
   return {
     type: "message",
     role: "developer",
-    name: "pando_task_memory",
     content: [{
       type: "input_text",
-      text: buildTaskMemoryText(memory, config),
+      text: buildWorkingMemoryText(memory, inlineChunks),
     }],
   };
 }
 
-export function buildTaskMemoryText(
-  memory: MemoryState,
-  config: Pick<ProxyConfig, "maxIndexedPiecesPerTask">,
-): string {
-  const lines = ["<pando_task_memory>", "<tasks>"];
-  for (const task of memory.tasks) {
-    lines.push(`- id=${task.id} status=${task.status} kind=${task.kind} text=${JSON.stringify(task.text)}`);
+export function buildWorkingMemoryText(memory: MemoryState, inlineChunks: ChunkRecord[]): string {
+  const lines = ["<pando_working_memory>"];
+  if (memory.objective) {
+    lines.push("<objective>", memory.objective, "</objective>");
   }
-  lines.push("</tasks>", "<piece_index>");
-  for (const task of memory.tasks) {
-    const pieces = memory.pieces
-      .filter((piece) => piece.taskIds.includes(task.id))
-      .sort((left, right) => right.createdSeq - left.createdSeq);
-    lines.push(`task=${task.id}`);
-    for (const piece of pieces.slice(0, config.maxIndexedPiecesPerTask)) {
-      lines.push(`- ${formatPieceIndexLine(piece)}`);
-    }
-    if (pieces.length > config.maxIndexedPiecesPerTask) {
-      lines.push(`- omitted=${pieces.length - config.maxIndexedPiecesPerTask}`);
-    }
+  lines.push("<exact_chunks>");
+  for (const chunk of inlineChunks) {
+    lines.push(`<chunk id="${chunk.id}">`);
+    lines.push(formatChunkPayload(chunk.payload));
+    lines.push("</chunk>");
   }
-  lines.push(
-    "</piece_index>",
-    "<context_get>",
-    "Use context_get with exact pieceIds when you need exact old context. Do not ask for broad fetches.",
-    "</context_get>",
-    "</pando_task_memory>",
-  );
+  lines.push("</exact_chunks>");
+  lines.push("<memory_fallback>");
+  lines.push("If the attached exact chunks are insufficient, call memory(offset, limit).");
+  lines.push("This returns additional exact retained chunks not already included above.");
+  lines.push("Prefer attached chunks over running new tools when they already contain the needed exact fact.");
+  lines.push("Do not claim prior captured data is unavailable until you have used memory(offset, limit) when the visible chunks are insufficient.");
+  lines.push("When asked to restate or recall exact prior captured content, use memory(offset, limit) before answering from absence.");
+  lines.push("</memory_fallback>");
+  lines.push("</pando_working_memory>");
   return lines.join("\n");
 }
 
-function formatPieceIndexLine(piece: PieceRecord): string {
-  const fields = [
-    `pieceId=${piece.id}`,
-    `source=${piece.sourceKind}`,
-    ...(piece.toolName ? [`tool=${piece.toolName}`] : []),
-    `bytes=${piece.byteSize}`,
-    `selector=${selectorLabel(piece)}`,
-    ...(piece.previewText ? [`preview=${JSON.stringify(piece.previewText)}`] : []),
-    ...(piece.pointer ? [`pointer=${JSON.stringify(piece.pointer)}`] : []),
-  ];
-  return fields.join(" ");
+function formatChunkPayload(payload: unknown): string {
+  return typeof payload === "string" ? payload : stableJson(payload);
 }
 
-function selectorLabel(piece: PieceRecord): string {
-  if (piece.selector.kind === "whole") {
-    return "whole";
+function selectPromptChunks(
+  memory: MemoryState,
+  maxInlineChunks: number,
+): { inlineChunks: ChunkRecord[]; omittedChunks: ChunkRecord[] } {
+  const ordered = chronologicalChunks(memory.chunks);
+  if (maxInlineChunks <= 0 || ordered.length <= maxInlineChunks) {
+    return { inlineChunks: ordered, omittedChunks: [] };
   }
-  if (piece.selector.kind === "line_range") {
-    return `lines:${piece.selector.startLine}-${piece.selector.endLine}`;
-  }
-  return `path:${JSON.stringify(piece.selector.path)}`;
+  const inlineChunks = [...ordered]
+    .sort(compareInlinePriority)
+    .slice(0, maxInlineChunks)
+    .sort((left, right) =>
+      left.createdSeq === right.createdSeq ? left.id.localeCompare(right.id) : left.createdSeq - right.createdSeq
+    );
+  const inlineIds = new Set(inlineChunks.map((chunk) => chunk.id));
+  return {
+    inlineChunks,
+    omittedChunks: ordered.filter((chunk) => !inlineIds.has(chunk.id)),
+  };
+}
+
+function compareInlinePriority(left: ChunkRecord, right: ChunkRecord): number {
+  const score = (chunk: ChunkRecord): number => {
+    let total = 0;
+    if (chunk.sourceKind === "tool") {
+      total += 100;
+    } else if (chunk.sourceKind === "user") {
+      total += 50;
+    }
+    if (chunk.selector.kind === "whole") {
+      total += 10;
+    }
+    total += Math.min(chunk.byteSize, 8_192) / 8_192;
+    total += chunk.createdSeq / 1_000_000;
+    return total;
+  };
+  return score(right) - score(left);
 }
 
 function leadingInstructions(items: InputItemDescriptor[]): InputItemDescriptor[] {
@@ -178,27 +198,33 @@ function currentRoundTail(items: InputItemDescriptor[]): InputItemDescriptor[] {
   return lastUserIndex >= 0 ? withoutLeading.slice(lastUserIndex) : withoutLeading;
 }
 
-function injectContextGetTool(tools: unknown, memory: MemoryState): unknown {
+function injectMemoryTool(tools: unknown, omittedChunks: ChunkRecord[]): unknown {
   const existing = Array.isArray(tools) ? [...tools] : [];
-  if (memory.pieces.length === 0) {
+  if (omittedChunks.length === 0) {
     return existing;
   }
-  if (existing.some((tool) => isContextGetTool(tool))) {
+  if (existing.some((tool) => isMemoryTool(tool))) {
     return existing;
   }
   existing.push({
     type: "function",
-    name: "context_get",
-    description: "Fetch exact previously stored pieces by exact piece id.",
+    name: "memory",
+    description: "Fetch additional exact retained chunks in chronological order.",
     parameters: {
       type: "object",
       additionalProperties: false,
-      required: ["pieceIds"],
+      required: ["offset", "limit"],
       properties: {
-        pieceIds: {
-          type: "array",
-          items: { type: "string" },
-          description: "Exact piece ids to retrieve.",
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "How many additional retained chunks to skip.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "How many additional retained chunks to return.",
         },
       },
     },
@@ -206,12 +232,12 @@ function injectContextGetTool(tools: unknown, memory: MemoryState): unknown {
   return existing;
 }
 
-function isContextGetTool(tool: unknown): boolean {
+function isMemoryTool(tool: unknown): boolean {
   return Boolean(
     tool &&
       typeof tool === "object" &&
       !Array.isArray(tool) &&
-      (tool as Record<string, unknown>).name === "context_get",
+      (tool as Record<string, unknown>).name === "memory",
   );
 }
 

@@ -4,89 +4,94 @@
 
 The proxy keeps context memory as:
 
-- a live task list
-- exact retained pieces linked to those tasks
+- one live `objective`
+- exact retained chunks that still matter to that objective
 
-It does not use summaries anywhere.
-
-## Why This Shape
-
-The prior design made correctness hard to reason about because the system had multiple overlapping abstractions:
-
-- raw history replay
-- kept-message summaries
-- summarized tool/assistant chunks
-- model-based retention
-
-The current design removes those layers.
+It does not use preview catalogs or task-index indirection.
 
 ## Prompt-Side Representation
 
 The rewritten upstream prompt contains a deterministic memory block:
 
 ```xml
-<pando_task_memory>
-<tasks>
-- id=task_1 status=open kind=do text="Inspect the proxy"
-</tasks>
-<piece_index>
-task=task_1
-- pieceId=piece_17 source=tool tool=mcp__pando__.find_nodes bytes=420 selector=path:["data","results",0] preview="src/server.ts"
-</piece_index>
-<context_get>
-Use context_get with exact pieceIds when you need exact old context.
-</context_get>
-</pando_task_memory>
+<pando_working_memory>
+<objective>
+Find the exact deployment facts and answer the user's follow-up questions.
+</objective>
+<exact_chunks>
+<chunk id="chunk_17">
+deploy_port=9091
+</chunk>
+<chunk id="chunk_18">
+admin_email=ops@example.com
+</chunk>
+</exact_chunks>
+<memory_fallback>
+If the attached exact chunks are insufficient, call memory(offset, limit).
+This returns additional exact retained chunks not already included above.
+</memory_fallback>
+</pando_working_memory>
 ```
 
-This is not a summary. It is a structured index of exact pieces already stored locally.
+This block is not a summary. It is the compact live working set.
+
+## Why This Shape
+
+The prior design made correctness harder to reason about because the system had multiple overlapping abstractions:
+
+- raw history replay
+- live task lists
+- piece indexes with previews
+- exact-fetch by id
+
+The current design removes those layers from the default path.
 
 ## End-Of-Round Update
 
 After a round completes, the proxy:
 
 1. extracts newly observed content from that round
-2. chunks that content into exact pieces
-3. runs `round_update`
-4. stores only explicitly kept pieces
-5. prunes anything no longer linked to a live task
+2. chunks that content into exact chunks
+3. runs `working_memory_update`
+4. stores only explicitly kept old and new chunks
+5. clears memory completely when the objective ends
 
-This means task updates are based on the full finished round, including assistant output, rather than a partial pre-response guess.
+This means retention decisions are based on the full finished round, including assistant output, rather than on a partial pre-response guess.
 
-## Fetch On Demand
+## Fallback Memory
 
-The model learns valid `pieceId`s from the piece index.
-
-When it needs old exact context, it issues:
+If the default inline working set is insufficient, the model may issue:
 
 ```json
-{ "pieceIds": ["piece_17"] }
+{ "offset": 0, "limit": 10 }
 ```
 
-The proxy intercepts `context_get` locally and returns the exact stored payload.
+The proxy intercepts `memory` locally and returns the next chronological slice of exact retained chunks that:
 
-Older exact data is therefore available without being replayed into every upstream request.
+- are still live
+- were not already included in the prompt
+
+This is a recovery path, not the main retrieval mechanism.
+
+## Finalization
+
+The model that does the work is not required to emit the final user-facing answer directly.
+
+The recommended flow is:
+
+1. work round
+2. working-memory update
+3. final no-tool answer pass based on the exact work results
+
+That keeps user-facing output aligned with the request rather than with internal memory fragments.
 
 ## Observability
 
-When logging is enabled, the memory flow around this design is visible in the log:
+When logging is enabled, the memory flow around this design should make it obvious:
 
 - which new sources were observed
-- how they were chunked into exact pieces
-- which pieces were explicitly kept or dropped
-- how the live task list changed
-- which exact ids were fetched through `context_get`
+- how they were chunked into exact chunks
+- which old and new chunks were explicitly kept or dropped
+- what the current objective became
+- which exact ids were fetched through `memory`
 - what the aggregate stored memory looked like at round end
-
-## Non-Goals
-
-This design intentionally does not include:
-
-- summaries
-- pinning
-- ranking
-- fuzzy lookup
-- model-based retention
-- background “repair” or “needs more info” loops
-
-The system is designed to be small, explicit, and mechanically checkable.

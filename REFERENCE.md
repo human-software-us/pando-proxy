@@ -1,29 +1,14 @@
 # Reference
 
-## Task
+## Chunk
 
 ```ts
-type Task = {
-  id: string;
-  text: string;
-  status: "open" | "in_progress";
-  kind: "say" | "do";
-};
-```
-
-## Piece
-
-```ts
-type PieceRecord = {
+type ChunkRecord = {
   id: string;
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  taskIds: string[];
-  payloadInline?: unknown;
-  payloadRef?: string;
-  pointer?: Record<string, unknown>;
-  previewText?: string;
+  payload: unknown;
   byteSize: number;
   createdSeq: number;
   selector:
@@ -38,25 +23,30 @@ type PieceRecord = {
 ```ts
 type MemoryState = {
   roundSeq: number;
-  tasks: Task[];
-  pieces: PieceRecord[];
+  objective: string | null;
+  chunks: ChunkRecord[];
   processedSourceIds: string[];
 };
 ```
 
-## `round_update`
+## `working_memory_update`
 
 Request:
 
 ```ts
-type RoundUpdateRequest = {
-  tasks: Task[];
-  newPieces: Array<{
+type WorkingMemoryUpdateRequest = {
+  objective: string | null;
+  chunks: Array<{
     id: string;
     sourceKind: "user" | "assistant" | "tool";
     toolName?: string;
     content: unknown;
-    pointer?: Record<string, unknown>;
+  }>;
+  newChunks: Array<{
+    id: string;
+    sourceKind: "user" | "assistant" | "tool";
+    toolName?: string;
+    content: unknown;
   }>;
 };
 ```
@@ -64,26 +54,20 @@ type RoundUpdateRequest = {
 Response:
 
 ```ts
-type RoundUpdateResponse = {
-  tasksAfter: Task[];
-  pieceSelection:
-    | { mode: "drop_all" }
-    | { mode: "keep_all" }
-    | { mode: "keep_only"; ids: string[] }
-    | { mode: "drop_only"; ids: string[] };
-  keptPieceTaskLinks: Array<{
-    id: string;
-    taskIds: string[];
-  }>;
+type WorkingMemoryUpdateResponse = {
+  objectiveAfter: string | null;
+  keepOldChunkIds: string[];
+  keepNewChunkIds: string[];
 };
 ```
 
 Validation rules:
 
-- `pieceSelection` must be explicit
-- `keptPieceTaskLinks` must exactly match the kept set implied by `pieceSelection`
-- every kept piece must link to at least one live task
-- dropped pieces must not appear in `keptPieceTaskLinks`
+- every kept old id must exist in the prior kept set
+- every kept new id must exist in the new chunk set
+- duplicate ids are invalid
+- if `objectiveAfter` is `null`, both keep lists should usually be empty
+- anything not explicitly kept is dropped
 
 ## `source_chunk`
 
@@ -112,27 +96,25 @@ type SourceChunkResponse = {
 
 The proxy materializes exact chunks from the original source using these selectors.
 
-## `context_get`
+## `memory`
 
 Tool schema:
 
 ```json
 {
-  "name": "context_get",
+  "name": "memory",
   "parameters": {
     "type": "object",
-    "required": ["pieceIds"],
+    "required": ["offset", "limit"],
     "properties": {
-      "pieceIds": {
-        "type": "array",
-        "items": { "type": "string" }
-      }
+      "offset": { "type": "integer", "minimum": 0 },
+      "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
     }
   }
 }
 ```
 
-The response contains exact stored payloads for those exact ids only.
+The response contains exact stored payloads for the chronological retained-memory slice selected by `offset` and `limit`, excluding chunks already included in the rewritten prompt.
 
 ## Logging
 
@@ -143,9 +125,9 @@ Important log events:
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `context_get`
+- `memory_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
 - `round_complete`
 
-`round_complete` is the round-level aggregate record. It includes current task ids/count, piece ids/count, total stored piece bytes, processed source count, local fetch count, returned fetch ids, and any memory-update error.
+`round_complete` is the round-level aggregate record. It should include the current objective, chunk ids/count, total stored chunk bytes, processed source count, local fetch count, returned fetch ids, and any memory-update error.

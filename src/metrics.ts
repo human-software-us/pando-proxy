@@ -87,11 +87,10 @@ export function requestContextMetrics(body: Record<string, unknown>): Record<str
 export function memoryStateMetrics(state: MemoryState): Record<string, unknown> {
   return {
     roundSeq: state.roundSeq,
-    taskCount: state.tasks.length,
-    taskIds: state.tasks.map((task) => task.id),
-    pieceCount: state.pieces.length,
-    pieceIds: state.pieces.map((piece) => piece.id),
-    pieceBytes: state.pieces.reduce((total, piece) => total + piece.byteSize, 0),
+    objective: state.objective,
+    chunkCount: state.chunks.length,
+    chunkIds: state.chunks.map((chunk) => chunk.id),
+    chunkBytes: state.chunks.reduce((total, chunk) => total + chunk.byteSize, 0),
     processedSourceCount: state.processedSourceIds.length,
   };
 }

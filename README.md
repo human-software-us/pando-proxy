@@ -2,87 +2,123 @@
 
 `pando-proxy` is an OpenAI Responses-compatible proxy with a deliberately mechanical memory system.
 
-The proxy does not maintain prose summaries of prior work. Instead it keeps:
+The current design is:
 
-- a live task list
-- exact stored pieces of user, assistant, and tool content that are still required by those live tasks
-- a local `context_get` tool for exact fetch-on-demand by piece id
+- one compact live `objective`
+- exact retained chunks only
+- aggressive end-of-turn pruning
+- optional local `memory(offset, limit)` fallback for exact retained chunks that were kept but not inlined this turn
+- a separate finalization pass for the clean user-facing answer
+
+The proxy does not maintain prose summaries of prior work and does not expose preview catalogs, selector indexes, or fuzzy retrieval.
 
 ## Memory Model
 
-The durable abstraction of user intent is the task list.
+Durable memory is just:
+
+- `objective`
+- exact retained `chunks`
+- `processedSourceIds`
+
+Each retained chunk stores the original payload inline. There are no blob refs or payload indirection layers in the design.
 
 At the end of each completed round, the proxy takes:
 
-- the existing live task list
+- the previous objective
+- the previous kept chunks
 - the new exact content observed during that round
 
-and runs a single structured `round_update` call that returns:
+and runs one structured `working_memory_update` call that returns:
 
-- the next full live task list
-- an explicit keep/drop decision for the new pieces
-- task links for every kept piece
+- `objectiveAfter`
+- `keepOldChunkIds`
+- `keepNewChunkIds`
 
-Everything else is dropped. Nothing is summarized.
-
-## Piece Rules
-
-- User messages are kept whole.
-- Assistant outputs are chunked by a cheap structured-output model and stored exactly.
-- Non-Pando tool outputs are chunked by the same structured-output model and stored exactly.
-- Pando outputs are split deterministically in code.
-- Kept pieces are stored exactly, inline when small and by local blob reference when large.
-- If no live task references a piece anymore, it is pruned deterministically.
+Everything else is dropped.
 
 ## Prompt Rewrite
 
-The upstream request is rewritten from:
+The default upstream request is rewritten from:
 
 - leading instructions
-- the current live task list
-- a deterministic per-task piece index
+- the current live objective
+- the exact retained chunks chosen for inline inclusion this turn
 - the current round tail
 
-The proxy does not replay old raw user history upstream and does not inject any synthetic memory prose.
+It does not replay older raw history by default and does not inject synthetic preview text.
 
-The piece index includes exact `pieceId`s plus structured locator metadata and exact short previews so the model knows what it can later fetch with `context_get`.
-
-## Local Context Fetch
-
-The proxy injects a local tool:
+If the system omits some retained chunks from the prompt for budget reasons, the proxy may expose a local fallback tool:
 
 ```json
-{ "name": "context_get", "arguments": { "pieceIds": ["piece_1", "piece_2"] } }
+{ "name": "memory", "arguments": { "offset": 0, "limit": 10 } }
 ```
 
-The tool returns exact stored payloads for those piece ids only. No fuzzy search, ranking, or broad task-scoped lookup exists in v1.
+That tool returns a chronological list of exact retained chunks that are still live but were not already included in the prompt. It is a transparent fallback, not the main retrieval path.
+
+## Retention Rules
+
+- user messages are kept as exact chunks when still needed
+- assistant outputs are chunked exactly
+- tool outputs are chunked exactly
+- only chunks that still materially support the live objective survive
+- exploratory junk should be dropped at round end
+- if the objective is complete, memory should become empty
+
+The intended bias is: keep less, not more.
+
+## Final Answering
+
+Work and answer formatting are separate concerns.
+
+The recommended turn shape is:
+
+1. work pass: tools and intermediate steps allowed
+2. memory update: keep/drop exact chunks
+3. finalization pass: no tools, produce the best user-facing answer from the exact work results
+
+The final answer should match the user request, not the proxy's internal memory fragments.
 
 ## Models
 
 The system is intentionally small:
 
-- one required structured model call per completed round: `round_update`
+- one required structured model call per completed round: `working_memory_update`
 - one structured chunker for assistant and non-Pando tool outputs
 - deterministic retention and persistence
 
-The default path uses the cheap structured model. The proxy only escalates to the configured overflow model when the serialized structured-input payload exceeds the small model window.
+The proxy should use the cheap structured model by default and escalate only when size requires it.
 
 ## Observability
 
 Logging is off unless a log file is configured.
 
-When enabled, the proxy logs:
+When enabled, the proxy should log:
 
 - request rewrite metrics
 - structured model selection
 - round source discovery
 - exact chunk materialization
-- explicit `round_update` keep/drop decisions and task transitions
-- local `context_get` fetches
+- explicit `working_memory_update` keep/drop decisions
+- local `memory` fetches
 - saved memory totals
 - end-of-round aggregate state in `round_complete`
 
-`round_complete` includes the current task ids/count, piece ids/count, total stored piece bytes, processed source count, local fetch counts, and any memory-update error for that round.
+`round_complete` should include the current objective, chunk ids/count, total stored chunk bytes, processed source count, local fetch counts, and any memory-update error for that round.
+
+## Wrapper Transport Modes
+
+The wrapper has two distinct transport paths:
+
+- `exec` mode points Codex at the local HTTP proxy and exercises `POST /v1/responses`
+- interactive mode uses a local Codex app-server plus websocket relay
+
+For fast local live testing against the latest source, prefer:
+
+```sh
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run src/main.ts ...
+```
+
+Use one fixed `--proxy-log-file` and one fixed `--proxy-state-dir` per test session, then run round 1 with `exec` and later rounds with `exec resume --last`. That keeps one multi-round memory session while still starting a fresh proxy process on each round.
 
 ## Files
 
@@ -103,3 +139,4 @@ Design docs:
 - `MEMORY_OPERATIONS.md`
 - `REFERENCE.md`
 - `CONTEXT_MEMORY_DESIGN.md`
+- `LIVE_E2E.md`

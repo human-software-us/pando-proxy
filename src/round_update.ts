@@ -1,21 +1,22 @@
 import {
-  MemoryState,
-  PieceDraft,
-  PieceRecord,
-  pruneMemoryToLiveTasks,
-  Task,
+  type ChunkDraft,
+  type ChunkRecord,
+  dedupeChunks,
+  normalizeObjective,
+  type MemoryState,
   unique,
 } from "./memory_state.ts";
 
-export type PieceSelection =
-  | { mode: "drop_all" }
-  | { mode: "keep_all" }
-  | { mode: "keep_only"; ids: string[] }
-  | { mode: "drop_only"; ids: string[] };
-
-export type RoundUpdateRequest = {
-  tasks: Task[];
-  newPieces: Array<{
+export type WorkingMemoryUpdateRequest = {
+  objective: string | null;
+  chunks: Array<{
+    id: string;
+    sourceKind: "user" | "assistant" | "tool";
+    toolName?: string;
+    content: unknown;
+    pointer?: Record<string, unknown>;
+  }>;
+  newChunks: Array<{
     id: string;
     sourceKind: "user" | "assistant" | "tool";
     toolName?: string;
@@ -24,273 +25,335 @@ export type RoundUpdateRequest = {
   }>;
 };
 
-export type RoundUpdateResponse = {
-  tasksAfter: Task[];
-  pieceSelection: PieceSelection;
-  keptPieceTaskLinks: Array<{
-    id: string;
-    taskIds: string[];
-  }>;
+export type WorkingMemoryUpdateResponse = {
+  objectiveAfter: string | null;
+  keepOldChunkIds: string[];
+  keepNewChunkIds: string[];
 };
 
-export type RoundUpdateClient = (request: RoundUpdateRequest) => Promise<unknown>;
+export type WorkingMemoryUpdateClient = (request: WorkingMemoryUpdateRequest) => Promise<unknown>;
+
 export type AppliedRoundUpdate = {
   memory: MemoryState;
-  response: RoundUpdateResponse;
-  keptNewPieceIds: string[];
-  droppedNewPieceIds: string[];
+  response: WorkingMemoryUpdateResponse;
+  keptOldChunkIds: string[];
+  droppedOldChunkIds: string[];
+  keptNewChunkIds: string[];
+  droppedNewChunkIds: string[];
 };
-
 
 export async function applyRoundUpdate(
   state: MemoryState,
-  newPieces: PieceDraft[],
-  client: RoundUpdateClient,
+  newChunks: ChunkDraft[],
+  client: WorkingMemoryUpdateClient,
 ): Promise<AppliedRoundUpdate> {
-  if (newPieces.length === 0) {
+  if (newChunks.length === 0) {
     return {
       memory: state,
       response: {
-        tasksAfter: state.tasks,
-        pieceSelection: { mode: "drop_all" },
-        keptPieceTaskLinks: [],
+        objectiveAfter: state.objective,
+        keepOldChunkIds: state.chunks.map((chunk) => chunk.id),
+        keepNewChunkIds: [],
       },
-      keptNewPieceIds: [],
-      droppedNewPieceIds: [],
+      keptOldChunkIds: state.chunks.map((chunk) => chunk.id),
+      droppedOldChunkIds: [],
+      keptNewChunkIds: [],
+      droppedNewChunkIds: [],
     };
   }
 
-  const request = {
-    tasks: state.tasks,
-    newPieces: newPieces.map((piece) => ({
-      id: piece.id,
-      sourceKind: piece.sourceKind,
-      ...(piece.toolName ? { toolName: piece.toolName } : {}),
-      content: piece.payloadInline,
-      ...(piece.pointer ? { pointer: piece.pointer } : {}),
+  const request: WorkingMemoryUpdateRequest = {
+    objective: state.objective,
+    chunks: state.chunks.map((chunk) => ({
+      id: chunk.id,
+      sourceKind: chunk.sourceKind,
+      ...(chunk.toolName ? { toolName: chunk.toolName } : {}),
+      content: chunk.payload,
+      ...(chunk.pointer ? { pointer: chunk.pointer } : {}),
+    })),
+    newChunks: newChunks.map((chunk) => ({
+      id: chunk.id,
+      sourceKind: chunk.sourceKind,
+      ...(chunk.toolName ? { toolName: chunk.toolName } : {}),
+      content: chunk.payload,
+      ...(chunk.pointer ? { pointer: chunk.pointer } : {}),
     })),
   };
-  const value = await client(request);
-  const parsed = parseAndValidateRoundUpdate(value, state, newPieces);
-  if (!parsed.ok) {
-    throw new Error(`round_update validation failed: ${parsed.errors.join("; ")}`);
+
+  let parsed:
+    | { ok: true; response: WorkingMemoryUpdateResponse }
+    | { ok: false; errors: string[] }
+    | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const value = await client(request);
+    parsed = parseAndValidateRoundUpdate(value, state, newChunks);
+    if (parsed.ok) {
+      break;
+    }
   }
 
-  const newPieceIds = newPieces.map((piece) => piece.id);
-  const keptNewPieceIds = [...resolveKeptPieceIds(parsed.response.pieceSelection, newPieceIds)];
-  const droppedNewPieceIds = newPieceIds.filter((pieceId) => !keptNewPieceIds.includes(pieceId));
-  const nextSeq = state.roundSeq + 1;
-  const linkMap = new Map(parsed.response.keptPieceTaskLinks.map((item) => [item.id, unique(item.taskIds)]));
-  const nextPieces: PieceRecord[] = [
-    ...state.pieces,
-    ...newPieces.flatMap((piece) => {
-      const taskIds = linkMap.get(piece.id);
-      if (!taskIds) {
-        return [];
-      }
-      return [{
-        ...piece,
-        taskIds,
-        createdSeq: nextSeq,
-      }];
-    }),
-  ];
+  if (!parsed || !parsed.ok) {
+    const fallback = buildFallbackRoundUpdate(state, newChunks);
+    if (fallback) {
+      parsed = { ok: true, response: fallback };
+    } else {
+      throw new Error(`working_memory_update validation failed: ${(parsed?.errors ?? []).join("; ")}`);
+    }
+  }
 
-  const memory = pruneMemoryToLiveTasks({
+  const nextSeq = state.roundSeq + 1;
+  const keptOldSet = new Set(parsed.response.keepOldChunkIds);
+  const keptNewSet = new Set(parsed.response.keepNewChunkIds);
+  const keptOldChunks = state.chunks.filter((chunk) => keptOldSet.has(chunk.id));
+  const keptNewChunks: ChunkRecord[] = newChunks
+    .filter((chunk) => keptNewSet.has(chunk.id))
+    .map((chunk) => ({
+      ...chunk,
+      createdSeq: nextSeq,
+    }));
+
+  const objectiveAfter = normalizeObjective(parsed.response.objectiveAfter);
+  const memory = {
     roundSeq: nextSeq,
-    tasks: parsed.response.tasksAfter,
-    pieces: dedupeById(nextPieces),
+    objective: objectiveAfter,
+    chunks: objectiveAfter ? dedupeChunks([...keptOldChunks, ...keptNewChunks]) : [],
     processedSourceIds: unique([
       ...state.processedSourceIds,
-      ...newPieces.map((piece) => piece.sourceId),
+      ...newChunks.map((chunk) => chunk.sourceId),
     ]),
-  });
+  } satisfies MemoryState;
 
   return {
     memory,
-    response: parsed.response,
-    keptNewPieceIds,
-    droppedNewPieceIds,
+    response: {
+      ...parsed.response,
+      objectiveAfter,
+    },
+    keptOldChunkIds: [...keptOldSet],
+    droppedOldChunkIds: state.chunks.map((chunk) => chunk.id).filter((id) => !keptOldSet.has(id)),
+    keptNewChunkIds: [...keptNewSet],
+    droppedNewChunkIds: newChunks.map((chunk) => chunk.id).filter((id) => !keptNewSet.has(id)),
   };
 }
 
 export function parseAndValidateRoundUpdate(
   value: unknown,
   previous: MemoryState,
-  newPieces: PieceDraft[],
-): { ok: true; response: RoundUpdateResponse } | { ok: false; errors: string[] } {
-  const response = coerceRoundUpdate(value);
+  newChunks: ChunkDraft[],
+): { ok: true; response: WorkingMemoryUpdateResponse } | { ok: false; errors: string[] } {
+  const response = coerceWorkingMemoryUpdate(value);
   if (!response) {
-    return { ok: false, errors: ["round_update response must be an object"] };
+    return { ok: false, errors: ["working_memory_update response must be an object"] };
   }
-  const errors = validateRoundUpdate(response, previous, newPieces);
+  const errors = validateRoundUpdate(response, previous, newChunks);
   return errors.length === 0 ? { ok: true, response } : { ok: false, errors };
 }
 
 export function validateRoundUpdate(
-  response: RoundUpdateResponse,
+  response: WorkingMemoryUpdateResponse,
   previous: MemoryState,
-  newPieces: PieceDraft[],
+  newChunks: ChunkDraft[],
 ): string[] {
   const errors: string[] = [];
-  const pieceIds = newPieces.map((piece) => piece.id);
-  const pieceIdSet = new Set(pieceIds);
-  const keptIds = resolveKeptPieceIds(response.pieceSelection, pieceIds, errors);
+  const previousIds = previous.chunks.map((chunk) => chunk.id);
+  const newIds = newChunks.map((chunk) => chunk.id);
+  const previousIdSet = new Set(previousIds);
+  const newIdSet = new Set(newIds);
+  const signals = detectRoundIntentSignals(newChunks);
 
-  const taskIds = new Set<string>();
-  for (const task of response.tasksAfter) {
-    if (!task.id || !task.text) {
-      errors.push("Every task in tasksAfter must have id and text");
-    }
-    if (taskIds.has(task.id)) {
-      errors.push(`Duplicate task id in tasksAfter: ${task.id}`);
-    }
-    taskIds.add(task.id);
-    if (task.status !== "open" && task.status !== "in_progress") {
-      errors.push(`Task ${task.id} has invalid status ${task.status}`);
-    }
-    if (task.kind !== "say" && task.kind !== "do") {
-      errors.push(`Task ${task.id} has invalid kind ${task.kind}`);
+  validateChunkIdList("keepOldChunkIds", response.keepOldChunkIds, previousIdSet, errors);
+  validateChunkIdList("keepNewChunkIds", response.keepNewChunkIds, newIdSet, errors);
+
+  for (const chunk of newChunks) {
+    if (previous.processedSourceIds.includes(chunk.sourceId)) {
+      errors.push(`Source ${chunk.sourceId} was already processed`);
     }
   }
 
-  const linkIds = response.keptPieceTaskLinks.map((item) => item.id);
-  const duplicateLinkIds = linkIds.filter((id, index) => linkIds.indexOf(id) !== index);
-  for (const id of duplicateLinkIds) {
-    errors.push(`Duplicate keptPieceTaskLinks entry for ${id}`);
-  }
+  const objectiveAfter = normalizeObjective(response.objectiveAfter);
+  const keptCount = response.keepOldChunkIds.length + response.keepNewChunkIds.length;
+  validateObjectiveAbstraction(objectiveAfter, errors);
 
-  for (const item of response.keptPieceTaskLinks) {
-    if (!pieceIdSet.has(item.id)) {
-      errors.push(`keptPieceTaskLinks references unknown piece ${item.id}`);
-      continue;
-    }
-    if (!keptIds.has(item.id)) {
-      errors.push(`Dropped piece ${item.id} appears in keptPieceTaskLinks`);
-    }
-    if (item.taskIds.length === 0) {
-      errors.push(`Kept piece ${item.id} must have at least one taskId`);
-    }
-    for (const taskId of item.taskIds) {
-      if (!taskIds.has(taskId)) {
-        errors.push(`Kept piece ${item.id} references missing task ${taskId}`);
-      }
-    }
+  if (signals.explicitCarryForward && !objectiveAfter) {
+    errors.push("Explicit future-recall cues require a live objective");
   }
-
-  for (const pieceId of keptIds) {
-    if (!linkIds.includes(pieceId)) {
-      errors.push(`Kept piece ${pieceId} is missing from keptPieceTaskLinks`);
-    }
+  if (signals.explicitCarryForward && keptCount === 0) {
+    errors.push("Explicit future-recall cues require at least one kept chunk");
   }
-  for (const pieceId of pieceIds) {
-    if (!keptIds.has(pieceId) && linkIds.includes(pieceId)) {
-      errors.push(`Dropped piece ${pieceId} appears in keptPieceTaskLinks`);
-    }
+  if (signals.explicitClose && objectiveAfter) {
+    errors.push("Explicit close cues require clearing the objective");
   }
-
-  for (const piece of newPieces) {
-    if (previous.processedSourceIds.includes(piece.sourceId)) {
-      errors.push(`Source ${piece.sourceId} was already processed`);
-    }
+  if (signals.explicitClose && keptCount > 0) {
+    errors.push("Explicit close cues require dropping all kept chunks");
+  }
+  if (previous.objective && !signals.explicitClose && !objectiveAfter) {
+    errors.push("Existing live objective requires an explicit close cue before clearing memory");
+  }
+  if (!objectiveAfter && keptCount > 0) {
+    errors.push("Cleared objective cannot keep chunks");
   }
 
   return errors;
 }
 
-export function resolveKeptPieceIds(
-  selection: PieceSelection,
-  pieceIds: string[],
-  errors: string[] = [],
-): Set<string> {
-  const pieceIdSet = new Set(pieceIds);
-  const validateIds = (ids: string[]) => {
-    const seen = new Set<string>();
-    for (const id of ids) {
-      if (!pieceIdSet.has(id)) {
-        errors.push(`pieceSelection references unknown piece ${id}`);
-      }
-      if (seen.has(id)) {
-        errors.push(`pieceSelection references duplicate piece ${id}`);
-      }
-      seen.add(id);
+function validateChunkIdList(
+  field: string,
+  ids: string[],
+  validIds: Set<string>,
+  errors: string[],
+): void {
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (!validIds.has(id)) {
+      errors.push(`${field} references unknown chunk ${id}`);
     }
-  };
-
-  if (selection.mode === "drop_all") {
-    return new Set<string>();
+    if (seen.has(id)) {
+      errors.push(`${field} references duplicate chunk ${id}`);
+    }
+    seen.add(id);
   }
-  if (selection.mode === "keep_all") {
-    return new Set(pieceIds);
-  }
-  if (selection.mode === "keep_only") {
-    validateIds(selection.ids);
-    return new Set(selection.ids);
-  }
-  validateIds(selection.ids);
-  return new Set(pieceIds.filter((id) => !selection.ids.includes(id)));
 }
 
-function dedupeById<T extends { id: string }>(items: T[]): T[] {
-  const map = new Map<string, T>();
-  for (const item of items) {
-    map.set(item.id, item);
-  }
-  return [...map.values()];
-}
-
-function coerceRoundUpdate(value: unknown): RoundUpdateResponse | null {
+function coerceWorkingMemoryUpdate(value: unknown): WorkingMemoryUpdateResponse | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   const record = value as Record<string, unknown>;
-  const selection = coercePieceSelection(record.pieceSelection);
-  if (!selection) {
-    return null;
-  }
   return {
-    tasksAfter: Array.isArray(record.tasksAfter)
-      ? record.tasksAfter
-        .filter((item) => item && typeof item === "object" && !Array.isArray(item))
-        .map((item) => {
-          const task = item as Record<string, unknown>;
-          return {
-            id: String(task.id ?? ""),
-            text: String(task.text ?? ""),
-            status: task.status === "open" ? "open" : "in_progress",
-            kind: task.kind === "say" ? "say" : "do",
-          } as Task;
-        })
-      : [],
-    pieceSelection: selection,
-    keptPieceTaskLinks: Array.isArray(record.keptPieceTaskLinks)
-      ? record.keptPieceTaskLinks
-        .filter((item) => item && typeof item === "object" && !Array.isArray(item))
-        .map((item) => {
-          const entry = item as Record<string, unknown>;
-          return {
-            id: String(entry.id ?? ""),
-            taskIds: Array.isArray(entry.taskIds) ? entry.taskIds.map(String) : [],
-          };
-        })
-      : [],
+    objectiveAfter: typeof record.objectiveAfter === "string" || record.objectiveAfter === null
+      ? normalizeObjective(record.objectiveAfter as string | null)
+      : null,
+    keepOldChunkIds: Array.isArray(record.keepOldChunkIds) ? record.keepOldChunkIds.map(String) : [],
+    keepNewChunkIds: Array.isArray(record.keepNewChunkIds) ? record.keepNewChunkIds.map(String) : [],
   };
 }
 
-function coercePieceSelection(value: unknown): PieceSelection | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+type RoundIntentSignals = {
+  explicitCarryForward: boolean;
+  explicitClose: boolean;
+};
+
+function buildFallbackRoundUpdate(
+  previous: MemoryState,
+  newChunks: ChunkDraft[],
+): WorkingMemoryUpdateResponse | null {
+  const signals = detectRoundIntentSignals(newChunks);
+  if (signals.explicitClose) {
+    return {
+      objectiveAfter: null,
+      keepOldChunkIds: [],
+      keepNewChunkIds: [],
+    };
+  }
+
+  const objectiveAfter = previous.objective ?? deriveFallbackObjective(newChunks);
+  if (!objectiveAfter) {
     return null;
   }
-  const record = value as Record<string, unknown>;
-  const mode = record.mode;
-  if (mode === "drop_all" || mode === "keep_all") {
-    return { mode };
+
+  return {
+    objectiveAfter,
+    keepOldChunkIds: previous.chunks.map((chunk) => chunk.id),
+    keepNewChunkIds: newChunks.map((chunk) => chunk.id),
+  };
+}
+
+function deriveFallbackObjective(newChunks: ChunkDraft[]): string | null {
+  const signals = detectRoundIntentSignals(newChunks);
+  if (signals.explicitCarryForward) {
+    return "Preserve the exact evidence needed for later recall.";
   }
-  if (mode === "keep_only" || mode === "drop_only") {
-    return {
-      mode,
-      ids: Array.isArray(record.ids) ? record.ids.map(String) : [],
-    };
+  if (newChunks.some((chunk) => chunk.sourceKind === "tool")) {
+    return "Continue the current work using the retained exact evidence.";
+  }
+  if (newChunks.some((chunk) => chunk.sourceKind === "user")) {
+    return "Continue the current user request.";
   }
   return null;
 }
+
+function validateObjectiveAbstraction(objective: string | null, errors: string[]): void {
+  if (!objective) {
+    return;
+  }
+  if (objective.length > 160) {
+    errors.push("objectiveAfter must stay compact");
+  }
+  if (objective.includes("\n")) {
+    errors.push("objectiveAfter must be a single line");
+  }
+  if (/[`'"]/.test(objective)) {
+    errors.push("objectiveAfter must not quote exact content");
+  }
+  if (/\b[A-Za-z_][A-Za-z0-9_]*=/.test(objective)) {
+    errors.push("objectiveAfter must not embed exact key/value content");
+  }
+  if (/\b(?:printf|echo|cat|grep|rg|ls|find|curl|deno|node|python|bash|zsh|exec_command)\b/i.test(objective)) {
+    errors.push("objectiveAfter must not restate tool commands");
+  }
+}
+
+function detectRoundIntentSignals(newChunks: ChunkDraft[]): RoundIntentSignals {
+  const texts = newChunks
+    .filter((chunk) => chunk.sourceKind === "user")
+    .map((chunk) => textFromPayload(chunk.payload))
+    .filter((text) => text.length > 0)
+    .map((text) => text.toLowerCase());
+
+  return {
+    explicitCarryForward: texts.some((text) => EXPLICIT_CARRY_FORWARD_PATTERNS.some((pattern) => pattern.test(text))),
+    explicitClose: texts.some((text) => EXPLICIT_CLOSE_PATTERNS.some((pattern) => pattern.test(text))),
+  };
+}
+
+function textFromPayload(payload: unknown): string {
+  if (typeof payload === "string") {
+    return payload;
+  }
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const record = payload as Record<string, unknown>;
+  const content = Array.isArray(record.content) ? record.content : [];
+  return content.map((entry) => {
+    if (typeof entry === "string") {
+      return entry;
+    }
+    if (!entry || typeof entry !== "object") {
+      return "";
+    }
+    const contentEntry = entry as Record<string, unknown>;
+    if (typeof contentEntry.text === "string") {
+      return contentEntry.text;
+    }
+    if (typeof contentEntry.input_text === "string") {
+      return contentEntry.input_text;
+    }
+    return "";
+  }).join("\n");
+}
+
+const EXPLICIT_CARRY_FORWARD_PATTERNS = [
+  /\bwe(?:'ll| will)\b.*\bneed\b.*\b(later|again|next turn|future)\b/i,
+  /\bneed\b.*\b(exact|word for word)\b.*\b(later|again|next turn|future)\b/i,
+  /\bremember\b.*\b(later|future|next turn|next round)\b/i,
+  /\bkeep\b.*\b(available|for recall|for later|for future)\b/i,
+  /\brecall\b.*\b(exact|later|future)\b/i,
+  /\bword for word\b.*\b(later|again|future)?/i,
+];
+
+const EXPLICIT_CLOSE_PATTERNS = [
+  /\bforget all of (?:that|this|it|these(?:\s+\w+)*)\b/i,
+  /\bforget (?:everything|those|this|that|it)\b/i,
+  /\byou can forget\b/i,
+  /\bwe(?:'re| are) done(?: with this task)?\b/i,
+  /\bwe(?:'re| are) done with this task\b/i,
+  /\bdone with this task\b/i,
+  /\btask (?:is )?(?:fully )?done\b/i,
+  /\btask complete\b/i,
+  /\bsession done\b/i,
+  /\bend this task\b/i,
+  /\bno longer need\b/i,
+  /\bclear (?:that|this|it)\b/i,
+  /\btask is over\b/i,
+];

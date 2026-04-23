@@ -1,98 +1,112 @@
 # Design Principles
 
-## 1. Tasks Are The Only Durable Intent Abstraction
+## 1. Keep One Live Objective
 
-The proxy does not preserve user intent as replayed raw history or as summaries.
+The durable abstraction of ongoing work is one compact `objective`, not a graph of interdependent tasks.
 
-The durable representation of user intent is the live task list.
+The objective should describe the live work plainly and minimally. If the work is finished, the objective should become `null`.
 
-## 2. Exact Pieces Only
+## 2. Exact Chunks Only
 
-All retained memory outside the task list is exact content:
+All retained memory outside the objective is exact content:
 
-- exact whole user messages
+- exact user chunks
 - exact assistant chunks
 - exact tool chunks
 
-There are no summary fields, no synthetic prose memory blocks, and no renamed summary concept hiding under a different key.
+There are no previews, summaries, pointer catalogs, or prose memory digests in the durable state.
 
-## 3. End-Of-Round Update
+## 3. Inline Payloads Only
 
-Memory updates run once per completed round, not continuously.
+Every retained chunk stores its original payload directly in state.
 
-Input to the round update:
+The design does not use:
 
-- existing live tasks
+- `payloadRef`
+- blob indirection
+- external payload files as the primary representation
+
+Simplicity matters more than storage optimization here.
+
+## 4. End-Of-Round Working-Set Update
+
+Memory updates run once per completed round.
+
+Input to the update:
+
+- previous objective
+- previous kept chunks
 - exact new content from the completed round
 
-Output from the round update:
+Output from the update:
 
-- full replacement live task list
-- explicit keep/drop decision for the new pieces
-- task links for every kept piece
+- `objectiveAfter`
+- `keepOldChunkIds`
+- `keepNewChunkIds`
 
-## 4. Explicit Keep/Drop
+Everything not explicitly kept is dropped.
 
-The model must explicitly say what happened to the new pieces.
+## 5. Minimal Working Set
 
-The keep/drop selection is one of:
+The system should retain only exact evidence that still matters for continuing the work or answering likely follow-up questions.
 
-- `drop_all`
-- `keep_all`
-- `keep_only`
-- `drop_only`
+If the model ran five searches and only one exact result mattered, the other ninety-nine chunks should be dropped immediately.
 
-This avoids implicit “anything not mentioned must be dropped” behavior.
+The intended bias is:
 
-## 5. Deterministic Retention
+- prefer dropping chunks
+- keep only exact evidence that is still useful
+- clear memory completely when the work is clearly over
 
-Retention is code, not another model pass.
+## 6. No Preview Index By Default
 
-If a kept piece no longer has any live task reference, it is removed.
+The default rewritten prompt should contain:
 
-If a stored payload is too large for inline state storage, it is moved to a local blob file by deterministic store code.
+- the live objective
+- the exact retained chunks selected for inline inclusion
 
-## 6. No Upstream Summary Injection
+It should not contain:
 
-The proxy does not build or inject synthetic `<context_memory>` prose.
+- preview lists
+- piece indexes
+- selector metadata
+- pointer metadata
 
-The upstream context is built from:
+## 7. Fallback Memory Is Exceptional
 
-- leading instructions
-- the live task list
-- the deterministic piece index
-- the current round tail
+The main path is to attach the right exact chunks up front.
 
-## 7. Fetch Exact Context On Demand
+An optional local `memory(offset, limit)` fallback may exist, but only as a recovery path when the default chunk selection was insufficient.
 
-Old exact context is not replayed every turn.
+That fallback should:
 
-The model can fetch exact prior pieces only through `context_get(pieceIds: string[])`.
-
-The prompt-side piece index exists specifically so the model knows which exact ids are valid and roughly what they contain.
+- exclude chunks already in the prompt
+- return exact retained chunks only
+- use deterministic chronological ordering
+- stay transparent to the user
 
 ## 8. Cheap By Default
 
-The system uses cheap structured-output calls by default.
+The system should use cheap structured-output calls by default.
 
-Escalation is size-based only:
+The proxy should not add extra ranking, repair, or retrieval-planning loops unless they are strictly necessary.
 
-- use the small configured structured model when the request fits
-- use the smallest configured overflow model only when needed for context size
+## 9. Clean User-Facing Finalization
 
-There are no repair loops, ranking passes, retention passes, or “needs more info” side channels.
+The work round and the user-facing answer are different products.
 
-## 9. Observable When Enabled
+The proxy may use a separate finalization pass with no tools so the user receives a clean answer shaped around their request rather than around internal fragments and tool chatter.
 
-When logging is enabled, the proxy should make the round mechanically inspectable.
+## 10. Observable When Enabled
+
+When logging is enabled, the memory manager should be mechanically inspectable.
 
 At minimum the logs should show:
 
 - the rewritten request shape
 - structured model selection
-- new round sources
+- newly observed sources
 - exact chunking output
-- `round_update` task transitions
-- explicit keep/drop decisions
-- local `context_get` requests and returned ids
+- explicit keep/drop decisions for old and new chunks
+- local `memory` requests and returned ids
 - end-of-round aggregate memory state

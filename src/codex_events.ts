@@ -5,6 +5,7 @@ export type AppServerDirection = "client_to_server" | "server_to_client";
 
 export class CodexEventObserver {
   #logger: ProxyLogger;
+  #latestExecThreadId: string | null = null;
 
   constructor(logger: ProxyLogger) {
     this.#logger = logger;
@@ -17,6 +18,10 @@ export class CodexEventObserver {
     }
 
     const payload = parseJson(trimmed);
+    const threadId = extractExecThreadId(payload);
+    if (threadId) {
+      this.#latestExecThreadId = threadId;
+    }
     await this.#logger.log("codex_exec_event", {
       source: "codex_exec_json",
       ...summaryFor(payload),
@@ -32,6 +37,10 @@ export class CodexEventObserver {
       ...summaryFor(payload),
       payload,
     });
+  }
+
+  latestExecThreadId(): string | null {
+    return this.#latestExecThreadId;
   }
 }
 
@@ -55,6 +64,24 @@ function parseJson(value: string): unknown {
   } catch {
     return value;
   }
+}
+
+function extractExecThreadId(payload: unknown): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  if (payload.type === "thread.started" && typeof payload.thread_id === "string") {
+    return payload.thread_id;
+  }
+  const params = isRecord(payload.params) ? payload.params : null;
+  if (params && typeof params.threadId === "string") {
+    return params.threadId;
+  }
+  const thread = params && isRecord(params.thread) ? params.thread : null;
+  if (thread && typeof thread.id === "string") {
+    return thread.id;
+  }
+  return null;
 }
 
 function summaryFor(payload: unknown): Record<string, unknown> {

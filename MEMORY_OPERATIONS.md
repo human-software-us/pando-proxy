@@ -6,8 +6,8 @@
 
 The proxy loads the current session state:
 
-- `tasks`
-- kept `pieces`
+- `objective`
+- kept `chunks`
 - `processedSourceIds`
 
 ### 2. Rewrite Request
@@ -21,21 +21,22 @@ It keeps:
 
 It inserts:
 
-- a developer message containing the live task list
-- a deterministic piece index with exact `pieceId`s and structured pointers
-- the local `context_get` tool definition when pieces exist
+- a developer memory block containing the current objective
+- the exact retained chunks selected for inline inclusion
+- optionally, the local `memory` tool definition when retained chunks exist outside the inline set
 
-It does not replay older raw history beyond the current round tail.
+It does not replay older raw history by default.
 
 ### 3. Execute The Round
 
 The proxy runs the upstream request.
 
-If the model emits `context_get`, the proxy:
+If the model emits `memory(offset, limit)`, the proxy:
 
-- validates the requested `pieceId`s against stored pieces
-- loads the exact payloads locally
-- returns them as local tool outputs
+- computes the retained chunk stream that is still live but not already in the prompt
+- orders it chronologically
+- slices it by `offset` and `limit`
+- returns the exact stored payloads locally
 - continues the upstream loop
 
 ### 4. Collect New Round Content
@@ -52,49 +53,52 @@ Already processed source ids are ignored.
 
 Chunking rules:
 
-- user messages: whole exact piece
+- user messages: whole exact chunk
 - assistant outputs: structured-output chunker
 - non-Pando tool outputs: structured-output chunker
 - Pando tool outputs: deterministic in-code splitter
 
-The chunker returns selectors, not rewritten text. The proxy materializes exact chunks from the original payload.
+The chunker returns selectors, and the proxy materializes exact chunks from the original payload.
 
-### 6. Run `round_update`
+### 6. Run `working_memory_update`
 
-`round_update` receives:
+`working_memory_update` receives:
 
-- current live tasks
-- exact new pieces
+- current objective
+- current kept chunks
+- exact new chunks
 
 It returns:
 
-- `tasksAfter`
-- explicit `pieceSelection`
-- `keptPieceTaskLinks`
+- `objectiveAfter`
+- `keepOldChunkIds`
+- `keepNewChunkIds`
 
 Validation is mechanical and strict.
 
 ### 7. Persist
 
-For kept pieces:
+For kept chunks:
 
-- small exact payloads stay inline
-- large exact payloads move to local blob refs
+- store the exact payload inline in state
 
-For dropped pieces:
+For dropped chunks:
 
-- nothing is persisted
+- remove them from state
 
-Then the proxy prunes any prior kept piece whose `taskIds` no longer intersect the live task set.
+There is no payload indirection layer in the current design.
+
+### 8. Finalize
+
+After the work round completes and memory is updated, the proxy may run a final no-tool pass that turns the exact work results into the best user-facing answer for the original request.
 
 ## Persistence Layout
 
 Per session:
 
 - `state.json`
-- `pieces/*.json` for large payload blobs
 
-State keeps only the latest session snapshot. There is no append-only summary history.
+State keeps only the latest session snapshot. There is no append-only summary history and no external payload blob store in the intended design.
 
 ## Logging
 
@@ -107,33 +111,32 @@ Key events:
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `context_get`
+- `memory_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
 - `round_complete`
 
-`round_complete` is the compact aggregate checkpoint for the round. It records:
+`round_complete` is the compact aggregate checkpoint for the round. It should record:
 
-- task ids and task count
-- piece ids and piece count
-- total stored piece bytes
+- the current objective
+- chunk ids and chunk count
+- total stored chunk bytes
 - processed source count
-- local context fetch count and returned ids
+- local memory fetch count and returned ids
 - any memory-update error for that round
 
-## Context Fetch
+## `memory(offset, limit)`
 
-`context_get` accepts:
+`memory` accepts:
 
 ```json
-{ "pieceIds": ["piece_1", "piece_2"] }
+{ "offset": 0, "limit": 10 }
 ```
 
 and returns:
 
-- the exact payload
-- the piece id
-- source metadata
-- selector metadata
+- exact retained payloads
+- in deterministic chronological order
+- excluding any retained chunks already present in the prompt
 
-No task-wide lookup, fuzzy recall, or ranking exists in v1.
+No previews, selector dumps, ranking, or fuzzy lookup exist in this design.

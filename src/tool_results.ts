@@ -16,7 +16,7 @@ export type InputItemDescriptor = {
   role?: string;
   item: unknown;
   isInstruction: boolean;
-  isSyntheticTaskMemory: boolean;
+  isSyntheticMemory: boolean;
 };
 
 export async function extractNewRequestSources(
@@ -30,7 +30,7 @@ export async function extractNewRequestSources(
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
     const descriptor = await describeInputItem(item, index);
-    if (descriptor.isSyntheticTaskMemory) {
+    if (descriptor.isSyntheticMemory) {
       continue;
     }
     const source = sourceFromInputItem(item, descriptor.ref, toolNamesByCallId);
@@ -117,7 +117,7 @@ async function describeInputItem(item: unknown, index: number): Promise<InputIte
     ...(role ? { role } : {}),
     item,
     isInstruction: type === "message" && (role === "developer" || role === "system"),
-    isSyntheticTaskMemory: isSyntheticTaskMemoryItem(item),
+    isSyntheticMemory: isSyntheticMemoryItem(item),
   };
 }
 
@@ -160,7 +160,7 @@ function sourceFromInputItem(
     return {
       sourceId,
       sourceKind: "tool",
-      payload: "output" in item ? item.output : item,
+      payload: normalizeToolPayload(toolName, "output" in item ? item.output : item),
       ...(toolName ? { toolName } : {}),
       pointer: {
         ...(callId ? { callId } : {}),
@@ -194,19 +194,38 @@ function isToolOutputItem(type: string): boolean {
     type === "mcp_tool_call_output";
 }
 
+function normalizeToolPayload(toolName: string | undefined, payload: unknown): unknown {
+  if (toolName === "exec_command" && typeof payload === "string") {
+    return normalizeExecCommandOutput(payload);
+  }
+  return payload;
+}
+
+function normalizeExecCommandOutput(payload: string): string {
+  const normalized = payload.replace(/\r\n/g, "\n");
+  const marker = "\nOutput:\n";
+  const markerIndex = normalized.indexOf(marker);
+  if (markerIndex === -1) {
+    return payload;
+  }
+
+  const extracted = normalized.slice(markerIndex + marker.length);
+  return extracted.length > 0 ? extracted : payload;
+}
+
 function isAssistantMessageItem(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && value.type === "message" && value.role === "assistant";
 }
 
-function isSyntheticTaskMemoryItem(item: unknown): boolean {
+function isSyntheticMemoryItem(item: unknown): boolean {
   if (!isRecord(item) || item.type !== "message" || item.role !== "developer") {
     return false;
   }
-  if (typeof item.name === "string" && item.name === "pando_task_memory") {
+  if (typeof item.name === "string" && item.name === "pando_working_memory") {
     return true;
   }
   const text = extractInlineText(item);
-  return text.includes("<pando_task_memory>");
+  return text.includes("<pando_working_memory>");
 }
 
 function extractInlineText(item: Record<string, unknown>): string {

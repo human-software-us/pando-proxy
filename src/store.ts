@@ -1,32 +1,28 @@
 import { expandHome } from "./config.ts";
 import { shortHash } from "./hash.ts";
-import { stableJson } from "./json.ts";
 import {
   assertMemoryInvariant,
   emptySessionRecord,
   isRecord,
-  type PieceRecord,
+  type ChunkRecord,
   type SessionRecord,
 } from "./memory_state.ts";
 
-export type ExactPiece = {
+export type ExactChunk = {
   id: string;
   sourceKind: "user" | "assistant" | "tool";
+  sourceId: string;
   toolName?: string;
-  taskIds: string[];
-  pointer?: Record<string, unknown>;
-  selector: PieceRecord["selector"];
+  selector: ChunkRecord["selector"];
   payload: unknown;
 };
 
 export class SessionStore {
   #root: string;
-  #inlinePieceByteLimit: number;
   #locks = new Map<string, Promise<void>>();
 
-  constructor(root: string, inlinePieceByteLimit = Number.POSITIVE_INFINITY) {
+  constructor(root: string, _inlinePieceByteLimit = Number.POSITIVE_INFINITY) {
     this.#root = expandHome(root);
-    this.#inlinePieceByteLimit = inlinePieceByteLimit;
   }
 
   async load(sessionKey: string): Promise<SessionRecord> {
@@ -51,52 +47,25 @@ export class SessionStore {
   async save(sessionKey: string, record: SessionRecord): Promise<void> {
     assertMemoryInvariant(record.memory);
     const dir = await this.#sessionDir(sessionKey);
-    const piecesDir = `${dir}/pieces`;
-    await Deno.mkdir(piecesDir, { recursive: true });
-    const state = structuredClone(record);
-    const referencedRefs = new Set<string>();
-
-    for (const piece of state.memory.pieces) {
-      const payload = piece.payloadInline;
-      if (payload === undefined) {
-        if (piece.payloadRef) {
-          referencedRefs.add(piece.payloadRef);
-        }
-        continue;
-      }
-      if (piece.byteSize <= this.#inlinePieceByteLimit) {
-        piece.payloadRef = undefined;
-        continue;
-      }
-
-      const ref = piece.payloadRef ?? `pieces/${encodeURIComponent(piece.id)}.json`;
-      await atomicWriteText(`${dir}/${ref}`, `${stableJson(payload)}\n`);
-      piece.payloadRef = ref;
-      piece.payloadInline = undefined;
-      referencedRefs.add(ref);
-    }
-
-    await atomicWriteText(`${dir}/state.json`, `${JSON.stringify(state, null, 2)}\n`);
-    await this.#deleteUnreferencedPieceBlobs(piecesDir, referencedRefs);
+    await atomicWriteText(`${dir}/state.json`, `${JSON.stringify(record, null, 2)}\n`);
   }
 
-  async getExactPieces(sessionKey: string, pieceIds: string[]): Promise<ExactPiece[]> {
+  async getExactChunks(sessionKey: string, chunkIds: string[]): Promise<ExactChunk[]> {
     const record = await this.load(sessionKey);
-    const byId = new Map(record.memory.pieces.map((piece) => [piece.id, piece] as const));
-    const out: ExactPiece[] = [];
-    for (const pieceId of pieceIds) {
-      const piece = byId.get(pieceId);
-      if (!piece) {
+    const byId = new Map(record.memory.chunks.map((chunk) => [chunk.id, chunk] as const));
+    const out: ExactChunk[] = [];
+    for (const chunkId of chunkIds) {
+      const chunk = byId.get(chunkId);
+      if (!chunk) {
         continue;
       }
       out.push({
-        id: piece.id,
-        sourceKind: piece.sourceKind,
-        ...(piece.toolName ? { toolName: piece.toolName } : {}),
-        taskIds: [...piece.taskIds],
-        ...(piece.pointer ? { pointer: piece.pointer } : {}),
-        selector: piece.selector,
-        payload: await this.#piecePayload(sessionKey, piece),
+        id: chunk.id,
+        sourceKind: chunk.sourceKind,
+        sourceId: chunk.sourceId,
+        ...(chunk.toolName ? { toolName: chunk.toolName } : {}),
+        selector: chunk.selector,
+        payload: chunk.payload,
       });
     }
     return out;
@@ -117,35 +86,6 @@ export class SessionStore {
       release();
       if (this.#locks.get(sessionKey) === chained) {
         this.#locks.delete(sessionKey);
-      }
-    }
-  }
-
-  async #piecePayload(sessionKey: string, piece: PieceRecord): Promise<unknown> {
-    if (piece.payloadInline !== undefined) {
-      return piece.payloadInline;
-    }
-    if (!piece.payloadRef) {
-      return undefined;
-    }
-    const dir = await this.#sessionDir(sessionKey);
-    return JSON.parse(await Deno.readTextFile(`${dir}/${piece.payloadRef}`));
-  }
-
-  async #deleteUnreferencedPieceBlobs(piecesDir: string, referencedRefs: Set<string>): Promise<void> {
-    try {
-      for await (const entry of Deno.readDir(piecesDir)) {
-        if (!entry.isFile) {
-          continue;
-        }
-        const ref = `pieces/${entry.name}`;
-        if (!referencedRefs.has(ref)) {
-          await Deno.remove(`${piecesDir}/${entry.name}`);
-        }
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
       }
     }
   }

@@ -16,6 +16,7 @@ export async function parseJsonBody(request: Request): Promise<Record<string, un
 export async function sessionKeyFor(
   request: Request,
   body: Record<string, unknown>,
+  fallbackSessionKey?: string,
 ): Promise<string> {
   for (
     const header of [
@@ -31,7 +32,7 @@ export async function sessionKeyFor(
     }
   }
 
-  for (const key of ["conversation_id", "session_id", "conversation", "prompt_cache_key"]) {
+  for (const key of ["conversation_id", "session_id", "conversation"]) {
     const value = body[key];
     if (typeof value === "string" && value.trim()) {
       return value;
@@ -48,9 +49,12 @@ export async function sessionKeyFor(
     }
   }
 
+  if (fallbackSessionKey) {
+    return fallbackSessionKey;
+  }
+
   return `default_${await shortHash(JSON.stringify({
     model: body.model,
-    prompt_cache_key: body.prompt_cache_key,
   }))}`;
 }
 

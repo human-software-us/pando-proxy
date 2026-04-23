@@ -11,9 +11,11 @@ import { forwardResponsesRequest, runResponsesLoop } from "./upstream.ts";
 export function createHandler(
   config: ProxyConfig,
   store = new SessionStore(config.stateDir, config.inlinePieceByteLimit),
+  fallbackSessionKeyForRequest?: () => string | null | undefined,
 ) {
   const logger = createLogger(config.logFile);
   const usageTracker = new TokenUsageTracker();
+  const fallbackSessionKey = `wrapper_${crypto.randomUUID()}`;
 
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
@@ -35,7 +37,11 @@ export function createHandler(
     }
 
     const authHeader = authHeaderFor(request, config.apiKey);
-    const sessionKey = await sessionKeyFor(request, body);
+    const sessionKey = await sessionKeyFor(
+      request,
+      body,
+      fallbackSessionKeyForRequest?.() ?? fallbackSessionKey,
+    );
     const requestId = crypto.randomUUID();
 
     await logger.log("incoming_request", {
@@ -64,17 +70,18 @@ export function createHandler(
           sessionKey,
           droppedInputIds: rewrite.diff.droppedInputIds,
           keptInputIds: rewrite.diff.keptInputIds,
-          insertedTaskCount: rewrite.diff.insertedTaskCount,
-          indexedPieceCount: rewrite.diff.indexedPieceCount,
+          insertedMemory: rewrite.diff.insertedMemory,
+          inlineChunkCount: rewrite.diff.inlineChunkCount,
+          omittedChunkCount: rewrite.diff.omittedChunkCount,
           ...requestContextMetrics(rewrite.body),
         });
 
         const loop = await runResponsesLoop(
           config,
           { authHeader, body: rewrite.body, logger },
-          store,
-          sessionKey,
           record.memory,
+          rewrite.inlineChunkIds,
+          sessionKey,
         );
         if (!loop.ok) {
           return loop.response;
@@ -93,7 +100,7 @@ export function createHandler(
               }),
           );
           const memoryUpdate = await updateMemoryForCompletedRound(
-            body,
+            rewrite.body,
             record.memory,
             loop.finalBody,
             loop.assistantSources,
@@ -107,8 +114,8 @@ export function createHandler(
             await logger.log("memory_state_saved", {
               requestId,
               sessionKey,
-              newPieceIds: memoryUpdate.newPieceIds,
-              droppedPieceIds: memoryUpdate.droppedPieceIds,
+              newChunkIds: memoryUpdate.newChunkIds,
+              droppedChunkIds: memoryUpdate.droppedChunkIds,
               ...memoryStateMetrics(memoryUpdate.memory),
             });
           }
@@ -134,9 +141,9 @@ export function createHandler(
           requestId,
           sessionKey,
           memoryUpdateError,
-          localContextFetchCount: loop.fetches.length,
-          localContextFetches: loop.fetches,
-          returnedContextPieceIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedPieceIds))],
+          localMemoryFetchCount: loop.fetches.length,
+          localMemoryFetches: loop.fetches,
+          returnedMemoryChunkIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedChunkIds))],
           ...memoryStateMetrics(finalMemory),
           ...(usageTotals ? usageTotals : {}),
         });
@@ -148,8 +155,11 @@ export function createHandler(
   };
 }
 
-export function startServer(config: ProxyConfig): Deno.HttpServer {
-  const handler = createHandler(config);
+export function startServer(
+  config: ProxyConfig,
+  fallbackSessionKeyForRequest?: () => string | null | undefined,
+): Deno.HttpServer {
+  const handler = createHandler(config, undefined, fallbackSessionKeyForRequest);
   return Deno.serve({
     hostname: config.host,
     port: config.port,

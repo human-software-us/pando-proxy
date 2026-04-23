@@ -150,10 +150,14 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
 
   const baseConfig = loadConfig(parsed.options);
   const logFile = await resolveWrapperLogFile(parsed.options, baseConfig.stateDir);
-  const portStart = parsed.options.portStart ?? DEFAULT_WRAPPER_PORT_START;
-  const started = startProxyOnAvailablePort({ ...baseConfig, logFile }, portStart);
   const logger = createLogger(logFile);
   const observer = new CodexEventObserver(logger);
+  const portStart = parsed.options.portStart ?? DEFAULT_WRAPPER_PORT_START;
+  const started = startProxyOnAvailablePort(
+    { ...baseConfig, logFile },
+    portStart,
+    () => observer.latestExecThreadId(),
+  );
   const mode = classifyCodexRunMode(parsed.codexArgs);
   const cleanup = installProxyCleanup(started.server, logger);
 
@@ -705,11 +709,12 @@ async function observeCompleteJsonLines(
 export function startProxyOnAvailablePort(
   baseConfig: ProxyConfig,
   portStart = DEFAULT_WRAPPER_PORT_START,
+  fallbackSessionKeyForRequest?: () => string | null | undefined,
 ): StartedProxy {
   for (let port = portStart; port <= 65_535; port += 1) {
     const config = { ...baseConfig, port };
     try {
-      return { config, server: startServer(config) };
+      return { config, server: startServer(config, fallbackSessionKeyForRequest) };
     } catch (error) {
       if (isAddressInUse(error)) {
         continue;
@@ -780,6 +785,8 @@ export function codexProviderConfigArgs(config: Pick<ProxyConfig, "host" | "port
     `${prefix}.base_url="http://${config.host}:${config.port}/v1"`,
     "-c",
     `${prefix}.wire_api="responses"`,
+    "-c",
+    `${prefix}.transport="responses_http"`,
     "-c",
     `${prefix}.requires_openai_auth=true`,
   ];

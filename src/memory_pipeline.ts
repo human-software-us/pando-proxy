@@ -20,8 +20,8 @@ export type MemoryLogContext = {
 export type CompletedRoundMemoryResult = {
   memory: MemoryState;
   changed: boolean;
-  newPieceIds: string[];
-  droppedPieceIds: string[];
+  newChunkIds: string[];
+  droppedChunkIds: string[];
 };
 
 export async function updateMemoryForCompletedRound(
@@ -45,7 +45,7 @@ export async function updateMemoryForCompletedRound(
   await logContext.logger?.log("memory_round_sources", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    taskIdsBefore: previous.tasks.map((task) => task.id),
+    objectiveBefore: previous.objective,
     sources: sources.map((source) => ({
       sourceId: source.sourceId,
       sourceKind: source.sourceKind,
@@ -63,12 +63,12 @@ export async function updateMemoryForCompletedRound(
     return {
       memory: previous,
       changed: false,
-      newPieceIds: [],
-      droppedPieceIds: [],
+      newChunkIds: [],
+      droppedChunkIds: [],
     };
   }
 
-  const beforePieceIds = new Set(previous.pieces.map((piece) => piece.id));
+  const beforeChunkIds = new Set(previous.chunks.map((chunk) => chunk.id));
   const chunked = await chunkRoundSources(sources, config, clients);
 
   await logContext.logger?.log("memory_round_chunked", {
@@ -82,42 +82,41 @@ export async function updateMemoryForCompletedRound(
       toolName: piece.toolName ?? null,
       selector: piece.selector,
       byteSize: piece.byteSize,
-      previewText: piece.previewText ?? null,
       pointer: piece.pointer ?? null,
     })),
   });
 
-  const applied = await applyRoundUpdate(previous, chunked, clients.roundUpdate);
+  const applied = await applyRoundUpdate(previous, chunked, clients.workingMemoryUpdate);
   const next = applied.memory;
-  const afterPieceIds = new Set(next.pieces.map((piece) => piece.id));
+  const afterChunkIds = new Set(next.chunks.map((chunk) => chunk.id));
 
-  const newPieceIds = [...afterPieceIds].filter((pieceId) => !beforePieceIds.has(pieceId));
-  const droppedPieceIds = [...beforePieceIds].filter((pieceId) => !afterPieceIds.has(pieceId));
+  const newChunkIds = [...afterChunkIds].filter((chunkId) => !beforeChunkIds.has(chunkId));
+  const droppedChunkIds = [...beforeChunkIds].filter((chunkId) => !afterChunkIds.has(chunkId));
 
   await logContext.logger?.log("memory_round_decision", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    tasksBefore: previous.tasks,
-    tasksAfter: applied.response.tasksAfter,
-    pieceSelection: applied.response.pieceSelection,
-    keptPieceTaskLinks: applied.response.keptPieceTaskLinks,
-    keptNewPieceIds: applied.keptNewPieceIds,
-    droppedNewPieceIds: applied.droppedNewPieceIds,
+    objectiveBefore: previous.objective,
+    objectiveAfter: applied.response.objectiveAfter,
+    keptOldChunkIds: applied.keptOldChunkIds,
+    droppedOldChunkIds: applied.droppedOldChunkIds,
+    keptNewChunkIds: applied.keptNewChunkIds,
+    droppedNewChunkIds: applied.droppedNewChunkIds,
   });
 
   await logContext.logger?.log("memory_round_updated", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    newPieceIds,
-    droppedPieceIds,
+    newChunkIds,
+    droppedChunkIds,
     ...memoryStateMetrics(next),
   });
 
   return {
     memory: next,
     changed: true,
-    newPieceIds,
-    droppedPieceIds,
+    newChunkIds,
+    droppedChunkIds,
   };
 }
 

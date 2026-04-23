@@ -3,9 +3,8 @@ import { resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import { stableJson } from "./json.ts";
 import type { ProxyLogger } from "./logger.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
-import type { MemoryState } from "./memory_state.ts";
+import { chronologicalChunks, type ChunkRecord, type MemoryState } from "./memory_state.ts";
 import { isRecord } from "./memory_state.ts";
-import type { ExactPiece, SessionStore } from "./store.ts";
 import type { RoundSource } from "./tool_results.ts";
 import { extractAssistantSourcesFromResponse } from "./tool_results.ts";
 
@@ -27,8 +26,9 @@ export type UpstreamOptions = {
 };
 
 export type LocalContextFetch = {
-  requestedPieceIds: string[];
-  returnedPieceIds: string[];
+  offset: number;
+  limit: number;
+  returnedChunkIds: string[];
 };
 
 export type UpstreamLoopResult =
@@ -92,14 +92,14 @@ export async function forwardResponsesRequest(
 export async function runResponsesLoop(
   config: ProxyConfig,
   options: UpstreamOptions,
-  store: SessionStore,
-  sessionKey: string,
   memory: MemoryState,
+  inlineChunkIds: string[],
+  sessionKey?: string,
 ): Promise<UpstreamLoopResult> {
-  let requestBody: Record<string, unknown> = { ...options.body, stream: false, store: false };
+  let requestBody: Record<string, unknown> = { ...options.body, stream: true, store: false };
   const fetches: LocalContextFetch[] = [];
   const assistantSources: RoundSource[] = [];
-  const allowedPieceIds = new Set(memory.pieces.map((piece) => piece.id));
+  const availableChunks = buildAvailableMemoryChunks(memory, inlineChunkIds);
 
   for (let iteration = 0; iteration <= config.maxLocalContextToolCalls; iteration += 1) {
     const upstream = await postResponsesJson(config, options.authHeader, requestBody, options.logger);
@@ -109,7 +109,7 @@ export async function runResponsesLoop(
 
     const responseBody = upstream.body;
     assistantSources.push(...await extractAssistantSourcesFromResponse(responseBody));
-    const localCalls = parseContextGetCalls(responseBody);
+    const localCalls = parseMemoryCalls(responseBody);
     if (localCalls.length === 0) {
       return {
         ok: true,
@@ -120,37 +120,39 @@ export async function runResponsesLoop(
       };
     }
     if (iteration === config.maxLocalContextToolCalls) {
-      throw new Error("Exceeded max local context_get tool calls");
+      throw new Error("Exceeded max local memory tool calls");
     }
 
     const outputs: Array<Record<string, unknown>> = [];
     for (const call of localCalls) {
-      const validPieceIds = call.pieceIds.filter((pieceId) => allowedPieceIds.has(pieceId));
-      const pieces = await store.getExactPieces(sessionKey, validPieceIds);
+      const items = availableChunks
+        .slice(call.offset, call.offset + call.limit)
+        .map((chunk) => ({ id: chunk.id, content: chunk.payload }));
       fetches.push({
-        requestedPieceIds: [...call.pieceIds],
-        returnedPieceIds: pieces.map((piece) => piece.id),
+        offset: call.offset,
+        limit: call.limit,
+        returnedChunkIds: items.map((item) => item.id),
       });
-      await options.logger?.log("context_get", {
+      await options.logger?.log("memory_fetch", {
         sessionKey,
-        requestedPieceIds: call.pieceIds,
-        validPieceIds,
-        returnedPieceIds: pieces.map((piece) => piece.id),
+        offset: call.offset,
+        limit: call.limit,
+        returnedChunkIds: items.map((item) => item.id),
       });
+      outputs.push(call.item);
       outputs.push({
         type: "function_call_output",
         call_id: call.callId,
         output: stableJson({
-          pieces: pieces.map(serializeExactPiece),
+          items,
         }),
       });
     }
 
     requestBody = {
       ...baseLoopRequestBody(options.body),
-      previous_response_id: responseIdFromBody(responseBody),
-      input: outputs,
-      stream: false,
+      input: [...inputItems(requestBody.input), ...outputs],
+      stream: true,
       store: false,
     };
   }
@@ -165,6 +167,10 @@ function baseLoopRequestBody(body: Record<string, unknown>): Record<string, unkn
   delete next.stream;
   delete next.store;
   return next;
+}
+
+function inputItems(input: unknown): unknown[] {
+  return Array.isArray(input) ? [...input] : [];
 }
 
 async function postResponsesJson(
@@ -209,43 +215,52 @@ async function postResponsesJson(
     return { ok: false, response };
   }
 
-  const parsed = JSON.parse(text);
+  const parsed = parseResponsesBody(upstream.headers.get("content-type"), text);
   if (!isRecord(parsed)) {
     throw new Error("Upstream response was not a JSON object");
   }
   return { ok: true, body: parsed, response };
 }
 
-function parseContextGetCalls(responseBody: Record<string, unknown>): Array<{ callId: string; pieceIds: string[] }> {
+function parseMemoryCalls(
+  responseBody: Record<string, unknown>,
+): Array<{ callId: string; offset: number; limit: number; item: Record<string, unknown> }> {
   const output = Array.isArray(responseBody.output) ? responseBody.output : [];
-  const out: Array<{ callId: string; pieceIds: string[] }> = [];
+  const out: Array<{ callId: string; offset: number; limit: number; item: Record<string, unknown> }> = [];
   for (const item of output) {
     if (!isRecord(item)) {
       continue;
     }
     const type = typeof item.type === "string" ? item.type : "";
     const name = typeof item.name === "string" ? item.name : "";
-    if (type !== "function_call" || name !== "context_get" || typeof item.call_id !== "string") {
+    if (type !== "function_call" || name !== "memory" || typeof item.call_id !== "string") {
       continue;
     }
-    const parsed = parsePieceIds(item.arguments);
+    const parsed = parseMemoryArguments(item.arguments);
     out.push({
       callId: item.call_id,
-      pieceIds: parsed,
+      offset: parsed.offset,
+      limit: parsed.limit,
+      item,
     });
   }
   return out;
 }
 
-function parsePieceIds(argumentsValue: unknown): string[] {
+function parseMemoryArguments(argumentsValue: unknown): { offset: number; limit: number } {
   let parsed: unknown = argumentsValue;
   if (typeof argumentsValue === "string") {
     parsed = JSON.parse(argumentsValue);
   }
-  if (!isRecord(parsed) || !Array.isArray(parsed.pieceIds)) {
-    return [];
+  if (!isRecord(parsed)) {
+    return { offset: 0, limit: 10 };
   }
-  return parsed.pieceIds.filter((value): value is string => typeof value === "string");
+  const offset = typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0
+    ? parsed.offset
+    : 0;
+  const rawLimit = typeof parsed.limit === "number" && Number.isInteger(parsed.limit) ? parsed.limit : 10;
+  const limit = Math.max(1, Math.min(50, rawLimit));
+  return { offset, limit };
 }
 
 function responseForClient(body: Record<string, unknown>, stream: boolean): Response {
@@ -255,7 +270,27 @@ function responseForClient(body: Record<string, unknown>, stream: boolean): Resp
       headers: { "content-type": "application/json" },
     });
   }
-  const text = `data: ${JSON.stringify(body)}\n\ndata: [DONE]\n\n`;
+  const events: string[] = [];
+  const output = Array.isArray(body.output) ? body.output : [];
+  for (let index = 0; index < output.length; index += 1) {
+    const item = output[index];
+    events.push(sseEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: index,
+      item,
+    }));
+    events.push(sseEvent("response.output_item.done", {
+      type: "response.output_item.done",
+      output_index: index,
+      item,
+    }));
+  }
+  events.push(sseEvent("response.completed", {
+    type: "response.completed",
+    response: body,
+  }));
+  events.push("data: [DONE]\n\n");
+  const text = events.join("");
   return new Response(text, {
     status: 200,
     headers: {
@@ -266,21 +301,90 @@ function responseForClient(body: Record<string, unknown>, stream: boolean): Resp
   });
 }
 
-function serializeExactPiece(piece: ExactPiece): Record<string, unknown> {
+function parseResponsesBody(contentType: string | null, text: string): unknown {
+  if (isEventStream(contentType, text)) {
+    return extractResponseFromSseText(text);
+  }
+  return JSON.parse(text);
+}
+
+function isEventStream(contentType: string | null, text: string): boolean {
+  return (contentType?.toLowerCase().includes("text/event-stream") ?? false) ||
+    text.startsWith("event:") ||
+    text.startsWith("data:") ||
+    text.includes("\ndata:");
+}
+
+function extractResponseFromSseText(streamText: string): Record<string, unknown> {
+  let latestResponse: Record<string, unknown> | null = null;
+  const outputItems = new Map<number, unknown>();
+
+  for (const line of streamText.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) {
+      continue;
+    }
+    const data = line.slice("data:".length).trim();
+    if (!data || data === "[DONE]") {
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      continue;
+    }
+
+    const candidate = responseObjectFromEvent(parsed);
+    if (candidate) {
+      latestResponse = candidate;
+    }
+
+    const itemEvent = outputItemFromEvent(parsed);
+    if (itemEvent) {
+      outputItems.set(itemEvent.outputIndex, itemEvent.item);
+    }
+  }
+
+  if (!latestResponse) {
+    throw new Error("Upstream SSE response did not include a final response object");
+  }
+  if (outputItems.size > 0) {
+    latestResponse.output = [...outputItems.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([, item]) => item);
+  }
+  return latestResponse;
+}
+
+function responseObjectFromEvent(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (isRecord(value.response)) {
+    return value.response;
+  }
+  if (Array.isArray(value.output) || typeof value.output_text === "string") {
+    return value;
+  }
+  return null;
+}
+
+function outputItemFromEvent(value: unknown): { outputIndex: number; item: unknown } | null {
+  if (!isRecord(value) || typeof value.output_index !== "number" || !("item" in value)) {
+    return null;
+  }
   return {
-    id: piece.id,
-    sourceKind: piece.sourceKind,
-    ...(piece.toolName ? { toolName: piece.toolName } : {}),
-    taskIds: piece.taskIds,
-    ...(piece.pointer ? { pointer: piece.pointer } : {}),
-    selector: piece.selector,
-    payload: piece.payload,
+    outputIndex: value.output_index,
+    item: value.item,
   };
 }
 
-function responseIdFromBody(body: Record<string, unknown>): string {
-  if (typeof body.id !== "string" || !body.id) {
-    throw new Error("Upstream response missing id for local tool loop");
-  }
-  return body.id;
+function sseEvent(event: string, payload: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
+function buildAvailableMemoryChunks(memory: MemoryState, inlineChunkIds: string[]): ChunkRecord[] {
+  const inlineIds = new Set(inlineChunkIds);
+  return chronologicalChunks(memory.chunks).filter((chunk) => !inlineIds.has(chunk.id));
 }

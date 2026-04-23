@@ -1,297 +1,132 @@
 # Live E2E Test
 
-This verifies stock Codex can talk to a real upstream model through `pando-proxy`.
+This verifies stock Codex can talk to a real upstream model through `pando-proxy` and that the current working-memory design behaves correctly under live multi-round use.
 
-The first live test should run with memory disabled so it proves transport, Codex auth forwarding,
-request forwarding, and response streaming before testing the end-of-round memory update flow.
+## Current Memory Design To Validate
+
+The live design is:
+
+- one compact `objective`
+- exact retained chunks only
+- aggressive end-of-turn pruning of useless chunks
+- optional local `memory(offset, limit)` fallback for exact retained chunks not already in the prompt
+- final empty-memory behavior when the work is explicitly over
+
+The main thing to validate is not raw recall volume. It is whether the proxy keeps the right exact evidence and drops the rest.
 
 ## Prerequisites
 
-- `codex` is installed and logged in.
-- Deno is installed.
-- Node/npm is installed for `npx` package checks.
+- `codex` is installed and logged in
+- Deno is installed
 
-No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex
-provider overrides for that process only, then runs `codex`.
+No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex provider overrides for that process only, then runs `codex`.
 
-## Exec JSON Transport Tests
+## Recommended Local Loop
 
-Run a memory-disabled first turn. The wrapper will inject `--json` if it is missing:
+For fast local iteration against the latest code, prefer the Deno wrapper path instead of `npm pack` or `npx`.
+
+Use one fixed `--proxy-log-file` and one fixed `--proxy-state-dir` per test session. That gives you:
+
+- a fresh proxy process on every round
+- one durable memory state across rounds in the same test
+- deterministic logs and on-disk state for inspection after each round
+
+Round 1:
 
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
-  --proxy-log \
-  --proxy-no-memory \
+  --proxy-log-file /tmp/pando-test-1.jsonl \
+  --proxy-state-dir /tmp/pando-test-1-state \
   exec \
   --sandbox read-only \
-  -o /tmp/pando-proxy-turn1.txt \
-  "Do not run tools. Reply with exactly: pando proxy live ok turn one"
+  -o /tmp/pando-test-1-r1.txt \
+  "your round 1 prompt"
 ```
 
-Expected:
-
-```sh
-cat /tmp/pando-proxy-turn1.txt
-# pando proxy live ok turn one
-```
-
-Run turn two:
+Later rounds in the same session:
 
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
-  --proxy-log \
-  --proxy-no-memory \
-  exec resume \
-  --last \
-  -o /tmp/pando-proxy-turn2.txt \
-  "Do not run tools. Reply with exactly: pando proxy live ok turn two"
+  --proxy-log-file /tmp/pando-test-1.jsonl \
+  --proxy-state-dir /tmp/pando-test-1-state \
+  exec resume --last \
+  -o /tmp/pando-test-1-r2.txt \
+  "your next prompt"
 ```
 
-Expected:
+For a multi-round test, repeat `exec resume --last` with the same log/state paths. For an independent new test, switch to a new log path and new state dir.
 
-```sh
-cat /tmp/pando-proxy-turn2.txt
-# pando proxy live ok turn two
-```
+## What To Inspect After Each Round
 
-When `--proxy-log` or `--proxy-log-file` is set, each wrapper invocation prints:
+Check:
 
-```text
-Pando Proxy log: /Users/you/.pando-proxy/logs/pando-proxy-...jsonl
-Pando Proxy URL: http://127.0.0.1:40123/v1
-```
+- `incoming_request`
+- `rewritten_context`
+- `structured_model_selected`
+- `memory_round_sources`
+- `memory_round_chunked`
+- `memory_round_decision`
+- `memory_fetch`
+- `memory_round_updated`
+- `memory_state_saved`
+- `round_complete`
 
-The port starts at `40123` and increments until an available port is found. Logging is disabled by
-default. `--proxy-log` creates a unique JSONL log file under `~/.pando-proxy/logs`;
-`--proxy-log-file` writes to the specified path.
+Then inspect the persisted state under the chosen `--proxy-state-dir`.
 
-## Per-Mode Smoke Matrix
+Confirm:
 
-Use fixed log files when you want deterministic inspection.
+- the current `objective`
+- retained chunk ids and count
+- total stored chunk bytes
+- processed source count
+- whether irrelevant chunks were dropped
+- whether memory becomes empty when the work is explicitly ended
 
-Exec mode:
+## Main Live Scenarios
 
-```sh
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/main.ts \
-  --proxy-log-file /tmp/pando-e2e-mode-exec-1.jsonl \
-  --proxy-no-memory \
-  exec "Reply exactly PANDO_MODE_EXEC_1."
+1. Non-Pando carry-forward
+2. Pando deterministic chunking
+3. Mixed Pando + non-Pando
+4. Large exploratory round with aggressive pruning
+5. Session completion with empty memory
 
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/main.ts \
-  --proxy-log-file /tmp/pando-e2e-mode-exec-2.jsonl \
-  --proxy-state-dir /tmp/pando-e2e-mode-state-exec-2 \
-  exec "Reply exactly PANDO_MODE_EXEC_2."
-```
+For any failure:
 
-Expected stdout includes `item.completed` agent messages with the exact requested text and a
-`turn.completed` event with token usage.
+1. inspect log JSONL
+2. inspect persisted state
+3. fix the product bug immediately
+4. run `deno check src/main.ts`
+5. rerun the same session from scratch
 
-Interactive mode:
+## Transport Notes
 
-```sh
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/main.ts \
-  --proxy-log-file /tmp/pando-e2e-mode-interactive-1.jsonl \
-  --proxy-no-memory \
-  --no-alt-screen \
-  "Reply exactly PANDO_MODE_INTERACTIVE_1."
+There are two wrapper paths and they are intentionally different:
 
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/main.ts \
-  --proxy-log-file /tmp/pando-e2e-mode-interactive-2.jsonl \
-  --proxy-state-dir /tmp/pando-e2e-mode-state-interactive-2 \
-  --no-alt-screen \
-  "Reply exactly PANDO_MODE_INTERACTIVE_2."
-```
+- `exec` mode injects a temporary Responses provider that points at the local HTTP proxy
+- interactive mode starts a local Codex app-server plus websocket relay
 
-Expected TUI output includes the exact requested text. Stop the TUI with `Ctrl-C` after the
-response. Logs should include `turn/start`, `item/completed` for the user and agent messages,
-`thread/tokenUsage/updated`, and `turn/completed`.
+For memory validation of the real proxy request/response loop, prefer `exec` mode unless you are specifically testing the interactive relay.
 
-Passthrough mode:
+When inspecting a run, do not treat a log that currently shows only wrapper lifecycle events as proof that the request bypassed the proxy. There can be a delay before the first `incoming_request`. Judge the run only after one of:
 
-```sh
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/main.ts \
-  --proxy-log-file /tmp/pando-e2e-mode-passthrough-1.jsonl \
-  help exec
+- `incoming_request` appears
+- `wrapper_exit` appears
+- the child process has clearly failed
 
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/main.ts \
-  --proxy-log-file /tmp/pando-e2e-mode-passthrough-2.jsonl \
-  --version
-```
+## Success Criteria
 
-Expected stdout is the normal Codex help/version output. These utility commands generally do not
-make upstream model requests, so their logs should show wrapper lifecycle events but no
-`incoming_request`.
+A round is successful when:
 
-## Verify Logs
+- `round_complete` is present
+- the persisted state matches the intended objective/chunk set
+- unnecessary chunks were dropped
+- required exact chunks survived
+- the user-facing answer still matches the prompt
 
-Use the log paths printed by the two runs:
+A session is successful when:
 
-```sh
-node - <<'NODE' /path/to/first-log.jsonl /path/to/second-log.jsonl
-const fs = require("fs");
-for (const file of process.argv.slice(2)) {
-  const lines = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
-  const counts = {};
-  for (const event of lines) counts[event.event] = (counts[event.event] || 0) + 1;
-  console.log(file);
-  console.log(JSON.stringify(counts, null, 2));
-}
-NODE
-```
-
-Expected minimum counts in each model-call log:
-
-```json
-{
-  "wrapper_start": 1,
-  "incoming_request": 1,
-  "upstream_request": 1,
-  "upstream_response": 1,
-  "wrapper_exit": 1
-}
-```
-
-For exec-mode JSONL observation:
-
-```sh
-jq -r 'select(.event=="codex_exec_event" or .event=="wrapper_exit") |
-  [.ts,.event,.eventType,(.payload.item.text // ""),(.payload.usage.input_tokens // ""),
-   (.payload.usage.cached_input_tokens // ""),(.payload.usage.output_tokens // ""),
-   (.success // ""),(.code // "")] | @tsv' \
-  /tmp/pando-e2e-mode-exec-1.jsonl /tmp/pando-e2e-mode-exec-2.jsonl
-```
-
-For interactive app-server relay observation:
-
-```sh
-jq -r 'select(.event=="codex_app_server_frame" or .event=="wrapper_exit") |
-  [.ts,.event,(.direction // ""),(.method // ""),(.itemType // ""),
-   (.payload.params.item.text // ""),
-   (.payload.params.tokenUsage.total.inputTokens // ""),
-   (.payload.params.tokenUsage.total.cachedInputTokens // ""),
-   (.payload.params.tokenUsage.total.outputTokens // ""),
-   (.success // ""),(.code // "")] | @tsv' \
-  /tmp/pando-e2e-mode-interactive-1.jsonl /tmp/pando-e2e-mode-interactive-2.jsonl
-```
-
-For passthrough lifecycle checks:
-
-```sh
-jq -r 'select(.event=="wrapper_start" or .event=="wrapper_codex_start" or .event=="wrapper_exit") |
-  [.ts,.event,.mode,(.success // ""),(.code // "")] | @tsv' \
-  /tmp/pando-e2e-mode-passthrough-1.jsonl /tmp/pando-e2e-mode-passthrough-2.jsonl
-```
-
-The log intentionally preserves request and response payloads as received. Only explicit credential
-fields such as `authorization`, `access_token`, `refresh_token`, `id_token`, and API-key fields are
-redacted.
-
-```sh
-node - <<'NODE' /path/to/log.jsonl
-const fs = require("fs");
-for (const file of process.argv.slice(2)) {
-  for (const line of fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean)) {
-    const event = JSON.parse(line);
-    if (event.headers?.authorization && event.headers.authorization !== "[redacted]") {
-      throw new Error(`${file}: authorization header was not redacted`);
-    }
-  }
-}
-console.log("credential_fields_redacted=ok");
-NODE
-```
-
-## `npx` Shape
-
-Once published, the intended user command is:
-
-```sh
-npx -y pando-proxy exec "Reply with exactly: pando proxy ok"
-```
-
-Proxy-only flags are prefixed so Codex flags pass through cleanly:
-
-```sh
-npx -y pando-proxy --proxy-no-memory --proxy-port-start 40130 exec "Reply with ok"
-npx -y pando-proxy --proxy-log exec "Reply with logged ok"
-```
-
-Use `--` if a Codex argument ever has the same spelling as a proxy flag:
-
-```sh
-npx -y pando-proxy --proxy-no-memory -- --proxy-no-memory
-```
-
-Before publishing, test the packed npm artifact locally:
-
-```sh
-npm pack
-npx -y ./pando-proxy-0.1.0.tgz --proxy-help
-npx -y ./pando-proxy-0.1.0.tgz --proxy-no-memory exec "Reply with exactly: packed npx ok"
-```
-
-## Manual Serve Mode
-
-For debugging without the wrapper:
-
-```sh
-deno run --allow-net --allow-env --allow-read --allow-write \
-  src/main.ts serve \
-  --no-memory \
-  --log-file /tmp/pando-proxy-live.jsonl
-```
-
-Then run Codex manually with equivalent provider overrides:
-
-```sh
-codex \
-  -c 'model_provider="pando-proxy"' \
-  -c 'model_providers.pando-proxy.name="Pando Memory Proxy"' \
-  -c 'model_providers.pando-proxy.base_url="http://127.0.0.1:8787/v1"' \
-  -c 'model_providers.pando-proxy.wire_api="responses"' \
-  -c 'model_providers.pando-proxy.requires_openai_auth=true' \
-  exec "Reply with exactly: pando proxy manual ok"
-```
-
-## Memory-Enabled Follow-Up
-
-After pass-through works, rerun without `--proxy-no-memory`:
-
-```sh
-deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
-  src/main.ts \
-  --proxy-log \
-  exec \
-  --sandbox read-only \
-  "Use the proxy with memory enabled."
-```
-
-That exercises the current exact-piece memory system:
-
-- prompt rewrite with tasks plus the deterministic piece index
-- local `context_get` fetch-on-demand when the model asks for exact old pieces
-- exact chunking for assistant and non-Pando tool outputs
-- deterministic Pando chunking in code
-- one `round_update` structured call that updates the live task list and explicitly keeps or drops
-  new pieces
-- deterministic pruning when tasks disappear
-- memory persistence and end-of-round aggregate logging
-
-For deeper validation, prefer multi-round sessions with logging enabled so you can inspect:
-
-- `memory_round_chunked` to confirm the exact chunk selectors/pieces
-- `memory_round_decision` to confirm task transitions and explicit keep/drop
-- `context_get` to confirm local fetches and returned piece ids
-- `round_complete` to confirm aggregate memory size and counts after each round
-
-For more detailed memory/logging expectations, including local `context_get`, exact chunking,
-round-update decisions, pruning behavior, aggregate round logs, and resume coverage, see
-[MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md).
+- memory carries forward correctly across `exec resume --last`
+- retrieval fallback, if used, returns exact chronological chunks not already in prompt
+- explicit session completion clears the memory state

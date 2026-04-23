@@ -1,6 +1,6 @@
 import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
-import type { PieceDraft, PieceSelector } from "./memory_state.ts";
+import type { ChunkDraft, ChunkSelector } from "./memory_state.ts";
 import type { StructuredClients } from "./structured_model.ts";
 import type { RoundSource } from "./tool_results.ts";
 
@@ -18,8 +18,8 @@ export async function chunkRoundSources(
   sources: RoundSource[],
   config: ProxyConfig,
   clients: StructuredClients,
-): Promise<PieceDraft[]> {
-  const out: PieceDraft[] = [];
+): Promise<ChunkDraft[]> {
+  const out: ChunkDraft[] = [];
   for (const source of sources) {
     const drafts = source.sourceKind === "user"
       ? chunkWholeSource(source, config)
@@ -31,7 +31,7 @@ export async function chunkRoundSources(
   return out;
 }
 
-export function chunkPandoSource(source: RoundSource, config: ProxyConfig): PieceDraft[] {
+export function chunkPandoSource(source: RoundSource, config: ProxyConfig): ChunkDraft[] {
   const selectors = deterministicPandoSelectors(source.payload);
   return materializeSourceSelectors(source, selectors, config);
 }
@@ -41,7 +41,7 @@ export function isPandoToolName(toolName: string | undefined): boolean {
     (toolName.startsWith("mcp__pando__") || toolName.startsWith("pando."));
 }
 
-export function deterministicPandoSelectors(payload: unknown): PieceSelector[] {
+export function deterministicPandoSelectors(payload: unknown): ChunkSelector[] {
   if (Array.isArray(payload)) {
     return payload.map((_, index) => ({ kind: "object_path", path: [index] }));
   }
@@ -62,27 +62,26 @@ export function deterministicPandoSelectors(payload: unknown): PieceSelector[] {
 
 export function materializeSourceSelectors(
   source: RoundSource,
-  selectors: PieceSelector[],
-  config: Pick<ProxyConfig, "piecePreviewCharLimit">,
-): PieceDraft[] {
+  selectors: ChunkSelector[],
+  _config: Pick<ProxyConfig, "piecePreviewCharLimit">,
+): ChunkDraft[] {
   return selectors.map((selector, index) => {
-    const payloadInline = materializeSelector(source.payload, selector);
+    const payload = materializeSelector(source.payload, selector);
     const pointer = buildPointer(source, selector);
     return {
       id: `${source.sourceId}:${index}`,
       sourceKind: source.sourceKind,
       sourceId: source.sourceId,
       ...(source.toolName ? { toolName: source.toolName } : {}),
-      payloadInline,
+      payload,
       ...(pointer ? { pointer } : {}),
-      previewText: previewForPayload(payloadInline, config.piecePreviewCharLimit),
-      byteSize: byteSize(payloadInline),
+      byteSize: byteSize(payload),
       selector,
     };
   });
 }
 
-export function materializeSelector(payload: unknown, selector: PieceSelector): unknown {
+export function materializeSelector(payload: unknown, selector: ChunkSelector): unknown {
   if (selector.kind === "whole") {
     return payload;
   }
@@ -100,7 +99,7 @@ async function chunkWithModel(
   source: RoundSource,
   config: ProxyConfig,
   clients: StructuredClients,
-): Promise<PieceDraft[]> {
+): Promise<ChunkDraft[]> {
   const response = await clients.sourceChunk({
     sourceKind: source.sourceKind as "assistant" | "tool",
     ...(source.toolName ? { toolName: source.toolName } : {}),
@@ -108,11 +107,17 @@ async function chunkWithModel(
   });
   const selectors = response.chunks.length > 0
     ? response.chunks
-    : [{ kind: "whole" } satisfies PieceSelector];
-  return materializeSourceSelectors(source, selectors, config);
+    : [{ kind: "whole" } satisfies ChunkSelector];
+  const drafts = materializeSourceSelectors(source, selectors, config).filter((draft) =>
+    draft.payload !== undefined && draft.byteSize > 0
+  );
+  if (drafts.length > 0) {
+    return drafts;
+  }
+  return materializeSourceSelectors(source, [{ kind: "whole" }], config);
 }
 
-function buildPointer(source: RoundSource, selector: PieceSelector): Record<string, unknown> | null {
+function buildPointer(source: RoundSource, selector: ChunkSelector): Record<string, unknown> | null {
   const pointer: Record<string, unknown> = {
     ...(source.pointer ?? {}),
     selector,
@@ -120,38 +125,10 @@ function buildPointer(source: RoundSource, selector: PieceSelector): Record<stri
   return Object.keys(pointer).length > 0 ? pointer : null;
 }
 
-function previewForPayload(payload: unknown, maxChars: number): string | undefined {
-  const text = previewSourceText(payload).trim();
-  if (!text) {
-    return undefined;
-  }
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}...`;
-}
-
-function previewSourceText(payload: unknown): string {
-  if (typeof payload === "string") {
-    return payload.split(/\r?\n/, 1)[0] ?? "";
-  }
-  if (Array.isArray(payload)) {
-    return stableJson(payload[0] ?? "");
-  }
-  if (payload && typeof payload === "object") {
-    const record = payload as Record<string, unknown>;
-    if (typeof record.text === "string") {
-      return record.text;
-    }
-    if (typeof record.content === "string") {
-      return record.content;
-    }
-    return stableJson(record);
-  }
-  return String(payload ?? "");
-}
-
 function chunkWholeSource(
   source: RoundSource,
   config: Pick<ProxyConfig, "piecePreviewCharLimit">,
-): PieceDraft[] {
+): ChunkDraft[] {
   return materializeSourceSelectors(source, [{ kind: "whole" }], config);
 }
 

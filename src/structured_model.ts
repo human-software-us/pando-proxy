@@ -4,11 +4,11 @@ import {
   responsesUrl,
 } from "./config.ts";
 import { extractJsonObject, stableJson } from "./json.ts";
-import { PieceSelector } from "./memory_state.ts";
-import { RoundUpdateRequest, RoundUpdateResponse } from "./round_update.ts";
+import { ChunkSelector } from "./memory_state.ts";
+import { WorkingMemoryUpdateRequest, WorkingMemoryUpdateResponse } from "./round_update.ts";
 
 export type StructuredModelSelection = {
-  classifier: "round_update" | "source_chunk";
+  classifier: "working_memory_update" | "source_chunk";
   requestModel: string | null;
   estimatedInputTokens: number;
   chosenModel: string;
@@ -23,11 +23,11 @@ export type SourceChunkRequest = {
 };
 
 export type SourceChunkResponse = {
-  chunks: PieceSelector[];
+  chunks: ChunkSelector[];
 };
 
 export type StructuredClients = {
-  roundUpdate: (request: RoundUpdateRequest) => Promise<RoundUpdateResponse>;
+  workingMemoryUpdate: (request: WorkingMemoryUpdateRequest) => Promise<WorkingMemoryUpdateResponse>;
   sourceChunk: (request: SourceChunkRequest) => Promise<SourceChunkResponse>;
 };
 
@@ -43,15 +43,15 @@ export function createStructuredClients(
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
 ): StructuredClients {
   return {
-    roundUpdate: (request) =>
-      callStructuredJson<RoundUpdateResponse>(
+    workingMemoryUpdate: (request) =>
+      callStructuredJson<WorkingMemoryUpdateResponse>(
         config,
         requestModel,
         authHeader,
-        roundUpdateSystemPrompt,
+        workingMemoryUpdateSystemPrompt,
         request,
-        roundUpdateJsonSchema,
-        "round_update",
+        workingMemoryUpdateJsonSchema,
+        "working_memory_update",
         onSelection,
       ),
     sourceChunk: async (request) => {
@@ -282,7 +282,7 @@ const pathPartSchema = {
   ],
 };
 
-const pieceSelectorSchema = {
+const chunkSelectorSchema = {
   anyOf: [
     {
       type: "object",
@@ -314,93 +314,50 @@ const pieceSelectorSchema = {
   ],
 };
 
-const taskJsonSchema = {
+const workingMemoryUpdateJsonSchema = {
   type: "object",
   properties: {
-    id: { type: "string" },
-    text: { type: "string" },
-    status: { type: "string", enum: ["open", "in_progress"] },
-    kind: { type: "string", enum: ["say", "do"] },
+    objectiveAfter: { anyOf: [{ type: "string" }, { type: "null" }] },
+    keepOldChunkIds: { type: "array", items: { type: "string" } },
+    keepNewChunkIds: { type: "array", items: { type: "string" } },
   },
-  required: ["id", "text", "status", "kind"],
-  additionalProperties: false,
-};
-
-const pieceSelectionJsonSchema = {
-  anyOf: [
-    {
-      type: "object",
-      properties: {
-        mode: { type: "string", enum: ["drop_all"] },
-      },
-      required: ["mode"],
-      additionalProperties: false,
-    },
-    {
-      type: "object",
-      properties: {
-        mode: { type: "string", enum: ["keep_all"] },
-      },
-      required: ["mode"],
-      additionalProperties: false,
-    },
-    {
-      type: "object",
-      properties: {
-        mode: { type: "string", enum: ["keep_only", "drop_only"] },
-        ids: { type: "array", items: { type: "string" } },
-      },
-      required: ["mode", "ids"],
-      additionalProperties: false,
-    },
-  ],
-};
-
-const roundUpdateJsonSchema = {
-  type: "object",
-  properties: {
-    tasksAfter: { type: "array", items: taskJsonSchema },
-    pieceSelection: pieceSelectionJsonSchema,
-    keptPieceTaskLinks: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-          taskIds: { type: "array", items: { type: "string" } },
-        },
-        required: ["id", "taskIds"],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ["tasksAfter", "pieceSelection", "keptPieceTaskLinks"],
+  required: ["objectiveAfter", "keepOldChunkIds", "keepNewChunkIds"],
   additionalProperties: false,
 };
 
 const sourceChunkJsonSchema = {
   type: "object",
   properties: {
-    chunks: { type: "array", items: pieceSelectorSchema },
+    chunks: { type: "array", items: chunkSelectorSchema },
   },
   required: ["chunks"],
   additionalProperties: false,
 };
 
-const roundUpdateSystemPrompt = `
-You update the live task list and explicitly decide which exact new content pieces should be kept.
+const workingMemoryUpdateSystemPrompt = `
+You maintain one live objective and a minimal exact working-memory set.
 
 Return JSON matching the supplied schema.
 
 Rules:
-- You are given the current live task list and the exact new content pieces from the latest completed round.
-- tasksAfter must be the full ordered live task list after processing this new content.
-- Reuse existing task ids whenever a task is still the same task. Avoid minting new ids unless the task is genuinely new.
-- pieceSelection must be explicit. Always choose one of: drop_all, keep_all, keep_only, drop_only.
-- keptPieceTaskLinks must contain exactly the kept pieces and no dropped pieces.
-- Every kept piece must have at least one live task id.
-- Drop pieces that do not materially help any live task.
-- Do not summarize or rewrite content. Only decide task structure and piece/task links.
+- You are given the current objective, the currently kept exact chunks, and the exact new chunks from the latest completed round.
+- objectiveAfter must be a compact abstract description of the live work that still matters after this round, or null if the work is finished and no memory should remain.
+- objectiveAfter is intent only, not evidence. Do not copy exact values, lines, commands, quoted strings, or tool output into it.
+- Existing objective stays live by default. Do not clear it unless the user clearly ended, abandoned, or replaced that work.
+- keepOldChunkIds must be the exact ids from the current kept set that should survive.
+- keepNewChunkIds must be the exact ids from the new chunk set that should survive.
+- Keep the working set minimal.
+- Prefer dropping chunks unless there is a clear reason they will matter later.
+- If many search results or exploratory outputs were observed and only one exact chunk mattered, keep only that one.
+- Keep enough exact evidence so a future memory(offset, limit) fallback is unlikely to be needed.
+- If the user clearly says exact values or content will be needed later, keep the exact supporting chunks.
+- If an older exact chunk still supports the live objective, keep it unless it is clearly obsolete.
+- Do not replace original tool or user evidence with an assistant restatement when the original exact chunk is still available.
+- Do not keep user instruction text that only says to remember or recall something when the actual exact supporting chunk is already kept.
+- Do not keep assistant acknowledgements, chatter, or confirmations when the underlying exact evidence is already kept.
+- Prefer original tool outputs over user instructions and assistant restatements whenever both carry the same fact.
+- If the user clearly ends the work or says the memory is no longer needed, set objectiveAfter to null and keep no chunks.
+- Do not summarize or rewrite content. Only decide the live objective and exact keep/drop ids.
 - Return JSON only.
 `.trim();
 
