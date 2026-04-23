@@ -43,6 +43,73 @@ Deno.test("retention fails after invalid repair attempt instead of falling back"
   assertEquals(calls, 2);
 });
 
+Deno.test("retention retry succeeds when validation errors are fed back", async () => {
+  const state = stateWithTask();
+  const candidates = chunks();
+  const requests: Array<{ hasValidationErrors: boolean; errors?: string[] }> = [];
+
+  const next = await retainMemory(state, candidates, (request) => {
+    requests.push({
+      hasValidationErrors: Array.isArray(request.validationErrors) &&
+        request.validationErrors.length > 0,
+      errors: request.validationErrors,
+    });
+    if (requests.length === 1) {
+      return Promise.resolve({
+        keep: [{ id: "chunk_1", taskIds: ["task_1"] }],
+        drop: [],
+      });
+    }
+    return Promise.resolve({
+      keep: [
+        { id: "chunk_1", taskIds: ["task_1"] },
+        { id: "chunk_2", taskIds: ["task_1"] },
+      ],
+      drop: [],
+    });
+  });
+
+  assertEquals(requests.length, 2);
+  assertEquals(requests[0].hasValidationErrors, false);
+  assertEquals(requests[1].hasValidationErrors, true);
+  assert(
+    requests[1].errors?.some((message) => message.includes("chunk_2 missing")) ?? false,
+    `retry request did not carry the candidate-missing validation error, got ${
+      JSON.stringify(requests[1].errors)
+    }`,
+  );
+  assertEquals(next.memoryLibrary.map((chunk) => chunk.id), ["chunk_1", "chunk_2"]);
+});
+
+Deno.test("retention retry repairs transposed chunk ids reported by the model", async () => {
+  const state = stateWithTask();
+  const candidates = chunks();
+  let calls = 0;
+
+  const next = await retainMemory(state, candidates, () => {
+    calls += 1;
+    if (calls === 1) {
+      return Promise.resolve({
+        keep: [
+          { id: "chunk_1", taskIds: ["task_1"] },
+          { id: "chnuk_2", taskIds: ["task_1"] },
+        ],
+        drop: [],
+      });
+    }
+    return Promise.resolve({
+      keep: [
+        { id: "chunk_1", taskIds: ["task_1"] },
+        { id: "chunk_2", taskIds: ["task_1"] },
+      ],
+      drop: [],
+    });
+  });
+
+  assertEquals(calls, 2);
+  assertEquals(next.memoryLibrary.map((chunk) => chunk.id), ["chunk_1", "chunk_2"]);
+});
+
 Deno.test("retention propagates maintenance call failures", async () => {
   const state = stateWithTask();
   const candidates = chunks();
