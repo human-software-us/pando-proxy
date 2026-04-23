@@ -113,10 +113,11 @@ export async function applyRoundUpdate(
     }));
 
   const objectiveAfter = normalizeObjective(parsed.response.objectiveAfter);
+  const combinedKeptChunks = pruneRedundantUserChunks(dedupeChunks([...keptOldChunks, ...keptNewChunks]));
   const memory = {
     roundSeq: nextSeq,
     objective: objectiveAfter,
-    chunks: objectiveAfter ? dedupeChunks([...keptOldChunks, ...keptNewChunks]) : [],
+    chunks: objectiveAfter ? combinedKeptChunks : [],
     processedSourceIds: unique([
       ...state.processedSourceIds,
       ...newChunks.map((chunk) => chunk.sourceId),
@@ -191,6 +192,29 @@ export function validateRoundUpdate(
   }
   if (!objectiveAfter && keptCount > 0) {
     errors.push("Cleared objective cannot keep chunks");
+  }
+
+  const keptChunks = [
+    ...previous.chunks.filter((chunk) => response.keepOldChunkIds.includes(chunk.id)),
+    ...newChunks.filter((chunk) => response.keepNewChunkIds.includes(chunk.id)),
+  ];
+  const keptFactRecords = keptChunks.flatMap((chunk) => extractConcreteFactRecords(textFromPayload(chunk.payload)));
+  const keptFacts = new Set(keptFactRecords.map((fact) => fact.fact));
+  const keptFactKeys = new Set(keptFactRecords.map((fact) => fact.key));
+
+  for (const chunk of previous.chunks) {
+    if (response.keepOldChunkIds.includes(chunk.id)) {
+      validateRetainedChunk(chunk, errors);
+    } else if (objectiveAfter) {
+      validateDroppedKeptFactChunk(chunk, keptFacts, keptFactKeys, errors);
+    }
+  }
+  for (const chunk of newChunks) {
+    if (response.keepNewChunkIds.includes(chunk.id)) {
+      validateRetainedChunk(chunk, errors);
+    } else if (objectiveAfter) {
+      validateDroppedUserFactChunk(chunk, keptFacts, errors);
+    }
   }
 
   return errors;
@@ -293,6 +317,82 @@ function validateObjectiveAbstraction(objective: string | null, errors: string[]
   }
 }
 
+function validateRetainedChunk(
+  chunk: { sourceKind: "user" | "assistant" | "tool"; payload: unknown },
+  errors: string[],
+): void {
+  if (chunk.sourceKind !== "user") {
+    return;
+  }
+  const text = textFromPayload(chunk.payload).trim();
+  if (!text) {
+    return;
+  }
+  if (isOperationalUserQuery(text) && !containsDurableFact(text)) {
+    errors.push("Operational user query chunks should not be retained as memory");
+  }
+}
+
+function validateDroppedUserFactChunk(
+  chunk: { sourceKind: "user" | "assistant" | "tool"; payload: unknown },
+  keptFacts: Set<string>,
+  errors: string[],
+): void {
+  if (chunk.sourceKind !== "user") {
+    return;
+  }
+  const facts = extractConcreteFacts(textFromPayload(chunk.payload));
+  if (facts.length === 0) {
+    return;
+  }
+  if (facts.some((fact) => !keptFacts.has(fact))) {
+    errors.push("Dropping a user fact chunk would lose exact facts not preserved elsewhere");
+  }
+}
+
+function validateDroppedKeptFactChunk(
+  chunk: { sourceKind: "user" | "assistant" | "tool"; payload: unknown },
+  keptFacts: Set<string>,
+  keptFactKeys: Set<string>,
+  errors: string[],
+): void {
+  const facts = extractConcreteFactRecords(textFromPayload(chunk.payload));
+  if (facts.length === 0) {
+    return;
+  }
+  if (facts.some((fact) => !keptFacts.has(fact.fact) && !keptFactKeys.has(fact.key))) {
+    errors.push("Dropping a retained fact chunk would lose exact facts without preservation or replacement");
+  }
+}
+
+function pruneRedundantUserChunks(chunks: ChunkRecord[]): ChunkRecord[] {
+  return chunks.filter((chunk, index) => {
+    if (chunk.sourceKind !== "user") {
+      return true;
+    }
+    const text = textFromPayload(chunk.payload).trim();
+    if (!text) {
+      return false;
+    }
+    const facts = extractConcreteFactRecords(text);
+    const otherFacts = new Set(
+      chunks
+        .filter((_, otherIndex) => otherIndex !== index)
+        .flatMap((otherChunk) => extractConcreteFactRecords(textFromPayload(otherChunk.payload)))
+        .map((fact) => fact.fact),
+    );
+    const factsPreservedElsewhere = facts.every((fact) => otherFacts.has(fact.fact));
+
+    if (isOperationalUserQuery(text) && (facts.length === 0 || factsPreservedElsewhere)) {
+      return false;
+    }
+    if (looksLikeUserScaffolding(text) && facts.length > 0 && factsPreservedElsewhere) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function detectRoundIntentSignals(newChunks: ChunkDraft[]): RoundIntentSignals {
   const texts = newChunks
     .filter((chunk) => chunk.sourceKind === "user")
@@ -331,6 +431,51 @@ function textFromPayload(payload: unknown): string {
     }
     return "";
   }).join("\n");
+}
+
+function isOperationalUserQuery(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (normalized.includes("?")) {
+    return true;
+  }
+  return /^(?:what|which|who|where|when|why|how|tell|remind|show|give|list|restate|repeat|print|reply|say|return|summarize|explain|can you|could you|would you|please)\b/i
+    .test(normalized);
+}
+
+function looksLikeUserScaffolding(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return /\b(?:use|run|print|reply exactly|remember exactly|remember this|store this|without running any tool|call memory)\b/i
+    .test(normalized);
+}
+
+function containsDurableFact(text: string): boolean {
+  if (extractConcreteFacts(text).length > 0) {
+    return true;
+  }
+  if (/\b(?:remember|keep|preserve)\b.*\b(?:for later|for future|for recall|exactly this)\b/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function extractConcreteFacts(text: string): string[] {
+  return extractConcreteFactRecords(text).map((fact) => fact.fact);
+}
+
+function extractConcreteFactRecords(text: string): Array<{ key: string; fact: string }> {
+  const matches = [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s,.;]+)/g)];
+  return matches
+    .map((match) => ({ key: match[1], fact: `${match[1]}=${match[2]}` }))
+    .filter((record) => {
+      const value = record.fact.split("=")[1] ?? "";
+      return /[A-Za-z0-9]/.test(value) && value !== "...";
+    });
 }
 
 const EXPLICIT_CARRY_FORWARD_PATTERNS = [
