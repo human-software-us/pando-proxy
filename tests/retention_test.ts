@@ -1,4 +1,4 @@
-import { applyRetention, validateRetention } from "../src/retention.ts";
+import { applyRetention, retainMemory, validateRetention } from "../src/retention.ts";
 import { MemoryChunk, MemoryState } from "../src/memory_state.ts";
 
 Deno.test("retention validation requires every candidate exactly once", () => {
@@ -25,6 +25,38 @@ Deno.test("retention apply keeps only selected chunks with live task ids", () =>
 
   assertEquals(next.memoryLibrary.map((chunk) => chunk.id), ["chunk_2"]);
   assertEquals(next.memoryLibrary[0].taskIds, ["task_1"]);
+});
+
+Deno.test("retention fails after invalid repair attempt instead of falling back", async () => {
+  const state = stateWithTask();
+  const candidates = chunks();
+  let calls = 0;
+
+  await assertRejects(
+    () =>
+      retainMemory(state, candidates, () => {
+        calls += 1;
+        return Promise.resolve({ keep: [], drop: [] });
+      }),
+    "Retention validation failed",
+  );
+  assertEquals(calls, 2);
+});
+
+Deno.test("retention propagates maintenance call failures", async () => {
+  const state = stateWithTask();
+  const candidates = chunks();
+  let calls = 0;
+
+  await assertRejects(
+    () =>
+      retainMemory(state, candidates, () => {
+        calls += 1;
+        return Promise.reject(new Error("retention transport failed"));
+      }),
+    "retention transport failed",
+  );
+  assertEquals(calls, 1);
 });
 
 function stateWithTask(): MemoryState {
@@ -56,4 +88,14 @@ function assertEquals(actual: unknown, expected: unknown): void {
   if (actualJson !== expectedJson) {
     throw new Error(`Expected ${expectedJson}, got ${actualJson}`);
   }
+}
+
+async function assertRejects(callback: () => Promise<unknown>, includes: string): Promise<void> {
+  try {
+    await callback();
+  } catch (error) {
+    assert(String(error).includes(includes), `Expected error containing ${includes}, got ${error}`);
+    return;
+  }
+  throw new Error("Expected callback to reject");
 }

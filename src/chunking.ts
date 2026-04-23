@@ -474,11 +474,7 @@ async function safeChunkBatch(
   client: BatchChunkClient,
   request: BatchChunkRequest,
 ): Promise<unknown> {
-  try {
-    return await client(request);
-  } catch {
-    return null;
-  }
+  return await client(request);
 }
 
 function splitBatches(results: ToolResultEnvelope[], maxChars: number): ToolResultEnvelope[][] {

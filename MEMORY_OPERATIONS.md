@@ -145,11 +145,17 @@ through the same upstream/auth path Codex is already using:
    assistant output should become task-linked memory chunks.
 3. Non-Pando tool outputs call `chunk_batch`, which receives live tasks, retained user-message
    summaries, tool metadata, and JSON-parsed output when possible. It should split structured
-   collections such as search results, arrays, rows, or match sets into semantic task-linked chunks
-   when those items may be retained or dropped independently. Pando tool outputs are chunked
-   deterministically in code by tool/result shape instead.
+   collections such as search results, arrays, rows, match sets, grouped errors, or keyed object
+   maps into semantic task-linked chunks when those items may be retained or dropped independently.
+   If the preview is too thin to choose boundaries, it can request `tool_result` or
+   `all_tool_results` once. Pando tool outputs are chunked deterministically in code by tool/result
+   shape instead.
 4. Assistant and tool chunks then call `retention_decision`, which keeps only chunks still useful
    for live tasks.
+
+Maintenance transport failures and upstream 5xx responses are retried once as transport retries.
+They are not converted into validation-repair attempts. If the retry still fails, the proxy returns
+`pando_proxy_failed`.
 
 The order is deliberate: user-message task updates run first, assistant-response review runs next,
 and tool-output chunking runs after that. This lets a new user message such as "nevermind, do X"

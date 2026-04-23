@@ -66,8 +66,12 @@ Deno.test("maintenance model selector rejects unsupported overrides", () => {
 
 Deno.test("chunk batch prompt asks for semantic retention-sized chunks", () => {
   assert(chunkBatchSystemPrompt.includes("task-scoped context memory"));
+  assert(chunkBatchSystemPrompt.includes("raw history and raw tool output"));
   assert(chunkBatchSystemPrompt.includes("Split arrays, search results, lists"));
+  assert(chunkBatchSystemPrompt.includes("object maps keyed by resource/file/id"));
   assert(chunkBatchSystemPrompt.includes("more small chunks than one broad chunk"));
+  assert(chunkBatchSystemPrompt.includes("Do not emit one broad chunk"));
+  assert(chunkBatchSystemPrompt.includes("tool_result or all_tool_results"));
   assert(chunkBatchSystemPrompt.includes("keptUserMessages"));
 });
 

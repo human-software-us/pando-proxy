@@ -1,6 +1,6 @@
 {
   "name": "pando-proxy",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Run Codex through a local memory proxy with one npx command.",
   "scripts": {
     "prepack": "deno bundle src/main.ts -o dist/main.js",

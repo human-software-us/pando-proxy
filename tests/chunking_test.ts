@@ -178,6 +178,56 @@ Deno.test("non-pando chunk request includes kept user context", async () => {
   );
 });
 
+Deno.test("non-pando chunk request includes task, tool metadata, and structured content", async () => {
+  let seenRequest: unknown;
+  const chunks = await chunkNonPandoInBatches(
+    [{
+      id: "tool_rows",
+      origin: "native",
+      toolName: "database_query",
+      params: { sql: "select id, name from users limit 2" },
+      content: {
+        rows: [
+          { id: 1, name: "Ada" },
+          { id: 2, name: "Grace" },
+        ],
+      },
+      activeTaskId: "task_1",
+    }],
+    state(),
+    (request) => {
+      seenRequest = request;
+      return Promise.resolve({
+        chunks: [{
+          sourceResultIndex: 0,
+          title: "Database rows",
+          summary: "The query returned Ada and Grace rows.",
+          kind: "tool/database_rows",
+          taskIds: ["task_1"],
+          pointer: { key: "rows" },
+        }],
+      });
+    },
+  );
+
+  assertEquals(chunks.length, 1);
+  const request = seenRequest as {
+    tasks: unknown[];
+    activeTaskId: string;
+    results: Array<{ toolName: string; params: unknown; content: unknown }>;
+  };
+  assertEquals(request.tasks, state().tasks);
+  assertEquals(request.activeTaskId, "task_1");
+  assertEquals(request.results[0].toolName, "database_query");
+  assertEquals(request.results[0].params, { sql: "select id, name from users limit 2" });
+  assertEquals(request.results[0].content, {
+    rows: [
+      { id: 1, name: "Ada" },
+      { id: 2, name: "Grace" },
+    ],
+  });
+});
+
 Deno.test("non-pando chunker materializes multiple semantic chunks from one result", async () => {
   const chunks = await chunkNonPandoInBatches(
     [{
@@ -275,6 +325,30 @@ Deno.test("non-pando chunking allows one request for full tool data", async () =
   assertEquals(chunks[0].kind, "tool/search_result");
 });
 
+Deno.test("non-pando chunking propagates maintenance call failures", async () => {
+  let calls = 0;
+  await assertRejects(
+    () =>
+      chunkNonPandoInBatches(
+        [{
+          id: "tool_search",
+          origin: "native",
+          toolName: "web_search",
+          params: { q: "memory" },
+          content: { results: [{ title: "Result", url: "https://example.test" }] },
+          activeTaskId: "task_1",
+        }],
+        state(),
+        () => {
+          calls += 1;
+          return Promise.reject(new Error("maintenance transport failed"));
+        },
+      ),
+    "maintenance transport failed",
+  );
+  assertEquals(calls, 1);
+});
+
 function state(): MemoryState {
   return {
     taskUpdateSeq: 1,
@@ -297,4 +371,14 @@ function assertEquals(actual: unknown, expected: unknown): void {
   if (actualJson !== expectedJson) {
     throw new Error(`Expected ${expectedJson}, got ${actualJson}`);
   }
+}
+
+async function assertRejects(callback: () => Promise<unknown>, includes: string): Promise<void> {
+  try {
+    await callback();
+  } catch (error) {
+    assert(String(error).includes(includes), `Expected error containing ${includes}, got ${error}`);
+    return;
+  }
+  throw new Error("Expected callback to reject");
 }

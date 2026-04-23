@@ -615,9 +615,9 @@ output and then validate it locally.
 Current implementation policy:
 
 - If task update validation fails twice, return an error to Codex instead of forwarding the next work turn.
-- If assistant-response review fails twice, create no assistant chunks for that pass.
-- If chunking fails twice for non-pando output, create one conservative local fallback chunk per result.
-- If retention validation fails twice, mechanically retain chunks that already reference live tasks, or attach them to the active live task when one exists.
+- If assistant-response review fails twice, return an error to Codex instead of forwarding the next work turn.
+- If chunking fails twice for non-pando output, return an error to Codex instead of forwarding the next work turn.
+- If retention validation fails twice, return an error to Codex instead of forwarding the next work turn.
 - In every case, retained chunks are pruned back to live task ids before persistence.
 
 ### Pando Tool Detection

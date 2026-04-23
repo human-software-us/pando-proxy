@@ -205,11 +205,13 @@ The memory pass:
 - chunks Pando tool results in code,
 - chunks non-Pando tool results with batched maintenance model calls. The chunking payload includes
   live tasks, active task, retained user-message summaries, tool metadata, and JSON-parsed output
-  when possible so structured outputs can be split into retention-sized chunks. After one invalid
-  retry, it falls back to a conservative local chunk for each result,
+  when possible so structured outputs can be split into semantic retention units. Search/list
+  outputs, arrays, rows, match sets, grouped errors, and keyed object maps should usually become
+  small independently retainable chunks. If the preview is insufficient, the model can request
+  `tool_result` or `all_tool_results` once; invalid final output fails the request with a
+  `pando_proxy_failed` error,
 - asks the maintenance model what chunks to retain,
-- after one invalid retention retry, falls back to mechanically keeping chunks that reference live
-  tasks or the active task,
+- invalid final retention output fails the request with a `pando_proxy_failed` error,
 - prunes retained messages/chunks to live task IDs.
 
 The task-update, assistant-memory, and non-Pando chunking calls each allow at most one model request
@@ -217,6 +219,10 @@ for more data. The first call receives the minimal normal classifier payload and
 final decision or `needsMoreInfo: true` with `requestedInfo`. If it asks for data, the proxy
 supplies actual requested items in `extraContext` and makes one second call. The second call must
 return the final decision.
+
+Maintenance transport failures and upstream 5xx responses are retried once as transport retries.
+They are not converted into validation-repair attempts. If the retry still fails, the proxy returns
+`pando_proxy_failed`.
 
 Live tasks have:
 

@@ -84,13 +84,10 @@ async function callMaintenanceJson(
     schema,
   });
   const upstreamBaseUrl = resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader);
-  const response = await fetch(responsesUrl(upstreamBaseUrl), {
-    method: "POST",
-    headers: {
-      "authorization": authHeader,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
+  const response = await fetchMaintenanceJsonResponse(
+    responsesUrl(upstreamBaseUrl),
+    authHeader,
+    {
       model,
       instructions: system,
       stream: true,
@@ -109,9 +106,9 @@ async function callMaintenanceJson(
           content: [{ type: "input_text", text: payloadText }],
         },
       ],
-    }),
-    signal: AbortSignal.timeout(config.maintenanceTimeoutMs),
-  });
+    },
+    config.maintenanceTimeoutMs,
+  );
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -126,6 +123,43 @@ async function callMaintenanceJson(
     throw new Error("Maintenance model response did not include text");
   }
   return extractJsonObject(text);
+}
+
+async function fetchMaintenanceJsonResponse(
+  url: string,
+  authHeader: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "authorization": authHeader,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (response.ok || response.status < 500 || attempt === 2) {
+        return response;
+      }
+      await response.text().catch(() => "");
+    } catch (error) {
+      lastError = error;
+      if (attempt === 2) {
+        throw error;
+      }
+    }
+    await delay(250 * attempt);
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function selectMaintenanceModel(options: {
@@ -331,6 +365,8 @@ Rules:
 export const chunkBatchSystemPrompt = `
 You chunk arbitrary non-Pando tool results for task-scoped context memory. These chunks are the
 units later retention can keep or drop before the next agent turn, so chunk boundaries matter.
+The proxy may drop raw history and raw tool output after this pass; your chunks are the durable,
+task-linked memory view that future turns will see.
 Return JSON matching the supplied schema:
 {
   "needsMoreInfo": boolean,
@@ -348,10 +384,12 @@ Return JSON matching the supplied schema:
 }
 Rules:
 - The payload includes live tasks, activeTaskId, compact keptUserMessages, and raw-ish tool results
-  with tool names/params. Use that context to decide what is useful and which taskIds apply.
+  with tool names/params. Use the tasks to decide relevance, keptUserMessages for user intent,
+  and tool names/params to understand why the tool was called.
 - If infoRequestAttempt is false and you need more data to chunk correctly, set needsMoreInfo true
   and fill requestedInfo. You get only one request for more data; err on the side of requesting
-  more rather than less.
+  more rather than less. Request tool_result or all_tool_results when a truncated/previewed payload
+  hides the structure needed to choose good boundaries.
 - If infoRequestAttempt is true, needsMoreInfo must be false and you must return final chunks from
   the provided data.
 - Supported requestedInfo types are live_tasks, kept_user_messages, all_memory_chunks,
@@ -360,14 +398,17 @@ Rules:
 - When needsMoreInfo is false, requestedInfo must be [].
 - Every emitted chunk must support one or more live tasks. Use activeTaskId when a result clearly
   belongs to the active task.
-- Choose semantic retention units, not mechanical summaries. Split arrays, search results, lists,
-  tables, match sets, grouped errors, and other structured collections into one chunk per useful
+- Choose semantic retention units, not mechanical summaries. Do not emit one broad chunk that merely
+  says "the original output contains..." when the output has independently useful parts.
+- Inspect the data shape. Split arrays, search results, lists, tables, match sets, grouped errors,
+  object maps keyed by resource/file/id, and other structured collections into one chunk per useful
   item or small related group when those items may be independently kept or dropped.
 - For search/list outputs, prefer small chunks per result with rank/index and locator details in
   the title, summary, or pointer. It is better to create more small chunks than one broad chunk when
   later retention may keep only 1-3 items.
 - Use one larger chunk only when the output is a single coherent artifact, a short command result,
-  or splitting would remove important context.
+  or splitting would remove important context. Avoid tiny fragments that are meaningless without
+  nearby context.
 - Keep summaries short, factual, and specific enough to identify the retained fact without rereading
   the whole raw result.
 - Prefer pointer locators over copying long raw output. Use pointer null when no locator helps. When

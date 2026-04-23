@@ -175,17 +175,13 @@ async function safeAssistantMemoryCall(
   client: AssistantMemoryClient,
   request: AssistantMemoryRequest,
 ): Promise<unknown> {
-  try {
-    return await client({
-      ...request,
-      responses: request.responses.map((response) => ({
-        ...response,
-        text: truncate(response.text, 14_000),
-      })),
-    });
-  } catch {
-    return null;
-  }
+  return await client({
+    ...request,
+    responses: request.responses.map((response) => ({
+      ...response,
+      text: truncate(response.text, 14_000),
+    })),
+  });
 }
 
 function truncate(text: string, maxChars: number): string {

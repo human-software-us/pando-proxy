@@ -51,7 +51,7 @@ export async function retainMemory(
     return applyRetention(state, candidates, reparsed.decision);
   }
 
-  return fallbackRetention(state, candidates);
+  throw new Error(`Retention validation failed: ${reparsed.errors.join("; ")}`);
 }
 
 export function parseAndValidateRetentionDecision(
@@ -125,22 +125,6 @@ export function applyRetention(
   return pruneMemoryToLiveTasks({ ...state, memoryLibrary });
 }
 
-function fallbackRetention(state: MemoryState, candidates: MemoryChunk[]): MemoryState {
-  const live = new Set(state.tasks.map((task) => task.id));
-  const active = state.activeTaskId && live.has(state.activeTaskId) ? state.activeTaskId : null;
-  const memoryLibrary = candidates.flatMap((chunk) => {
-    const taskIds = unique(chunk.taskIds.filter((id) => live.has(id)));
-    if (taskIds.length > 0) {
-      return [{ ...chunk, taskIds }];
-    }
-    if (active) {
-      return [{ ...chunk, taskIds: [active] }];
-    }
-    return [];
-  });
-  return pruneMemoryToLiveTasks({ ...state, memoryLibrary });
-}
-
 function dedupeCandidates(candidates: MemoryChunk[]): MemoryChunk[] {
   const map = new Map<string, MemoryChunk>();
   for (const chunk of candidates) {
@@ -168,9 +152,5 @@ async function safeRetentionCall(
   client: RetentionClient,
   request: RetentionModelRequest,
 ): Promise<unknown> {
-  try {
-    return await client(request);
-  } catch {
-    return null;
-  }
+  return await client(request);
 }

@@ -116,6 +116,23 @@ Deno.test("assistant response review fails if model requests info twice", async 
   assert(threw);
 });
 
+Deno.test("assistant response review propagates maintenance call failures", async () => {
+  let calls = 0;
+  await assertRejects(
+    () =>
+      chunkAssistantResponses(
+        [{ responseId: "assistant_1", text: "A prior answer with durable context." }],
+        state(),
+        () => {
+          calls += 1;
+          return Promise.reject(new Error("assistant memory transport failed"));
+        },
+      ),
+    "assistant memory transport failed",
+  );
+  assertEquals(calls, 1);
+});
+
 function state(): MemoryState {
   return {
     taskUpdateSeq: 1,
@@ -138,4 +155,14 @@ function assertEquals(actual: unknown, expected: unknown): void {
   if (actualJson !== expectedJson) {
     throw new Error(`Expected ${expectedJson}, got ${actualJson}`);
   }
+}
+
+async function assertRejects(callback: () => Promise<unknown>, includes: string): Promise<void> {
+  try {
+    await callback();
+  } catch (error) {
+    assert(String(error).includes(includes), `Expected error containing ${includes}, got ${error}`);
+    return;
+  }
+  throw new Error("Expected callback to reject");
 }
