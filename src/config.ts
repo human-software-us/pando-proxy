@@ -3,19 +3,26 @@ export type ProxyConfig = {
   port: number;
   upstreamBaseUrl: string;
   apiKey: string | null;
-  maintenanceModel: string | null;
+  smallStructuredModel: string;
+  overflowStructuredModel: string;
+  smallStructuredContextWindow: number;
+  overflowStructuredContextWindow: number;
+  modelTimeoutMs: number;
   stateDir: string;
-  syntheticCharBudget: number;
-  maintenanceTimeoutMs: number;
   memoryEnabled: boolean;
   logFile: string | null;
+  inlinePieceByteLimit: number;
+  piecePreviewCharLimit: number;
+  maxIndexedPiecesPerTask: number;
+  maxLocalContextToolCalls: number;
 };
 
 export type CliOptions = {
   host?: string;
   port?: number;
   upstreamBaseUrl?: string;
-  maintenanceModel?: string;
+  smallStructuredModel?: string;
+  overflowStructuredModel?: string;
   stateDir?: string;
   memoryEnabled?: boolean;
   logFile?: string | null;
@@ -27,8 +34,15 @@ export const AUTO_UPSTREAM_BASE_URL = "auto";
 export const OPENAI_API_UPSTREAM_BASE_URL = "https://api.openai.com/v1";
 export const CHATGPT_CODEX_UPSTREAM_BASE_URL = "https://chatgpt.com/backend-api/codex";
 export const DEFAULT_UPSTREAM_BASE_URL = AUTO_UPSTREAM_BASE_URL;
-export const DEFAULT_SYNTHETIC_CHAR_BUDGET = 12_000;
-export const DEFAULT_MAINTENANCE_TIMEOUT_MS = 60_000;
+export const DEFAULT_SMALL_STRUCTURED_MODEL = "gpt-5.4-mini";
+export const DEFAULT_OVERFLOW_STRUCTURED_MODEL = "gpt-5.4";
+export const DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW = 272_000;
+export const DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW = 1_000_000;
+export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
+export const DEFAULT_INLINE_PIECE_BYTE_LIMIT = 16_384;
+export const DEFAULT_PIECE_PREVIEW_CHAR_LIMIT = 96;
+export const DEFAULT_MAX_INDEXED_PIECES_PER_TASK = 12;
+export const DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS = 4;
 
 export function loadConfig(options: CliOptions = {}): ProxyConfig {
   return {
@@ -40,23 +54,48 @@ export function loadConfig(options: CliOptions = {}): ProxyConfig {
         DEFAULT_UPSTREAM_BASE_URL,
     ),
     apiKey: Deno.env.get("OPENAI_API_KEY") ?? null,
-    maintenanceModel: options.maintenanceModel ??
+    smallStructuredModel: options.smallStructuredModel ??
+      Deno.env.get("PANDO_PROXY_SMALL_STRUCTURED_MODEL") ??
       Deno.env.get("PANDO_PROXY_MAINTENANCE_MODEL") ??
-      null,
+      DEFAULT_SMALL_STRUCTURED_MODEL,
+    overflowStructuredModel: options.overflowStructuredModel ??
+      Deno.env.get("PANDO_PROXY_OVERFLOW_STRUCTURED_MODEL") ??
+      DEFAULT_OVERFLOW_STRUCTURED_MODEL,
+    smallStructuredContextWindow: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_SMALL_STRUCTURED_CONTEXT_WINDOW"),
+      DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW,
+    ),
+    overflowStructuredContextWindow: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_OVERFLOW_STRUCTURED_CONTEXT_WINDOW"),
+      DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW,
+    ),
+    modelTimeoutMs: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_MODEL_TIMEOUT_MS") ??
+        Deno.env.get("PANDO_PROXY_MAINTENANCE_TIMEOUT_MS"),
+      DEFAULT_MODEL_TIMEOUT_MS,
+    ),
     stateDir: expandHome(
       options.stateDir ?? Deno.env.get("PANDO_PROXY_STATE_DIR") ?? "~/.pando-proxy",
-    ),
-    syntheticCharBudget: parsePositiveInt(
-      Deno.env.get("PANDO_PROXY_SYNTHETIC_CHAR_BUDGET"),
-      DEFAULT_SYNTHETIC_CHAR_BUDGET,
-    ),
-    maintenanceTimeoutMs: parsePositiveInt(
-      Deno.env.get("PANDO_PROXY_MAINTENANCE_TIMEOUT_MS"),
-      DEFAULT_MAINTENANCE_TIMEOUT_MS,
     ),
     memoryEnabled: options.memoryEnabled ??
       !parseBoolean(Deno.env.get("PANDO_PROXY_DISABLE_MEMORY")),
     logFile: options.logFile ?? Deno.env.get("PANDO_PROXY_LOG_FILE") ?? null,
+    inlinePieceByteLimit: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_INLINE_PIECE_BYTE_LIMIT"),
+      DEFAULT_INLINE_PIECE_BYTE_LIMIT,
+    ),
+    piecePreviewCharLimit: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_PIECE_PREVIEW_CHAR_LIMIT"),
+      DEFAULT_PIECE_PREVIEW_CHAR_LIMIT,
+    ),
+    maxIndexedPiecesPerTask: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_MAX_INDEXED_PIECES_PER_TASK"),
+      DEFAULT_MAX_INDEXED_PIECES_PER_TASK,
+    ),
+    maxLocalContextToolCalls: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_MAX_LOCAL_CONTEXT_TOOL_CALLS"),
+      DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS,
+    ),
   };
 }
 
@@ -83,8 +122,12 @@ export function parseCliOptions(args: string[]): { command: string | null; optio
       options.upstreamBaseUrl = requireValue(args, ++index, arg);
       continue;
     }
-    if (arg === "--maintenance-model") {
-      options.maintenanceModel = requireValue(args, ++index, arg);
+    if (arg === "--small-structured-model" || arg === "--maintenance-model") {
+      options.smallStructuredModel = requireValue(args, ++index, arg);
+      continue;
+    }
+    if (arg === "--overflow-structured-model") {
+      options.overflowStructuredModel = requireValue(args, ++index, arg);
       continue;
     }
     if (arg === "--state-dir") {
@@ -173,7 +216,7 @@ function parseRequiredPort(value: string): number {
   return port;
 }
 
-function parsePositiveInt(value: string | undefined, fallback: number): number {
+function parsePositiveInt(value: string | undefined | null, fallback: number): number {
   if (!value) {
     return fallback;
   }

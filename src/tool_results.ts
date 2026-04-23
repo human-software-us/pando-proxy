@@ -1,56 +1,94 @@
-import { compactJson, stableJson } from "./json.ts";
 import { shortHash } from "./hash.ts";
-import { isRecord, MemoryState } from "./memory_state.ts";
+import { stableJson } from "./json.ts";
+import { isRecord } from "./memory_state.ts";
 
-export type ToolResultEnvelope = {
-  id: string;
-  origin: "mcp" | "native";
-  toolName: string;
-  serverName?: string;
-  params?: Record<string, unknown>;
-  content: unknown;
-  activeTaskId: string | null;
-};
-
-export type UserMessageExtraction = {
-  messageId: string;
-  text: string;
-};
-
-export type AssistantResponseExtraction = {
-  responseId: string;
-  text: string;
-};
-
-export type ExtractedInputs = {
-  userMessages: UserMessageExtraction[];
-  assistantResponses: AssistantResponseExtraction[];
-  toolResults: ToolResultEnvelope[];
+export type RoundSource = {
+  sourceId: string;
+  sourceKind: "user" | "assistant" | "tool";
+  payload: unknown;
+  toolName?: string;
+  pointer?: Record<string, unknown>;
 };
 
 export type InputItemDescriptor = {
-  index: number;
-  item: unknown;
-  type: string;
-  role: string | null;
-  kind:
-    | "instruction"
-    | "user_message"
-    | "assistant_message"
-    | "tool_call"
-    | "tool_output"
-    | "reasoning"
-    | "other";
-  id?: string;
-  callId?: string;
-  text?: string;
-  isSyntheticMemory: boolean;
-  isOperationalContext: boolean;
   ref: string;
+  type: string;
+  role?: string;
+  item: unknown;
+  isInstruction: boolean;
+  isSyntheticTaskMemory: boolean;
 };
 
+export async function extractNewRequestSources(
+  body: Record<string, unknown>,
+  processedSourceIds: Set<string>,
+): Promise<RoundSource[]> {
+  const items = inputItems(body.input);
+  const toolNamesByCallId = collectToolNamesByCallId(items);
+  const out: RoundSource[] = [];
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const descriptor = await describeInputItem(item, index);
+    if (descriptor.isSyntheticTaskMemory) {
+      continue;
+    }
+    const source = sourceFromInputItem(item, descriptor.ref, toolNamesByCallId);
+    if (!source || processedSourceIds.has(source.sourceId)) {
+      continue;
+    }
+    out.push(source);
+  }
+
+  return out;
+}
+
+export async function extractAssistantSourcesFromResponse(response: unknown): Promise<RoundSource[]> {
+  if (!isRecord(response)) {
+    return [];
+  }
+
+  const output = Array.isArray(response.output) ? response.output : [];
+  const out: RoundSource[] = [];
+
+  for (let index = 0; index < output.length; index += 1) {
+    const item = output[index];
+    if (!isAssistantMessageItem(item)) {
+      continue;
+    }
+    out.push({
+      sourceId: await responseItemId(item, response, index),
+      sourceKind: "assistant",
+      payload: item,
+    });
+  }
+
+  if (out.length > 0) {
+    return out;
+  }
+
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return [{
+      sourceId: await syntheticResponseId(response, "output_text"),
+      sourceKind: "assistant",
+      payload: response.output_text,
+    }];
+  }
+
+  return [];
+}
+
 export function inputItems(input: unknown): unknown[] {
-  return Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  if (Array.isArray(input)) {
+    return [...input];
+  }
+  if (typeof input === "string") {
+    return [stringInputMessage(input)];
+  }
+  if (isRecord(input)) {
+    return [input];
+  }
+  return [];
 }
 
 export async function describeInputItems(input: unknown): Promise<InputItemDescriptor[]> {
@@ -58,301 +96,120 @@ export async function describeInputItems(input: unknown): Promise<InputItemDescr
   return await Promise.all(items.map((item, index) => describeInputItem(item, index)));
 }
 
-export async function extractInputs(
-  body: Record<string, unknown>,
-  state: MemoryState,
-): Promise<ExtractedInputs> {
-  const items = inputItems(body.input);
-  const callsById = new Map<string, { toolName: string; params?: Record<string, unknown> }>();
+export async function inputItemId(item: unknown, index: number): Promise<string> {
+  return await stableSourceId(item, `input_${index}`);
+}
 
+export function itemTypeCounts(items: InputItemDescriptor[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    counts[item.type] = (counts[item.type] ?? 0) + 1;
+  }
+  return counts;
+}
+
+async function describeInputItem(item: unknown, index: number): Promise<InputItemDescriptor> {
+  const type = isRecord(item) && typeof item.type === "string" ? item.type : typeof item;
+  const role = isRecord(item) && typeof item.role === "string" ? item.role : undefined;
+  return {
+    ref: await inputItemId(item, index),
+    type,
+    ...(role ? { role } : {}),
+    item,
+    isInstruction: type === "message" && (role === "developer" || role === "system"),
+    isSyntheticTaskMemory: isSyntheticTaskMemoryItem(item),
+  };
+}
+
+function sourceFromInputItem(
+  item: unknown,
+  sourceId: string,
+  toolNamesByCallId: Map<string, string>,
+): RoundSource | null {
+  if (!isRecord(item)) {
+    return {
+      sourceId,
+      sourceKind: "user",
+      payload: item,
+    };
+  }
+
+  const type = typeof item.type === "string" ? item.type : "";
+  const role = typeof item.role === "string" ? item.role : "";
+
+  if (type === "message" && role === "user") {
+    return {
+      sourceId,
+      sourceKind: "user",
+      payload: item,
+    };
+  }
+
+  if (type === "message" && role === "assistant") {
+    return {
+      sourceId,
+      sourceKind: "assistant",
+      payload: item,
+    };
+  }
+
+  if (isToolOutputItem(type)) {
+    const callId = typeof item.call_id === "string" ? item.call_id : undefined;
+    const toolName = (typeof item.name === "string" ? item.name : undefined) ??
+      (callId ? toolNamesByCallId.get(callId) : undefined);
+    return {
+      sourceId,
+      sourceKind: "tool",
+      payload: "output" in item ? item.output : item,
+      ...(toolName ? { toolName } : {}),
+      pointer: {
+        ...(callId ? { callId } : {}),
+        itemType: type,
+      },
+    };
+  }
+
+  return null;
+}
+
+function collectToolNamesByCallId(items: unknown[]): Map<string, string> {
+  const out = new Map<string, string>();
   for (const item of items) {
     if (!isRecord(item)) {
       continue;
     }
-    const type = String(item.type ?? "");
-    const callId = typeof item.call_id === "string"
-      ? item.call_id
-      : typeof item.id === "string"
-      ? item.id
-      : null;
-    if (!callId) {
-      continue;
-    }
-    if (
-      type === "function_call" || type === "custom_tool_call" || type === "mcp_tool_call" ||
-      "arguments" in item
-    ) {
-      const name = extractToolName(item);
-      if (name) {
-        callsById.set(callId, { toolName: name, params: parseMaybeJsonObject(item.arguments) });
-      }
+    const callId = typeof item.call_id === "string" ? item.call_id : undefined;
+    const toolName = typeof item.name === "string" ? item.name : undefined;
+    if (callId && toolName) {
+      out.set(callId, toolName);
     }
   }
-
-  const userMessages: UserMessageExtraction[] = [];
-  const assistantResponses: AssistantResponseExtraction[] = [];
-  const toolResults: ToolResultEnvelope[] = [];
-  const descriptors = await describeInputItems(items);
-
-  for (const descriptor of descriptors) {
-    const item = descriptor.item;
-    if (descriptor.kind === "user_message") {
-      if (
-        descriptor.text && descriptor.text.trim().length > 0 && !descriptor.isSyntheticMemory &&
-        !descriptor.isOperationalContext && descriptor.id
-      ) {
-        userMessages.push({
-          messageId: descriptor.id,
-          text: descriptor.text,
-        });
-      }
-      continue;
-    }
-
-    if (descriptor.kind === "assistant_message") {
-      if (descriptor.text && descriptor.text.trim().length > 0 && descriptor.id) {
-        assistantResponses.push({
-          responseId: descriptor.id,
-          text: descriptor.text,
-        });
-      }
-      continue;
-    }
-
-    if (descriptor.kind === "tool_output" && isRecord(item) && descriptor.id) {
-      const callId = typeof item.call_id === "string"
-        ? item.call_id
-        : typeof item.id === "string"
-        ? item.id
-        : "";
-      const call = callId ? callsById.get(callId) : undefined;
-      const toolName = extractToolName(item) ?? call?.toolName ??
-        `unknown_tool_${callId || descriptor.index}`;
-      const { serverName } = splitQualifiedToolName(toolName);
-      toolResults.push({
-        id: descriptor.id,
-        origin: item.type === "mcp_tool_call_output" || serverName ? "mcp" : "native",
-        toolName,
-        serverName,
-        params: parseMaybeJsonObject(item.arguments) ?? call?.params,
-        content: extractToolContent(item),
-        activeTaskId: state.activeTaskId,
-      });
-    }
-  }
-
-  return { userMessages, assistantResponses, toolResults };
+  return out;
 }
 
-async function describeInputItem(item: unknown, index: number): Promise<InputItemDescriptor> {
-  if (typeof item === "string") {
-    const id = `user_${await shortHash(`string:${index}:${item}`)}`;
-    return {
-      index,
-      item,
-      type: "string",
-      role: "user",
-      kind: "user_message",
-      id,
-      text: item,
-      isSyntheticMemory: isSyntheticMemoryText(item),
-      isOperationalContext: isOperationalContextText(item),
-      ref: id,
-    };
-  }
-  if (!isRecord(item)) {
-    return {
-      index,
-      item,
-      type: typeof item,
-      role: null,
-      kind: "other",
-      isSyntheticMemory: false,
-      isOperationalContext: false,
-      ref: `${typeof item}:${index}`,
-    };
-  }
-
-  const type = String(item.type ?? "");
-  const role = typeof item.role === "string" ? item.role : null;
-  const callId = typeof item.call_id === "string"
-    ? item.call_id
-    : typeof item.id === "string" && (type === "function_call" || type.endsWith("_tool_call"))
-    ? item.id
-    : undefined;
-
-  if (role === "system" || role === "developer") {
-    return {
-      index,
-      item,
-      type,
-      role,
-      kind: "instruction",
-      callId,
-      isSyntheticMemory: false,
-      isOperationalContext: false,
-      ref: `${type || "message"}:${role}:${index}`,
-    };
-  }
-
-  if (isUserMessage(item)) {
-    const text = extractMessageText(item);
-    const id = await inputItemId("user", index, item);
-    return {
-      index,
-      item,
-      type,
-      role,
-      kind: "user_message",
-      id,
-      callId,
-      text,
-      isSyntheticMemory: isSyntheticMemoryText(text),
-      isOperationalContext: isOperationalContextText(text),
-      ref: id,
-    };
-  }
-
-  if (isAssistantMessage(item)) {
-    const text = extractMessageText(item);
-    const id = await inputItemId("assistant", index, item);
-    return {
-      index,
-      item,
-      type,
-      role,
-      kind: "assistant_message",
-      id,
-      callId,
-      text,
-      isSyntheticMemory: false,
-      isOperationalContext: false,
-      ref: id,
-    };
-  }
-
-  if (isToolOutput(item)) {
-    const id = await inputItemId("tool", index, item);
-    return {
-      index,
-      item,
-      type,
-      role,
-      kind: "tool_output",
-      id,
-      callId,
-      isSyntheticMemory: false,
-      isOperationalContext: false,
-      ref: id,
-    };
-  }
-
-  if (
-    type === "function_call" || type === "custom_tool_call" || type === "mcp_tool_call" ||
-    "arguments" in item
-  ) {
-    return {
-      index,
-      item,
-      type,
-      role,
-      kind: "tool_call",
-      callId,
-      isSyntheticMemory: false,
-      isOperationalContext: false,
-      ref: `${type || "tool_call"}:${callId ?? index}`,
-    };
-  }
-
-  if (type === "reasoning") {
-    return {
-      index,
-      item,
-      type,
-      role,
-      kind: "reasoning",
-      isSyntheticMemory: false,
-      isOperationalContext: false,
-      ref: `reasoning:${index}`,
-    };
-  }
-
-  return {
-    index,
-    item,
-    type,
-    role,
-    kind: "other",
-    callId,
-    isSyntheticMemory: false,
-    isOperationalContext: false,
-    ref: `${type || "item"}:${index}`,
-  };
+function isToolOutputItem(type: string): boolean {
+  return type === "function_call_output" ||
+    type.endsWith("_tool_call_output") ||
+    type === "custom_tool_call_output" ||
+    type === "mcp_tool_call_output";
 }
 
-export function isPandoResult(
-  result: Pick<ToolResultEnvelope, "toolName" | "serverName" | "content">,
-): boolean {
-  const { baseName, serverName } = splitQualifiedToolName(result.toolName);
-  if (
-    result.toolName.startsWith("pando__") || serverName === "pando" || result.serverName === "pando"
-  ) {
+function isAssistantMessageItem(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && value.type === "message" && value.role === "assistant";
+}
+
+function isSyntheticTaskMemoryItem(item: unknown): boolean {
+  if (!isRecord(item) || item.type !== "message" || item.role !== "developer") {
+    return false;
+  }
+  if (typeof item.name === "string" && item.name === "pando_task_memory") {
     return true;
   }
-  return knownPandoToolNames.has(baseName);
+  const text = extractInlineText(item);
+  return text.includes("<pando_task_memory>");
 }
 
-export function splitQualifiedToolName(
-  toolName: string,
-): { serverName?: string; baseName: string } {
-  const separator = toolName.indexOf("__");
-  if (separator < 0) {
-    return { baseName: toolName };
-  }
-  return {
-    serverName: toolName.slice(0, separator),
-    baseName: toolName.slice(separator + 2),
-  };
-}
-
-export function normalizeToolContent(content: unknown): unknown {
-  if (typeof content !== "string") {
-    return content;
-  }
-  const trimmed = content.trim();
-  if (!trimmed) {
-    return content;
-  }
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return content;
-  }
-}
-
-export function summarizeToolContent(content: unknown, maxChars = 900): string {
-  const normalized = normalizeToolContent(content);
-  const text = typeof normalized === "string" ? normalized : compactJson(normalized, maxChars);
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}...`;
-}
-
-function isUserMessage(item: Record<string, unknown>): boolean {
-  return String(item.type ?? "") === "message" && item.role === "user";
-}
-
-function isAssistantMessage(item: Record<string, unknown>): boolean {
-  return String(item.type ?? "") === "message" && item.role === "assistant";
-}
-
-function isToolOutput(item: Record<string, unknown>): boolean {
-  const type = String(item.type ?? "");
-  return type === "function_call_output" ||
-    type === "custom_tool_call_output" ||
-    type === "mcp_tool_call_output" ||
-    type.endsWith("_tool_call_output");
-}
-
-function extractMessageText(item: Record<string, unknown>): string {
+function extractInlineText(item: Record<string, unknown>): string {
   const content = item.content;
   if (typeof content === "string") {
     return content;
@@ -360,102 +217,57 @@ function extractMessageText(item: Record<string, unknown>): string {
   if (!Array.isArray(content)) {
     return "";
   }
-  const parts: string[] = [];
-  for (const part of content) {
-    if (typeof part === "string") {
-      parts.push(part);
-    } else if (isRecord(part) && typeof part.text === "string") {
-      parts.push(part.text);
+  return content.map((entry) => {
+    if (typeof entry === "string") {
+      return entry;
     }
-  }
-  return parts.join("\n");
+    if (!isRecord(entry)) {
+      return "";
+    }
+    if (typeof entry.text === "string") {
+      return entry.text;
+    }
+    if (typeof entry.input_text === "string") {
+      return entry.input_text;
+    }
+    return "";
+  }).join("\n");
 }
 
-function isSyntheticMemoryText(text: string): boolean {
-  return text.includes("<context_memory>") && text.includes("</context_memory>");
+async function responseItemId(
+  item: Record<string, unknown>,
+  response: Record<string, unknown>,
+  index: number,
+): Promise<string> {
+  if (typeof item.id === "string" && item.id) {
+    return item.id;
+  }
+  const responseId = typeof response.id === "string" ? response.id : "response";
+  return await stableSourceId(item, `${responseId}_assistant_${index}`);
 }
 
-function isOperationalContextText(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.startsWith("<environment_context>") &&
-    trimmed.endsWith("</environment_context>");
+async function syntheticResponseId(
+  response: Record<string, unknown>,
+  suffix: string,
+): Promise<string> {
+  const responseId = typeof response.id === "string" ? response.id : "response";
+  return await stableSourceId(response, `${responseId}_${suffix}`);
 }
 
-function extractToolName(item: Record<string, unknown>): string | null {
-  if (typeof item.server_label === "string" && typeof item.name === "string") {
-    return `${item.server_label}__${item.name}`;
+async function stableSourceId(value: unknown, prefix: string): Promise<string> {
+  if (isRecord(value) && typeof value.id === "string" && value.id) {
+    return value.id;
   }
-  if (typeof item.name === "string") {
-    return item.name;
+  if (isRecord(value) && typeof value.call_id === "string" && value.call_id) {
+    return value.call_id;
   }
-  if (typeof item.tool_name === "string") {
-    return item.tool_name;
-  }
-  return null;
+  return `${prefix}_${await shortHash(stableJson(value), 20)}`;
 }
 
-function extractToolContent(item: Record<string, unknown>): unknown {
-  if ("output" in item) {
-    return item.output;
-  }
-  if ("content" in item) {
-    return item.content;
-  }
-  if ("result" in item) {
-    return item.result;
-  }
-  return item;
+function stringInputMessage(text: string): Record<string, unknown> {
+  return {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text }],
+  };
 }
-
-function parseMaybeJsonObject(value: unknown): Record<string, unknown> | undefined {
-  const parsed = parseMaybeJson(value);
-  return isRecord(parsed) ? parsed : undefined;
-}
-
-function parseMaybeJson(value: unknown): unknown {
-  if (typeof value !== "string") {
-    return value;
-  }
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-export async function inputItemId(prefix: string, index: number, item: unknown): Promise<string> {
-  const explicit = isRecord(item) && typeof item.id === "string" ? item.id : null;
-  if (explicit) {
-    return `${prefix}_${explicit}`;
-  }
-  return `${prefix}_${await shortHash(`${index}:${stableJson(item)}`)}`;
-}
-
-const knownPandoToolNames = new Set([
-  "find_nodes",
-  "find_references",
-  "find_callers",
-  "query_db",
-  "analyze_imports",
-  "list_exports",
-  "list_snapshots",
-  "workspace_overview",
-  "get_db_schema",
-  "get_enabled_languages",
-  "get_project_root",
-  "clojure_namespace_graph",
-  "clojure_namespace_dependencies",
-  "clojure_namespace_dependents",
-  "insert",
-  "replace",
-  "replace_body",
-  "delete",
-  "rename",
-  "change_signature",
-  "filter_map_reduce",
-  "restore_snapshot",
-  "restore_files",
-  "snapshot_worktree",
-  "move_clojure_namespace",
-  "rename_clojure_namespace",
-]);

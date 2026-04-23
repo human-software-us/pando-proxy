@@ -1,384 +1,93 @@
-import { chunkNonPandoInBatches, chunkPandoInCode } from "../src/chunking.ts";
-import { MemoryState } from "../src/memory_state.ts";
-import { ToolResultEnvelope } from "../src/tool_results.ts";
+import { assertEquals } from "jsr:@std/assert";
 
-Deno.test("pando find_nodes creates one chunk per node match", async () => {
-  const chunks = await chunkPandoInCode(
-    {
-      id: "tool_1",
-      origin: "mcp",
-      toolName: "pando__find_nodes",
-      content: {
-        nodes: [{ name: "foo", path: "src/foo.ts" }, { name: "bar", path: "src/bar.ts" }],
-      },
-      activeTaskId: "task_1",
-    },
-    state(),
-  );
+import { chunkRoundSources } from "../src/chunking.ts";
+import type { ProxyConfig } from "../src/config.ts";
+import type { StructuredClients } from "../src/structured_model.ts";
+import type { RoundSource } from "../src/tool_results.ts";
 
-  assertEquals(chunks.length, 2);
-  assertEquals(chunks.map((chunk) => chunk.kind), ["pando/find_nodes", "pando/find_nodes"]);
-  assertEquals(chunks[0].taskIds, ["task_1"]);
+Deno.test("chunkRoundSources keeps user messages whole", async () => {
+  const sources: RoundSource[] = [{
+    sourceId: "user_1",
+    sourceKind: "user",
+    payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+  }];
+
+  const chunked = await chunkRoundSources(sources, config(), stubClients());
+
+  assertEquals(chunked.length, 1);
+  assertEquals(chunked[0].id, "user_1:0");
+  assertEquals(chunked[0].selector, { kind: "whole" });
 });
 
-Deno.test("pando find_nodes handles nested pando result envelopes", async () => {
-  const chunks = await chunkPandoInCode(
-    {
-      id: "tool_nested",
-      origin: "mcp",
-      toolName: "find_nodes",
-      content: {
-        success: true,
-        data: {
-          results: [
-            { name: "pandoLiveValue", file_path: "tests/pando_live_chunk_fixture.ts" },
-            { name: "pandoLiveCaller", file_path: "tests/pando_live_chunk_fixture.ts" },
-          ],
-          page: { limit: 5, offset: 0, hasMore: false },
-        },
-      },
-      activeTaskId: "task_1",
-    },
-    state(),
-  );
-
-  assertEquals(chunks.length, 2);
-  assertEquals(chunks.map((chunk) => chunk.kind), ["pando/find_nodes", "pando/find_nodes"]);
-  assert(chunks[0].summary.includes("pandoLiveValue"));
-});
-
-Deno.test("pando analysis pointer chunks preserve nested pagination", async () => {
-  const chunks = await chunkPandoInCode(
-    {
-      id: "tool_page",
-      origin: "mcp",
-      toolName: "query_db",
-      content: {
-        success: true,
-        data: {
-          page: { limit: 100, offset: 0, hasMore: true },
-        },
-      },
-      activeTaskId: "task_1",
-    },
-    state(),
-  );
-
-  assertEquals(chunks.length, 1);
-  assertEquals(chunks[0].kind, "pando/query_db");
-  assertEquals(chunks[0].pointer?.pagination, { limit: 100, offset: 0, hasMore: true });
-});
-
-Deno.test("pando mutating tool creates a compact operation-summary chunk", async () => {
-  const result: ToolResultEnvelope = {
-    id: "tool_2",
-    origin: "mcp",
-    toolName: "pando__replace",
-    content: { changedFiles: ["src/main.ts"] },
-    activeTaskId: "task_1",
-  };
-
-  const chunks = await chunkPandoInCode(result, state());
-
-  assertEquals(chunks.length, 1);
-  assert(chunks[0].kind.includes("mutation"));
-  assert(chunks[0].summary.includes("src/main.ts"));
-});
-
-Deno.test("pando mutating tool finds nested changed files", async () => {
-  const chunks = await chunkPandoInCode(
-    {
-      id: "tool_nested_mutation",
-      origin: "mcp",
-      toolName: "replace_body",
-      content: {
-        success: true,
-        data: {
-          details: {
-            changedFiles: ["tests/pando_live_chunk_fixture.ts"],
-          },
-        },
-      },
-      activeTaskId: "task_1",
-    },
-    state(),
-  );
-
-  assertEquals(chunks.length, 1);
-  assertEquals(chunks[0].pointer?.changedPaths, ["tests/pando_live_chunk_fixture.ts"]);
-  assert(chunks[0].summary.includes("tests/pando_live_chunk_fixture.ts"));
-});
-
-Deno.test("pando workspace_overview is classified as read-only analysis", async () => {
-  const chunks = await chunkPandoInCode(
-    {
-      id: "tool_3",
-      origin: "mcp",
-      toolName: "workspace_overview",
-      content: {
-        files: { total: 3 },
-        modules: { detected: ["src/main.ts"] },
-      },
-      activeTaskId: "task_1",
-    },
-    state(),
-  );
-
-  assertEquals(chunks.length, 1);
-  assertEquals(chunks[0].kind, "pando/workspace_overview");
-  assert(!chunks[0].kind.includes("mutation"));
-  assertEquals(chunks[0].taskIds, ["task_1"]);
-});
-
-// Workspace overview commonly returns one large object rather than rows/items,
-// so the pointer-chunk path is the expected read-only representation.
-
-Deno.test("non-pando chunk request includes kept user context", async () => {
-  let seenRequest: unknown;
-  const chunks = await chunkNonPandoInBatches(
-    [{
-      id: "tool_shell",
-      origin: "native",
-      toolName: "shell_exec",
-      params: { cmd: "printf alpha" },
-      content: "alpha",
-      activeTaskId: "task_1",
-    }],
-    {
-      ...state(),
-      keptUserMessages: [{
-        messageId: "user_keep",
-        summary: "User wants the shell output retained for the current task.",
-        taskIds: ["task_1"],
-      }],
-    },
-    (request) => {
-      seenRequest = request;
-      return Promise.resolve({
-        chunks: [{
-          sourceResultIndex: 0,
-          title: "Shell output",
-          summary: "The command printed alpha.",
-          kind: "tool/shell",
-          taskIds: ["task_1"],
-          pointer: null,
-        }],
-      });
-    },
-  );
-
-  assertEquals(chunks.length, 1);
-  assertEquals(
-    (seenRequest as { keptUserMessages: unknown[] }).keptUserMessages,
-    [{
-      messageId: "user_keep",
-      summary: "User wants the shell output retained for the current task.",
-      taskIds: ["task_1"],
-    }],
-  );
-});
-
-Deno.test("non-pando chunk request includes task, tool metadata, and structured content", async () => {
-  let seenRequest: unknown;
-  const chunks = await chunkNonPandoInBatches(
-    [{
-      id: "tool_rows",
-      origin: "native",
-      toolName: "database_query",
-      params: { sql: "select id, name from users limit 2" },
-      content: {
-        rows: [
-          { id: 1, name: "Ada" },
-          { id: 2, name: "Grace" },
-        ],
-      },
-      activeTaskId: "task_1",
-    }],
-    state(),
-    (request) => {
-      seenRequest = request;
-      return Promise.resolve({
-        chunks: [{
-          sourceResultIndex: 0,
-          title: "Database rows",
-          summary: "The query returned Ada and Grace rows.",
-          kind: "tool/database_rows",
-          taskIds: ["task_1"],
-          pointer: { key: "rows" },
-        }],
-      });
-    },
-  );
-
-  assertEquals(chunks.length, 1);
-  const request = seenRequest as {
-    tasks: unknown[];
-    activeTaskId: string;
-    results: Array<{ toolName: string; params: unknown; content: unknown }>;
-  };
-  assertEquals(request.tasks, state().tasks);
-  assertEquals(request.activeTaskId, "task_1");
-  assertEquals(request.results[0].toolName, "database_query");
-  assertEquals(request.results[0].params, { sql: "select id, name from users limit 2" });
-  assertEquals(request.results[0].content, {
-    rows: [
-      { id: 1, name: "Ada" },
-      { id: 2, name: "Grace" },
-    ],
-  });
-});
-
-Deno.test("non-pando chunker materializes multiple semantic chunks from one result", async () => {
-  const chunks = await chunkNonPandoInBatches(
-    [{
-      id: "tool_search",
-      origin: "native",
-      toolName: "web_search",
-      params: { q: "pando proxy memory" },
-      content: {
+Deno.test("chunkRoundSources splits pando payloads deterministically in code", async () => {
+  const sources: RoundSource[] = [{
+    sourceId: "tool_1",
+    sourceKind: "tool",
+    toolName: "mcp__pando__.find_nodes",
+    payload: {
+      data: {
         results: [
-          { title: "Memory design", url: "https://example.test/design" },
-          { title: "Proxy reference", url: "https://example.test/reference" },
+          { path: "src/a.ts#1", name: "a" },
+          { path: "src/b.ts#2", name: "b" },
         ],
       },
-      activeTaskId: "task_1",
-    }],
-    state(),
-    () =>
-      Promise.resolve({
-        chunks: [
-          {
-            sourceResultIndex: 0,
-            title: "Search result 1: Memory design",
-            summary: "Design result for pando proxy memory.",
-            kind: "tool/search_result",
-            taskIds: ["task_1"],
-            pointer: {
-              itemIndex: 0,
-              url: "https://example.test/design",
-            },
-          },
-          {
-            sourceResultIndex: 0,
-            title: "Search result 2: Proxy reference",
-            summary: "Reference result for pando proxy memory.",
-            kind: "tool/search_result",
-            taskIds: ["task_1"],
-            pointer: {
-              itemIndex: 1,
-              url: "https://example.test/reference",
-            },
-          },
-        ],
-      }),
-  );
-
-  assertEquals(chunks.length, 2);
-  assertEquals(chunks.map((chunk) => chunk.kind), ["tool/search_result", "tool/search_result"]);
-  assertEquals(chunks[0].pointer?.itemIndex, 0);
-  assertEquals(chunks[1].pointer?.url, "https://example.test/reference");
-});
-
-Deno.test("non-pando chunking allows one request for full tool data", async () => {
-  const calls: unknown[] = [];
-  const chunks = await chunkNonPandoInBatches(
-    [{
-      id: "tool_search",
-      origin: "native",
-      toolName: "web_search",
-      params: { q: "memory" },
-      content: { results: [{ title: "Result", url: "https://example.test" }] },
-      activeTaskId: "task_1",
-    }],
-    state(),
-    (request) => {
-      calls.push(request);
-      if (!request.infoRequestAttempt) {
-        return Promise.resolve({
-          needsMoreInfo: true,
-          requestedInfo: [{
-            type: "tool_result",
-            id: "tool_search",
-            reason: "Need the complete result object before choosing chunk boundaries.",
-          }],
-        });
-      }
-      assertEquals(request.extraContext[0].type, "tool_result");
-      assertEquals(request.extraContext[0].id, "tool_search");
-      return Promise.resolve({
-        needsMoreInfo: false,
-        requestedInfo: [],
-        chunks: [{
-          sourceResultIndex: 0,
-          title: "Search result",
-          summary: "Search returned a relevant result.",
-          kind: "tool/search_result",
-          taskIds: ["task_1"],
-          pointer: { itemIndex: 0, url: "https://example.test" },
-        }],
-      });
     },
-  );
+  }];
 
-  assertEquals(calls.length, 2);
-  assertEquals(chunks.length, 1);
-  assertEquals(chunks[0].kind, "tool/search_result");
+  const chunked = await chunkRoundSources(sources, config(), stubClients());
+
+  assertEquals(chunked.map((piece) => piece.id), ["tool_1:0", "tool_1:1"]);
+  assertEquals(chunked[0].selector, { kind: "object_path", path: ["data", "results", 0] });
+  assertEquals(chunked[1].payloadInline, { path: "src/b.ts#2", name: "b" });
 });
 
-Deno.test("non-pando chunking propagates maintenance call failures", async () => {
-  let calls = 0;
-  await assertRejects(
-    () =>
-      chunkNonPandoInBatches(
-        [{
-          id: "tool_search",
-          origin: "native",
-          toolName: "web_search",
-          params: { q: "memory" },
-          content: { results: [{ title: "Result", url: "https://example.test" }] },
-          activeTaskId: "task_1",
-        }],
-        state(),
-        () => {
-          calls += 1;
-          return Promise.reject(new Error("maintenance transport failed"));
-        },
-      ),
-    "maintenance transport failed",
-  );
-  assertEquals(calls, 1);
+Deno.test("chunkRoundSources uses structured chunking for assistant outputs", async () => {
+  const source: RoundSource = {
+    sourceId: "assistant_1",
+    sourceKind: "assistant",
+    payload: "line one\nline two\nline three",
+  };
+  const clients = stubClients({
+    chunks: [{ kind: "line_range", startLine: 2, endLine: 3 }],
+  });
+
+  const chunked = await chunkRoundSources([source], config(), clients);
+
+  assertEquals(chunked.length, 1);
+  assertEquals(chunked[0].payloadInline, "line two\nline three");
+  assertEquals(chunked[0].selector, { kind: "line_range", startLine: 2, endLine: 3 });
 });
 
-function state(): MemoryState {
+function config(): ProxyConfig {
   return {
-    taskUpdateSeq: 1,
-    tasks: [{ id: "task_1", text: "Implement", status: "in_progress", kind: "do" }],
-    activeTaskId: "task_1",
-    keptUserMessages: [],
-    memoryLibrary: [],
+    host: "127.0.0.1",
+    port: 8787,
+    upstreamBaseUrl: "https://api.openai.com/v1",
+    apiKey: null,
+    smallStructuredModel: "gpt-4.1-mini",
+    overflowStructuredModel: "gpt-5-mini",
+    smallStructuredContextWindow: 32_000,
+    overflowStructuredContextWindow: 128_000,
+    modelTimeoutMs: 30_000,
+    stateDir: "/tmp/pando-proxy-tests",
+    memoryEnabled: true,
+    logFile: null,
+    inlinePieceByteLimit: 4_096,
+    piecePreviewCharLimit: 80,
+    maxIndexedPiecesPerTask: 8,
+    maxLocalContextToolCalls: 3,
   };
 }
 
-function assert(value: unknown, message = "Assertion failed"): asserts value {
-  if (!value) {
-    throw new Error(message);
-  }
-}
-
-function assertEquals(actual: unknown, expected: unknown): void {
-  const actualJson = JSON.stringify(actual);
-  const expectedJson = JSON.stringify(expected);
-  if (actualJson !== expectedJson) {
-    throw new Error(`Expected ${expectedJson}, got ${actualJson}`);
-  }
-}
-
-async function assertRejects(callback: () => Promise<unknown>, includes: string): Promise<void> {
-  try {
-    await callback();
-  } catch (error) {
-    assert(String(error).includes(includes), `Expected error containing ${includes}, got ${error}`);
-    return;
-  }
-  throw new Error("Expected callback to reject");
+function stubClients(
+  sourceChunkResponse: { chunks: Array<{ kind: "whole" } | { kind: "line_range"; startLine: number; endLine: number } | { kind: "object_path"; path: Array<string | number> }> } = { chunks: [{ kind: "whole" }] },
+): StructuredClients {
+  return {
+    roundUpdate: async () => ({
+      tasksAfter: [],
+      pieceSelection: { mode: "drop_all" },
+      keptPieceTaskLinks: [],
+    }),
+    sourceChunk: async () => sourceChunkResponse,
+  };
 }

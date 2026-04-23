@@ -1,50 +1,59 @@
-import { ProxyConfig, resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
-import { loggableBody, ProxyLogger, redactHeaders } from "./logger.ts";
+import type { ProxyConfig } from "./config.ts";
+import { resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
+import { stableJson } from "./json.ts";
+import type { ProxyLogger } from "./logger.ts";
+import { loggableBody, redactHeaders } from "./logger.ts";
+import type { MemoryState } from "./memory_state.ts";
 import { isRecord } from "./memory_state.ts";
-import {
-  estimateTokensForText,
-  extractUsageMetricsFromResponseText,
-  METRICS_EVENT_PREFIX,
-  METRICS_MARKER,
-  UsageMetrics,
-  UsageTotals,
-} from "./metrics.ts";
-import { AssistantResponseExtraction, inputItemId } from "./tool_results.ts";
+import type { ExactPiece, SessionStore } from "./store.ts";
+import type { RoundSource } from "./tool_results.ts";
+import { extractAssistantSourcesFromResponse } from "./tool_results.ts";
+
+const hopByHopHeaders = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 export type UpstreamOptions = {
   authHeader: string | null;
   body: Record<string, unknown>;
   logger?: ProxyLogger;
-  metrics?: UpstreamMetricsOptions;
-  onCompletion?: (completion: UpstreamCompletion) => Promise<void> | void;
 };
 
-export type UpstreamMetricsOptions = {
-  sessionKey: string;
-  requestId: string;
-  approxInputTokens: number;
-  onUsage?: (usage: UsageMetrics) => UsageTotals;
+export type LocalContextFetch = {
+  requestedPieceIds: string[];
+  returnedPieceIds: string[];
 };
 
-export type UpstreamCompletion = {
-  termination: "end" | "cancel";
-  bodyText: string;
-  totalBytes: number;
-};
+export type UpstreamLoopResult =
+  | {
+    ok: true;
+    finalBody: Record<string, unknown>;
+    response: Response;
+    assistantSources: RoundSource[];
+    fetches: LocalContextFetch[];
+  }
+  | {
+    ok: false;
+    response: Response;
+    fetches: LocalContextFetch[];
+  };
 
 export async function forwardResponsesRequest(
   config: ProxyConfig,
   options: UpstreamOptions,
 ): Promise<Response> {
-  const headers = new Headers({
-    "content-type": "application/json",
-  });
+  const headers = new Headers({ "content-type": "application/json" });
   if (options.authHeader) {
     headers.set("authorization", options.authHeader);
   }
-
-  const upstreamBaseUrl = resolveUpstreamBaseUrl(config.upstreamBaseUrl, options.authHeader);
-  const url = responsesUrl(upstreamBaseUrl);
+  const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, options.authHeader));
   await options.logger?.log("upstream_request", {
     url,
     headers: redactHeaders(headers),
@@ -57,7 +66,7 @@ export async function forwardResponsesRequest(
     body: JSON.stringify(options.body),
   });
 
-  await options.logger?.log("upstream_response_start", {
+  await options.logger?.log("upstream_response", {
     status: upstream.status,
     statusText: upstream.statusText,
     headers: redactHeaders(upstream.headers),
@@ -65,289 +74,213 @@ export async function forwardResponsesRequest(
 
   const responseHeaders = new Headers();
   for (const [key, value] of upstream.headers.entries()) {
-    if (hopByHopHeaders.has(key.toLowerCase())) {
-      continue;
+    if (!hopByHopHeaders.has(key.toLowerCase())) {
+      responseHeaders.set(key, value);
     }
-    responseHeaders.set(key, value);
   }
   if (!responseHeaders.has("content-type")) {
     responseHeaders.set("content-type", "application/json");
   }
 
-  return new Response(
-    logResponseStream(
-      upstream.body,
-      options.logger,
-      options.metrics,
-      upstream.ok ? options.onCompletion : undefined,
-    ),
-    {
+  return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers: responseHeaders,
-    },
-  );
-}
-
-function logResponseStream(
-  body: ReadableStream<Uint8Array> | null,
-  logger: ProxyLogger | undefined,
-  metrics: UpstreamMetricsOptions | undefined,
-  onCompletion: ((completion: UpstreamCompletion) => Promise<void> | void) | undefined,
-): ReadableStream<Uint8Array> | null {
-  if (!body || !logger) {
-    return body;
-  }
-
-  const decoder = new TextDecoder();
-  let totalBytes = 0;
-  const bodyParts: string[] = [];
-  return body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      async transform(chunk, controller) {
-        totalBytes += chunk.byteLength;
-        const text = decoder.decode(chunk, { stream: true });
-        bodyParts.push(text);
-        await logger.log("upstream_response_chunk", {
-          bytes: chunk.byteLength,
-          text,
-        });
-        controller.enqueue(chunk);
-      },
-      async flush() {
-        const remainder = decoder.decode();
-        if (remainder.length > 0) {
-          bodyParts.push(remainder);
-          await logger.log("upstream_response_chunk", {
-            bytes: 0,
-            text: remainder,
-          });
-        }
-        await logger.log("upstream_response_end", { totalBytes });
-        const bodyText = bodyParts.join("");
-        await logUpstreamMetrics(logger, metrics, bodyText, totalBytes, "end");
-        await runCompletionHook(logger, onCompletion, {
-          termination: "end",
-          bodyText,
-          totalBytes,
-        });
-      },
-      async cancel(reason) {
-        await logger.log("upstream_response_cancel", {
-          totalBytes,
-          reason: reason instanceof Error ? reason.message : String(reason ?? ""),
-        });
-        const bodyText = bodyParts.join("");
-        await logUpstreamMetrics(logger, metrics, bodyText, totalBytes, "cancel");
-        await runCompletionHook(logger, onCompletion, {
-          termination: "cancel",
-          bodyText,
-          totalBytes,
-        });
-      },
-    }),
-  );
-}
-
-async function runCompletionHook(
-  logger: ProxyLogger | undefined,
-  onCompletion: ((completion: UpstreamCompletion) => Promise<void> | void) | undefined,
-  completion: UpstreamCompletion,
-): Promise<void> {
-  if (!onCompletion) {
-    return;
-  }
-  try {
-    await onCompletion(completion);
-  } catch (error) {
-    await logger?.log("upstream_completion_error", {
-      termination: completion.termination,
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-async function logUpstreamMetrics(
-  logger: ProxyLogger,
-  metrics: UpstreamMetricsOptions | undefined,
-  bodyText: string,
-  totalBytes: number,
-  termination: "end" | "cancel",
-): Promise<void> {
-  if (!metrics) {
-    return;
-  }
-  const usage = extractUsageMetricsFromResponseText(bodyText);
-  const cumulativeUsage = usage && metrics.onUsage ? metrics.onUsage(usage) : undefined;
-  await logger.log(`${METRICS_EVENT_PREFIX}upstream_response`, {
-    marker: METRICS_MARKER,
-    requestId: metrics.requestId,
-    sessionKey: metrics.sessionKey,
-    termination,
-    totalBytes,
-    approxInputTokens: metrics.approxInputTokens,
-    approxOutputTokens: estimateTokensForText(bodyText),
-    actualUsageAvailable: Boolean(usage),
-    actualUsage: usage?.raw,
-    actualInputTokens: usage?.inputTokens,
-    actualOutputTokens: usage?.outputTokens,
-    actualTotalTokens: usage?.totalTokens,
-    cumulativeUsage,
   });
 }
 
-export async function extractAssistantResponsesFromResponseText(
-  streamText: string,
-  baseInputItemCount = 0,
-): Promise<AssistantResponseExtraction[]> {
-  const normalizedOutputItems = parseResponseOutputItemsForRawInput(streamText);
-  const assistantResponses: AssistantResponseExtraction[] = [];
-  const seen = new Set<string>();
+export async function runResponsesLoop(
+  config: ProxyConfig,
+  options: UpstreamOptions,
+  store: SessionStore,
+  sessionKey: string,
+  memory: MemoryState,
+): Promise<UpstreamLoopResult> {
+  let requestBody: Record<string, unknown> = { ...options.body, stream: false, store: false };
+  const fetches: LocalContextFetch[] = [];
+  const assistantSources: RoundSource[] = [];
+  const allowedPieceIds = new Set(memory.pieces.map((piece) => piece.id));
 
-  for (let index = 0; index < normalizedOutputItems.length; index += 1) {
-    const item = normalizedOutputItems[index];
-    if (!isRecord(item) || item.type !== "message" || item.role !== "assistant") {
-      continue;
+  for (let iteration = 0; iteration <= config.maxLocalContextToolCalls; iteration += 1) {
+    const upstream = await postResponsesJson(config, options.authHeader, requestBody, options.logger);
+    if (!upstream.ok) {
+      return { ok: false, response: upstream.response, fetches };
     }
-    const text = extractAssistantMessageText(item);
-    if (!text.trim()) {
-      continue;
+
+    const responseBody = upstream.body;
+    assistantSources.push(...await extractAssistantSourcesFromResponse(responseBody));
+    const localCalls = parseContextGetCalls(responseBody);
+    if (localCalls.length === 0) {
+      return {
+        ok: true,
+        finalBody: responseBody,
+        response: responseForClient(responseBody, Boolean(options.body.stream)),
+        assistantSources,
+        fetches,
+      };
     }
-    const responseId = await inputItemId("assistant", baseInputItemCount + index, item);
-    if (seen.has(responseId)) {
-      continue;
+    if (iteration === config.maxLocalContextToolCalls) {
+      throw new Error("Exceeded max local context_get tool calls");
     }
-    seen.add(responseId);
-    assistantResponses.push({ responseId, text });
+
+    const outputs: Array<Record<string, unknown>> = [];
+    for (const call of localCalls) {
+      const validPieceIds = call.pieceIds.filter((pieceId) => allowedPieceIds.has(pieceId));
+      const pieces = await store.getExactPieces(sessionKey, validPieceIds);
+      fetches.push({
+        requestedPieceIds: [...call.pieceIds],
+        returnedPieceIds: pieces.map((piece) => piece.id),
+      });
+      await options.logger?.log("context_get", {
+        sessionKey,
+        requestedPieceIds: call.pieceIds,
+        validPieceIds,
+        returnedPieceIds: pieces.map((piece) => piece.id),
+      });
+      outputs.push({
+        type: "function_call_output",
+        call_id: call.callId,
+        output: stableJson({
+          pieces: pieces.map(serializeExactPiece),
+        }),
+      });
+    }
+
+    requestBody = {
+      ...baseLoopRequestBody(options.body),
+      previous_response_id: responseIdFromBody(responseBody),
+      input: outputs,
+      stream: false,
+      store: false,
+    };
   }
 
-  return assistantResponses;
+  throw new Error("Unreachable local tool loop state");
 }
 
-function parseResponseOutputItemsForRawInput(streamText: string): unknown[] {
-  const items: Array<{ outputIndex: number; sequence: number; item: unknown }> = [];
+function baseLoopRequestBody(body: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...body };
+  delete next.previous_response_id;
+  delete next.input;
+  delete next.stream;
+  delete next.store;
+  return next;
+}
 
-  for (const line of streamText.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) {
+async function postResponsesJson(
+  config: ProxyConfig,
+  authHeader: string | null,
+  body: Record<string, unknown>,
+  logger?: ProxyLogger,
+): Promise<
+  | { ok: true; body: Record<string, unknown>; response: Response }
+  | { ok: false; response: Response }
+> {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (authHeader) {
+    headers.set("authorization", authHeader);
+  }
+  const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
+  await logger?.log("upstream_request", {
+    url,
+    headers: redactHeaders(headers),
+    body: loggableBody(body),
+  });
+
+  const upstream = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const text = await upstream.text();
+  await logger?.log("upstream_response", {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    contentType: upstream.headers.get("content-type"),
+    bodyPreview: text.slice(0, 2_000),
+  });
+
+  const response = new Response(text, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
+  });
+  if (!upstream.ok) {
+    return { ok: false, response };
+  }
+
+  const parsed = JSON.parse(text);
+  if (!isRecord(parsed)) {
+    throw new Error("Upstream response was not a JSON object");
+  }
+  return { ok: true, body: parsed, response };
+}
+
+function parseContextGetCalls(responseBody: Record<string, unknown>): Array<{ callId: string; pieceIds: string[] }> {
+  const output = Array.isArray(responseBody.output) ? responseBody.output : [];
+  const out: Array<{ callId: string; pieceIds: string[] }> = [];
+  for (const item of output) {
+    if (!isRecord(item)) {
       continue;
     }
-    const data = line.slice("data:".length).trim();
-    if (!data || data === "[DONE]") {
+    const type = typeof item.type === "string" ? item.type : "";
+    const name = typeof item.name === "string" ? item.name : "";
+    if (type !== "function_call" || name !== "context_get" || typeof item.call_id !== "string") {
       continue;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(data);
-    } catch {
-      continue;
-    }
-    if (!isRecord(parsed) || parsed.type !== "response.output_item.done" || !isRecord(parsed.item)) {
-      continue;
-    }
-    const normalized = normalizeResponseOutputItem(parsed.item);
-    if (!normalized) {
-      continue;
-    }
-    items.push({
-      outputIndex: typeof parsed.output_index === "number" ? parsed.output_index : items.length,
-      sequence: typeof parsed.sequence_number === "number" ? parsed.sequence_number : items.length,
-      item: normalized,
+    const parsed = parsePieceIds(item.arguments);
+    out.push({
+      callId: item.call_id,
+      pieceIds: parsed,
     });
   }
-
-  items.sort((a, b) => a.outputIndex - b.outputIndex || a.sequence - b.sequence);
-  return items.map((entry) => entry.item);
+  return out;
 }
 
-function normalizeResponseOutputItem(item: Record<string, unknown>): Record<string, unknown> | null {
-  const type = String(item.type ?? "");
-  if (type === "message" && item.role === "assistant") {
-    const content = normalizeAssistantContent(item.content);
-    if (content.length === 0) {
-      return null;
-    }
-    return {
-      type: "message",
-      role: "assistant",
-      content,
-      ...(typeof item.phase === "string" ? { phase: item.phase } : {}),
-    };
+function parsePieceIds(argumentsValue: unknown): string[] {
+  let parsed: unknown = argumentsValue;
+  if (typeof argumentsValue === "string") {
+    parsed = JSON.parse(argumentsValue);
   }
-
-  if (type === "function_call") {
-    return {
-      type: "function_call",
-      ...(typeof item.name === "string" ? { name: item.name } : {}),
-      ...(typeof item.arguments === "string" ? { arguments: item.arguments } : {}),
-      ...(typeof item.call_id === "string" ? { call_id: item.call_id } : {}),
-    };
-  }
-
-  if (type === "mcp_tool_call") {
-    return {
-      type: "mcp_tool_call",
-      ...(typeof item.server_label === "string" ? { server_label: item.server_label } : {}),
-      ...(typeof item.name === "string" ? { name: item.name } : {}),
-      ...(typeof item.arguments === "string" ? { arguments: item.arguments } : {}),
-      ...(typeof item.call_id === "string" ? { call_id: item.call_id } : {}),
-    };
-  }
-
-  if (type === "custom_tool_call") {
-    return {
-      type: "custom_tool_call",
-      ...(typeof item.name === "string" ? { name: item.name } : {}),
-      ...(typeof item.arguments === "string" ? { arguments: item.arguments } : {}),
-      ...(typeof item.call_id === "string" ? { call_id: item.call_id } : {}),
-    };
-  }
-
-  if (type === "reasoning") {
-    return {
-      type: "reasoning",
-      summary: Array.isArray(item.summary) ? item.summary : [],
-      content: item.content ?? null,
-      encrypted_content: item.encrypted_content ?? null,
-    };
-  }
-
-  return null;
-}
-
-function normalizeAssistantContent(content: unknown): Array<{ type: string; text: string }> {
-  if (!Array.isArray(content)) {
+  if (!isRecord(parsed) || !Array.isArray(parsed.pieceIds)) {
     return [];
   }
-  return content
-    .filter(isRecord)
-    .filter((part) => typeof part.text === "string")
-    .map((part) => ({
-      type: typeof part.type === "string" ? part.type : "output_text",
-      text: String(part.text),
-    }));
+  return parsed.pieceIds.filter((value): value is string => typeof value === "string");
 }
 
-function extractAssistantMessageText(item: Record<string, unknown>): string {
-  const content = item.content;
-  if (!Array.isArray(content)) {
-    return "";
+function responseForClient(body: Record<string, unknown>, stream: boolean): Response {
+  if (!stream) {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   }
-  const parts: string[] = [];
-  for (const part of content) {
-    if (isRecord(part) && typeof part.text === "string") {
-      parts.push(String(part.text));
-    }
-  }
-  return parts.join("\n");
+  const text = `data: ${JSON.stringify(body)}\n\ndata: [DONE]\n\n`;
+  return new Response(text, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    },
+  });
 }
 
-const hopByHopHeaders = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-]);
+function serializeExactPiece(piece: ExactPiece): Record<string, unknown> {
+  return {
+    id: piece.id,
+    sourceKind: piece.sourceKind,
+    ...(piece.toolName ? { toolName: piece.toolName } : {}),
+    taskIds: piece.taskIds,
+    ...(piece.pointer ? { pointer: piece.pointer } : {}),
+    selector: piece.selector,
+    payload: piece.payload,
+  };
+}
+
+function responseIdFromBody(body: Record<string, unknown>): string {
+  if (typeof body.id !== "string" || !body.id) {
+    throw new Error("Upstream response missing id for local tool loop");
+  }
+  return body.id;
+}

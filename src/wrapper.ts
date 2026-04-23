@@ -106,8 +106,12 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
       options.upstreamBaseUrl = requireValue(args, ++index, arg);
       continue;
     }
-    if (arg === "--proxy-maintenance-model") {
-      options.maintenanceModel = requireValue(args, ++index, arg);
+    if (arg === "--proxy-small-structured-model" || arg === "--proxy-maintenance-model") {
+      options.smallStructuredModel = requireValue(args, ++index, arg);
+      continue;
+    }
+    if (arg === "--proxy-overflow-structured-model") {
+      options.overflowStructuredModel = requireValue(args, ++index, arg);
       continue;
     }
     if (arg === "--proxy-state-dir") {
@@ -820,15 +824,16 @@ Exec mode is observed through Codex JSONL. Interactive mode is observed through
 a local Codex app-server and websocket relay.
 
 Proxy wrapper options:
-  --proxy-host <host>                Default: 127.0.0.1
-  --proxy-port-start <port>          Default: ${DEFAULT_WRAPPER_PORT_START}
-  --proxy-upstream-base-url <url>    Default: auto
-  --proxy-maintenance-model <small|large> Default: auto small/large selector
-  --proxy-state-dir <path>           Default: ~/.pando-proxy
-  --proxy-no-memory                  Bypass memory maintenance/injection
-  --proxy-log                        Enable full JSONL logging to ~/.pando-proxy/logs
-  --proxy-log-file <path>            Enable full JSONL logging to this file
-  --proxy-help, --help, -h           Show this help
+  --proxy-host <host>                      Default: 127.0.0.1
+  --proxy-port-start <port>                Default: ${DEFAULT_WRAPPER_PORT_START}
+  --proxy-upstream-base-url <url>          Default: auto
+  --proxy-small-structured-model <model>   Default: cheap structured model
+  --proxy-overflow-structured-model <model> Default: smallest larger-window model
+  --proxy-state-dir <path>                 Default: ~/.pando-proxy
+  --proxy-no-memory                        Bypass task/piece memory rewrite
+  --proxy-log                              Enable full JSONL logging to ~/.pando-proxy/logs
+  --proxy-log-file <path>                  Enable full JSONL logging to this file
+  --proxy-help, --help, -h                 Show this help
 
 Examples:
   pando-proxy exec "Help me with this repo"

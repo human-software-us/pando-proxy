@@ -3,7 +3,7 @@
 This verifies stock Codex can talk to a real upstream model through `pando-proxy`.
 
 The first live test should run with memory disabled so it proves transport, Codex auth forwarding,
-request forwarding, and response streaming before testing memory maintenance.
+request forwarding, and response streaming before testing the end-of-round memory update flow.
 
 ## Prerequisites
 
@@ -154,8 +154,7 @@ Expected minimum counts in each model-call log:
   "wrapper_start": 1,
   "incoming_request": 1,
   "upstream_request": 1,
-  "upstream_response_start": 1,
-  "upstream_response_end": 1,
+  "upstream_response": 1,
   "wrapper_exit": 1
 }
 ```
@@ -275,9 +274,24 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   "Use the proxy with memory enabled."
 ```
 
-That exercises task-update, tool-result chunking, retention, prompt rewriting, maintenance model
-calls, assistant-response review on the next request, persistence, and upstream forwarding.
+That exercises the current exact-piece memory system:
 
-For more detailed memory/logging expectations, including SSE maintenance parsing, stream
-cancelation, eager retention, and resume coverage, see
+- prompt rewrite with tasks plus the deterministic piece index
+- local `context_get` fetch-on-demand when the model asks for exact old pieces
+- exact chunking for assistant and non-Pando tool outputs
+- deterministic Pando chunking in code
+- one `round_update` structured call that updates the live task list and explicitly keeps or drops
+  new pieces
+- deterministic pruning when tasks disappear
+- memory persistence and end-of-round aggregate logging
+
+For deeper validation, prefer multi-round sessions with logging enabled so you can inspect:
+
+- `memory_round_chunked` to confirm the exact chunk selectors/pieces
+- `memory_round_decision` to confirm task transitions and explicit keep/drop
+- `context_get` to confirm local fetches and returned piece ids
+- `round_complete` to confirm aggregate memory size and counts after each round
+
+For more detailed memory/logging expectations, including local `context_get`, exact chunking,
+round-update decisions, pruning behavior, aggregate round logs, and resume coverage, see
 [MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md).

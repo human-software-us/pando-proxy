@@ -1,86 +1,98 @@
-# pando-proxy Goals and Design Principles
+# Design Principles
 
-This document explains what pando-proxy is trying to do and the principles that should guide future
-changes. For implementation details, see [REFERENCE.md](./REFERENCE.md) and
-[MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md).
+## 1. Tasks Are The Only Durable Intent Abstraction
 
-## Goal
+The proxy does not preserve user intent as replayed raw history or as summaries.
 
-pando-proxy lets a user run Codex normally while a local proxy manages task-scoped memory between
-Codex and the upstream model provider. The user should be able to run:
+The durable representation of user intent is the live task list.
 
-```sh
-npx -y pando-proxy [codex args...]
-```
+## 2. Exact Pieces Only
 
-and get the normal Codex experience, with the proxy handling provider wiring, request rewriting,
-memory maintenance, logging, and cleanup.
+All retained memory outside the task list is exact content:
 
-## Intent
+- exact whole user messages
+- exact assistant chunks
+- exact tool chunks
 
-The proxy exists to keep the model focused on the active work instead of replaying every raw prior
-message forever. It tracks live tasks, retains only useful task-linked context, and rewrites the
-upstream request so Codex receives a compact derived memory view plus the current turn.
+There are no summary fields, no synthetic prose memory blocks, and no renamed summary concept hiding under a different key.
 
-The proxy is not a second agent UI and should not change how users think about Codex. It is a local
-transport and memory layer.
+## 3. End-Of-Round Update
 
-## Design Principles
+Memory updates run once per completed round, not continuously.
 
-- Codex remains the interface. The wrapper should pass Codex arguments through naturally and
-  preserve normal `exec`, interactive, `resume`, and utility command behavior.
-- Setup should be one command. The default path is `npx -y pando-proxy`; no manual Codex config edit
-  should be required.
-- Prefer Codex authentication. Requests use the authorization Codex already sends. Environment API
-  keys are only a fallback when no request authorization header exists.
-- Keep everything local by default. The proxy binds to localhost, stores state under the configured
-  state directory, and does not send telemetry.
-- Logging is explicit. Full JSONL logs and searchable metrics are disabled by default and enabled
-  only with logging flags or `PANDO_PROXY_LOG_FILE`.
-- Memory is task-scoped. User messages, assistant responses, and tool outputs are retained only when
-  they support live tasks.
-- Prefer derived context over raw history. Prior synthetic memory is removed, stale raw transcript
-  is dropped, and a fresh `<context_memory>` item is injected for the upstream model. In
-  particular, once prior assistant/tool protocol segments have been handled and covered by retained
-  memory, the rewrite step may drop those raw segments instead of replaying them upstream.
-- Use deterministic code where shapes are known. Pando tool outputs are chunked in code because
-  their result formats are controlled.
-- Use model judgment where shapes are arbitrary. Non-Pando tool outputs and assistant responses use
-  strict JSON-schema maintenance calls so arbitrary output can be split into useful retention units.
-- Bound maintenance calls. Task update, assistant-response review, and non-Pando chunking may ask
-  for extra information at most once, then must produce a final structured answer.
-- Fail clearly. Invalid final maintenance output or exhausted transport retries should stop the pass
-  with a `pando_proxy_failed` error instead of silently keeping bad state.
-- Keep memory small but specific. Prefer concise summaries with pointers over copying long raw data;
-  prefer several small useful chunks over one broad chunk when retention may keep only part of a
-  structured result.
-- Preserve upstream behavior. The proxy should forward upstream streaming responses unchanged while
-  observing enough traffic to maintain memory and logs.
-- Avoid persistent Codex config mutation. The wrapper uses process-local provider overrides and owns
-  its proxy/app-server wiring for the current invocation.
+Input to the round update:
 
-## Memory Lifecycle
+- existing live tasks
+- exact new content from the completed round
 
-Each inbound request is handled in this order:
+Output from the round update:
 
-1. Extract current user messages, assistant responses, and tool outputs from the Codex request.
-2. Update the task list from new user messages.
-3. Review new assistant responses and create task-linked chunks only for durable facts that still
-   matter.
-4. Chunk new tool outputs. Pando results are handled in code; non-Pando results are chunked by a
-   maintenance model with live task/user-message context.
-5. Run retention over existing and new chunks.
-6. Persist the updated session memory.
-7. Rewrite the upstream request with a fresh `<context_memory>` item and the current raw turn,
-   minus older handled protocol segments that are already represented in retained memory.
-8. Forward the request to the real upstream provider and stream the response back to Codex.
-9. When the upstream response ends, review any assistant message items immediately, persist them,
-   and mark them handled before the next inbound request.
+- full replacement live task list
+- explicit keep/drop decision for the new pieces
+- task links for every kept piece
 
-## Non-Goals
+## 4. Explicit Keep/Drop
 
-- Do not replace Codex authentication, UI, or command semantics.
-- Do not require users to manage provider config files.
-- Do not log by default.
-- Do not retain raw history just because it exists.
-- Do not make best-effort hidden fallbacks that hide memory corruption or schema errors.
+The model must explicitly say what happened to the new pieces.
+
+The keep/drop selection is one of:
+
+- `drop_all`
+- `keep_all`
+- `keep_only`
+- `drop_only`
+
+This avoids implicit “anything not mentioned must be dropped” behavior.
+
+## 5. Deterministic Retention
+
+Retention is code, not another model pass.
+
+If a kept piece no longer has any live task reference, it is removed.
+
+If a stored payload is too large for inline state storage, it is moved to a local blob file by deterministic store code.
+
+## 6. No Upstream Summary Injection
+
+The proxy does not build or inject synthetic `<context_memory>` prose.
+
+The upstream context is built from:
+
+- leading instructions
+- the live task list
+- the deterministic piece index
+- the current round tail
+
+## 7. Fetch Exact Context On Demand
+
+Old exact context is not replayed every turn.
+
+The model can fetch exact prior pieces only through `context_get(pieceIds: string[])`.
+
+The prompt-side piece index exists specifically so the model knows which exact ids are valid and roughly what they contain.
+
+## 8. Cheap By Default
+
+The system uses cheap structured-output calls by default.
+
+Escalation is size-based only:
+
+- use the small configured structured model when the request fits
+- use the smallest configured overflow model only when needed for context size
+
+There are no repair loops, ranking passes, retention passes, or “needs more info” side channels.
+
+## 9. Observable When Enabled
+
+When logging is enabled, the proxy should make the round mechanically inspectable.
+
+At minimum the logs should show:
+
+- the rewritten request shape
+- structured model selection
+- new round sources
+- exact chunking output
+- `round_update` task transitions
+- explicit keep/drop decisions
+- local `context_get` requests and returned ids
+- end-of-round aggregate memory state

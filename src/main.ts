@@ -1,11 +1,9 @@
-#!/usr/bin/env -S deno run --allow-net --allow-env --allow-read --allow-write --allow-run
-
 import { loadConfig, parseCliOptions } from "./config.ts";
 import { runDoctor } from "./doctor.ts";
 import { serve } from "./server.ts";
 import { printWrapperHelp, runCodexWrapper } from "./wrapper.ts";
 
-const PROXY_COMMANDS = new Set(["serve", "doctor"]);
+const PROXY_COMMANDS = new Set(["serve", "doctor", "help"]);
 
 async function main(): Promise<void> {
   const first = Deno.args[0];
@@ -30,6 +28,7 @@ async function main(): Promise<void> {
       break;
     }
     case "help":
+    case null:
       printHelp();
       break;
     default:
@@ -46,13 +45,14 @@ Commands:
   doctor     Check port, credentials, and upstream reachability
 
 Serve/doctor options:
-  --host <host>                   Default: 127.0.0.1
-  --port <port>                   Default: 8787
-  --upstream-base-url <url>       Default: auto
-  --maintenance-model <small|large> Default: auto small/large selector
-  --state-dir <path>              Default: ~/.pando-proxy
-  --no-memory                     Bypass memory maintenance/injection
-  --log-file <path>               Write redacted proxy events as JSONL
+  --host <host>                      Default: 127.0.0.1
+  --port <port>                      Default: 8787
+  --upstream-base-url <url>          Default: auto
+  --small-structured-model <model>   Default: cheap structured model
+  --overflow-structured-model <model> Default: smallest larger-window model
+  --state-dir <path>                 Default: ~/.pando-proxy
+  --no-memory                        Bypass task/piece memory rewrite
+  --log-file <path>                  Write redacted proxy events as JSONL
 `);
 }
 

@@ -1,8 +1,5 @@
 import { stableJson } from "./json.ts";
-import { isRecord, MemoryState } from "./memory_state.ts";
-
-export const METRICS_EVENT_PREFIX = "pando_proxy_metrics_";
-export const METRICS_MARKER = "PANDO_PROXY_METRICS";
+import type { MemoryState } from "./memory_state.ts";
 
 const APPROX_CHARS_PER_TOKEN = 4;
 
@@ -41,43 +38,36 @@ export class TokenUsageTracker {
   }
 }
 
-export function estimateTokensForValue(value: unknown): number {
-  return estimateTokensForText(typeof value === "string" ? value : stableJson(value));
-}
-
 export function estimateTokensForText(text: string): number {
   return Math.ceil(text.length / APPROX_CHARS_PER_TOKEN);
 }
 
+export function estimateTokensForValue(value: unknown): number {
+  return estimateTokensForText(stableJson(value));
+}
+
 export function requestContextMetrics(body: Record<string, unknown>): Record<string, unknown> {
-  const input = body.input;
-  const items = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
+  const items = Array.isArray(body.input) ? body.input : typeof body.input === "string" ? [body.input] : [];
   let userMessageCount = 0;
   let assistantMessageCount = 0;
   let developerMessageCount = 0;
-  let systemMessageCount = 0;
-  let toolCallCount = 0;
   let toolOutputCount = 0;
 
   for (const item of items) {
-    if (!isRecord(item)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
       continue;
     }
-    const type = String(item.type ?? "");
-    const role = String(item.role ?? "");
-    if (type === "message" && role === "user") {
+    const record = item as Record<string, unknown>;
+    if (record.type === "message" && record.role === "user") {
       userMessageCount += 1;
-    } else if (type === "message" && role === "assistant") {
+    } else if (record.type === "message" && record.role === "assistant") {
       assistantMessageCount += 1;
-    } else if (type === "message" && role === "developer") {
+    } else if (record.type === "message" && record.role === "developer") {
       developerMessageCount += 1;
-    } else if (type === "message" && role === "system") {
-      systemMessageCount += 1;
-    }
-
-    if (type.endsWith("_tool_call") || type === "function_call" || type === "mcp_tool_call") {
-      toolCallCount += 1;
-    } else if (type.endsWith("_tool_call_output") || type === "function_call_output") {
+    } else if (
+      typeof record.type === "string" &&
+      (record.type === "function_call_output" || record.type.endsWith("_tool_call_output"))
+    ) {
       toolOutputCount += 1;
     }
   }
@@ -85,36 +75,24 @@ export function requestContextMetrics(body: Record<string, unknown>): Record<str
   return {
     model: typeof body.model === "string" ? body.model : undefined,
     stream: typeof body.stream === "boolean" ? body.stream : undefined,
-    bodyChars: stableJson(body).length,
     approxInputTokens: estimateTokensForValue(body),
     inputItemCount: items.length,
     userMessageCount,
     assistantMessageCount,
     developerMessageCount,
-    systemMessageCount,
-    toolCallCount,
     toolOutputCount,
   };
 }
 
-export function memoryStateMetrics(
-  state: MemoryState,
-  handledInputIds: string[],
-): Record<string, unknown> {
+export function memoryStateMetrics(state: MemoryState): Record<string, unknown> {
   return {
-    taskUpdateSeq: state.taskUpdateSeq,
+    roundSeq: state.roundSeq,
     taskCount: state.tasks.length,
-    openTaskCount: state.tasks.filter((task) => task.status === "open").length,
-    inProgressTaskCount: state.tasks.filter((task) => task.status === "in_progress").length,
-    activeTaskId: state.activeTaskId,
-    keptUserMessageCount: state.keptUserMessages.length,
-    memoryChunkCount: state.memoryLibrary.length,
-    memoryChunkTaskLinkCount: state.memoryLibrary.reduce(
-      (total, chunk) => total + chunk.taskIds.length,
-      0,
-    ),
-    handledInputCount: handledInputIds.length,
-    approxMemoryStateTokens: estimateTokensForValue(state),
+    taskIds: state.tasks.map((task) => task.id),
+    pieceCount: state.pieces.length,
+    pieceIds: state.pieces.map((piece) => piece.id),
+    pieceBytes: state.pieces.reduce((total, piece) => total + piece.byteSize, 0),
+    processedSourceCount: state.processedSourceIds.length,
   };
 }
 
@@ -132,11 +110,6 @@ export function extractUsageMetrics(value: unknown): UsageMetrics | null {
 }
 
 export function extractUsageMetricsFromResponseText(text: string): UsageMetrics | null {
-  const fromSse = extractUsageMetricsFromSse(text);
-  if (fromSse) {
-    return fromSse;
-  }
-
   try {
     return extractUsageMetrics(JSON.parse(text));
   } catch {
@@ -144,53 +117,17 @@ export function extractUsageMetricsFromResponseText(text: string): UsageMetrics 
   }
 }
 
-function extractUsageMetricsFromSse(text: string): UsageMetrics | null {
-  let latest: UsageMetrics | null = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) {
-      continue;
-    }
-    const data = line.slice("data:".length).trim();
-    if (!data || data === "[DONE]") {
-      continue;
-    }
-    try {
-      latest = extractUsageMetrics(JSON.parse(data)) ?? latest;
-    } catch {
-      continue;
-    }
-  }
-  return latest;
-}
-
 function findUsageObject(value: unknown): Record<string, unknown> | null {
-  if (!isRecord(value)) {
+  if (!value || typeof value !== "object") {
     return null;
   }
-
-  if (isUsageObject(value)) {
-    return value;
-  }
-
-  for (const key of ["usage", "response"]) {
-    const child = value[key];
-    if (isRecord(child)) {
-      const found = findUsageObject(child);
-      if (found) {
-        return found;
-      }
+  if (!Array.isArray(value) && "usage" in value) {
+    const usage = (value as Record<string, unknown>).usage;
+    if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+      return usage as Record<string, unknown>;
     }
   }
-
   return null;
-}
-
-function isUsageObject(value: Record<string, unknown>): boolean {
-  return typeof value.input_tokens === "number" ||
-    typeof value.output_tokens === "number" ||
-    typeof value.total_tokens === "number" ||
-    typeof value.prompt_tokens === "number" ||
-    typeof value.completion_tokens === "number";
 }
 
 function numberField(value: Record<string, unknown>, keys: string[]): number | undefined {

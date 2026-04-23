@@ -1,139 +1,92 @@
-import { buildSyntheticMemoryText, rewriteRequestWithMemory } from "../src/prompt_view.ts";
-import { MemoryState } from "../src/memory_state.ts";
+import { assert, assertEquals, assertMatch } from "jsr:@std/assert";
 
-Deno.test("prompt view includes live tasks and retained chunks", () => {
-  const text = buildSyntheticMemoryText(state(), 4_000);
+import type { ProxyConfig } from "../src/config.ts";
+import { rewriteRequestWithMemory } from "../src/prompt_view.ts";
 
-  assert(text?.includes("<context_memory>"));
-  assert(text?.includes("task_1"));
-  assert(text?.includes("Useful fact"));
-});
-
-Deno.test("request rewrite inserts exactly one synthetic memory item after instructions", () => {
-  return (async () => {
+Deno.test("rewriteRequestWithMemory keeps instructions and current turn only", async () => {
   const body = {
-    model: "test-model",
     input: [
-      { type: "message", role: "developer", content: [{ type: "input_text", text: "rules" }] },
-      { type: "message", role: "user", content: [{ type: "input_text", text: "work" }] },
+      { type: "message", role: "developer", content: [{ type: "input_text", text: "Always be precise." }] },
+      { id: "old_user", type: "message", role: "user", content: [{ type: "input_text", text: "old request" }] },
+      { id: "old_assistant", type: "message", role: "assistant", content: [{ type: "output_text", text: "old answer" }] },
+      { id: "new_user", type: "message", role: "user", content: [{ type: "input_text", text: "new request" }] },
     ],
-    stream: true,
   };
-
-    const rewritten = await rewriteRequestWithMemory(body, state(), 4_000);
-    const input = rewritten.body.input as Array<Record<string, unknown>>;
-
-    assertEquals(input.length, 3);
-    assertEquals(input[0].role, "developer");
-    assertEquals(input[1].role, "user");
-    assert(String(JSON.stringify(input[1])).includes("<context_memory>"));
-    assertEquals(rewritten.body.model, "test-model");
-    assertEquals(rewritten.body.stream, true);
-    assert(rewritten.diff.insertedSyntheticMemoryChars > 0);
-  })();
-});
-
-Deno.test("request rewrite drops older handled protocol segments and keeps the latest cycle", () => {
-  return (async () => {
-    const body = {
-      input: [
-        { type: "message", role: "developer", content: [{ type: "input_text", text: "rules" }] },
-        {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>" }],
-        },
-        { type: "message", role: "user", content: [{ type: "input_text", text: "Work on it." }] },
-        {
-          type: "message",
-          role: "assistant",
-          id: "msg_1",
-          content: [{ type: "output_text", text: "Older handled cycle." }],
-        },
-        {
-          type: "function_call",
-          id: "call_1",
-          call_id: "call_1",
-          name: "exec_command",
-          arguments: "{\"cmd\":\"echo old\"}",
-        },
-        {
-          type: "function_call_output",
-          id: "out_1",
-          call_id: "call_1",
-          output: "old output",
-        },
-        { type: "reasoning", encrypted_content: "old-reasoning" },
-        {
-          type: "message",
-          role: "assistant",
-          id: "msg_2",
-          content: [{ type: "output_text", text: "Latest cycle stays raw." }],
-        },
-        {
-          type: "function_call",
-          id: "call_2",
-          call_id: "call_2",
-          name: "exec_command",
-          arguments: "{\"cmd\":\"echo latest\"}",
-        },
-        {
-          type: "function_call_output",
-          id: "out_2",
-          call_id: "call_2",
-          output: "latest output",
-        },
-      ],
-    };
-
-    const rewritten = await rewriteRequestWithMemory(body, state(), 4_000, {
-      handledInputIds: ["assistant_msg_1", "tool_out_1"],
-    });
-    const input = rewritten.body.input as Array<Record<string, unknown>>;
-
-    assertEquals(
-      input.map((item) => `${String(item.type)}:${String(item.role ?? item.call_id ?? "")}`),
-      [
-        "message:developer",
-        "message:user",
-        "message:user",
-        "message:assistant",
-        "function_call:call_2",
-        "function_call_output:call_2",
-      ],
-    );
-    assert(rewritten.diff.droppedInputIds.includes("assistant_msg_1"));
-    assert(rewritten.diff.droppedInputIds.includes("tool_out_1"));
-  })();
-});
-
-function state(): MemoryState {
-  return {
-    taskUpdateSeq: 1,
-    tasks: [{ id: "task_1", text: "Implement proxy", status: "in_progress", kind: "do" }],
-    activeTaskId: "task_1",
-    keptUserMessages: [{ messageId: "user_1", summary: "Implement it", taskIds: ["task_1"] }],
-    memoryLibrary: [{
-      id: "chunk_1",
-      title: "Useful fact",
-      summary: "The proxy must stream SSE unchanged.",
-      kind: "tool",
+  const memory = {
+    roundSeq: 3,
+    tasks: [{ id: "task_1", text: "Inspect the proxy", status: "open" as const, kind: "do" as const }],
+    pieces: [{
+      id: "piece_1",
+      sourceKind: "tool" as const,
+      sourceId: "tool_src_1",
+      toolName: "mcp__pando__.find_nodes",
       taskIds: ["task_1"],
-      pointer: { toolName: "rg" },
+      payloadInline: { path: "src/server.ts#1" },
+      previewText: "src/server.ts",
+      pointer: { path: "src/server.ts#1" },
+      byteSize: 10,
+      createdSeq: 1,
+      selector: { kind: "whole" as const },
     }],
+    processedSourceIds: ["old_user"],
   };
-}
 
-function assert(value: unknown, message = "Assertion failed"): asserts value {
-  if (!value) {
-    throw new Error(message);
-  }
-}
+  const rewritten = await rewriteRequestWithMemory(body, memory, config());
+  const items = rewritten.body.input as Array<Record<string, unknown>>;
 
-function assertEquals(actual: unknown, expected: unknown): void {
-  const actualJson = JSON.stringify(actual);
-  const expectedJson = JSON.stringify(expected);
-  if (actualJson !== expectedJson) {
-    throw new Error(`Expected ${expectedJson}, got ${actualJson}`);
-  }
+  assertEquals(items.length, 3);
+  assertEquals(items[0].role, "developer");
+  assertEquals(items[2].id, "new_user");
+  assertMatch(String(((items[1].content as Array<Record<string, unknown>>)[0].text)), /<pando_task_memory>/);
+  assert(!rewritten.diff.keptInputIds.includes("old_user"));
+  assertEquals(Array.isArray(rewritten.body.tools), true);
+});
+
+Deno.test("rewriteRequestWithMemory injects piece ids for context_get lookup", async () => {
+  const rewritten = await rewriteRequestWithMemory(
+    { input: [{ id: "user_1", type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }] },
+    {
+      roundSeq: 1,
+      tasks: [{ id: "task_1", text: "Inspect", status: "open", kind: "do" }],
+      pieces: [{
+        id: "piece_1",
+        sourceKind: "assistant",
+        sourceId: "assistant_1",
+        taskIds: ["task_1"],
+        payloadInline: "exact text",
+        previewText: "exact text",
+        byteSize: 10,
+        createdSeq: 1,
+        selector: { kind: "whole" },
+      }],
+      processedSourceIds: [],
+    },
+    config(),
+  );
+
+  const memoryItem = (rewritten.body.input as Array<Record<string, unknown>>)[0];
+  const text = String(((memoryItem.content as Array<Record<string, unknown>>)[0]).text);
+  assertMatch(text, /pieceId=piece_1/);
+  assertMatch(text, /context_get/);
+});
+
+function config(): ProxyConfig {
+  return {
+    host: "127.0.0.1",
+    port: 8787,
+    upstreamBaseUrl: "https://api.openai.com/v1",
+    apiKey: null,
+    smallStructuredModel: "gpt-4.1-mini",
+    overflowStructuredModel: "gpt-5-mini",
+    smallStructuredContextWindow: 32_000,
+    overflowStructuredContextWindow: 128_000,
+    modelTimeoutMs: 30_000,
+    stateDir: "/tmp/pando-proxy-tests",
+    memoryEnabled: true,
+    logFile: null,
+    inlinePieceByteLimit: 4_096,
+    piecePreviewCharLimit: 80,
+    maxIndexedPiecesPerTask: 8,
+    maxLocalContextToolCalls: 3,
+  };
 }

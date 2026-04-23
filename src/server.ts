@@ -1,33 +1,28 @@
+import type { ProxyConfig } from "./config.ts";
 import { authHeaderFor, parseJsonBody, requestModel, sessionKeyFor } from "./codex_request.ts";
-import { ProxyConfig } from "./config.ts";
-import { createLogger, loggableBody, redactHeaders } from "./logger.ts";
-import { runAssistantResponseReview, runMaintenancePass } from "./memory_pipeline.ts";
-import {
-  estimateTokensForValue,
-  memoryStateMetrics,
-  METRICS_EVENT_PREFIX,
-  METRICS_MARKER,
-  requestContextMetrics,
-  TokenUsageTracker,
-} from "./metrics.ts";
+import { createLogger } from "./logger.ts";
+import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
+import { extractUsageMetrics, memoryStateMetrics, requestContextMetrics, TokenUsageTracker } from "./metrics.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
+import { createStructuredClients } from "./structured_model.ts";
 import { SessionStore } from "./store.ts";
-import { extractAssistantResponsesFromResponseText, forwardResponsesRequest } from "./upstream.ts";
+import { forwardResponsesRequest, runResponsesLoop } from "./upstream.ts";
 
-export function createHandler(config: ProxyConfig, store = new SessionStore(config.stateDir)) {
+export function createHandler(
+  config: ProxyConfig,
+  store = new SessionStore(config.stateDir, config.inlinePieceByteLimit),
+) {
   const logger = createLogger(config.logFile);
   const usageTracker = new TokenUsageTracker();
+
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-
     if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
       return jsonResponse({ ok: true, service: "pando-proxy" });
     }
-
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204 });
     }
-
     if (request.method !== "POST" || url.pathname !== "/v1/responses") {
       return jsonResponse({ error: "not_found" }, 404);
     }
@@ -42,209 +37,114 @@ export function createHandler(config: ProxyConfig, store = new SessionStore(conf
     const authHeader = authHeaderFor(request, config.apiKey);
     const sessionKey = await sessionKeyFor(request, body);
     const requestId = crypto.randomUUID();
+
     await logger.log("incoming_request", {
-      requestId,
-      sessionKey,
-      method: request.method,
-      path: url.pathname,
-      headers: redactHeaders(request.headers),
-      body: loggableBody(body),
-      memoryEnabled: config.memoryEnabled,
-    });
-    await logger.log(`${METRICS_EVENT_PREFIX}incoming_context`, {
-      marker: METRICS_MARKER,
       requestId,
       sessionKey,
       memoryEnabled: config.memoryEnabled,
       ...requestContextMetrics(body),
     });
+
     if (!config.memoryEnabled) {
       try {
-        return await forwardResponsesRequest(config, {
-          authHeader,
-          body,
-          logger,
-          metrics: upstreamMetricsOptions(sessionKey, requestId, body, usageTracker),
-        });
+        return await forwardResponsesRequest(config, { authHeader, body, logger });
       } catch (error) {
-        return jsonResponse(
-          {
-            error: "pando_proxy_failed",
-            message: messageFor(error),
-          },
-          502,
-        );
+        return jsonResponse({ error: "pando_proxy_failed", message: messageFor(error) }, 502);
       }
     }
 
     try {
-      const rewritten = await store.withLock(sessionKey, async () => {
+      return await store.withLock(sessionKey, async () => {
         const record = await store.load(sessionKey);
-        const result = await runMaintenancePass(
-          body,
-          record,
-          config,
-          authHeader,
-          requestModel(body),
-          { logger, sessionKey },
-        );
-        if (result.changed) {
-          await store.save(sessionKey, result.record);
-          await logger.log("memory_state_saved", {
-            requestId,
-            sessionKey,
-            taskUpdateSeq: result.record.memory.taskUpdateSeq,
-            taskIds: result.record.memory.tasks.map((task) => task.id),
-            keptUserMessageIds: result.record.memory.keptUserMessages.map((message) =>
-              message.messageId
-            ),
-            memoryChunkIds: result.record.memory.memoryLibrary.map((chunk) => chunk.id),
-            handledInputIds: result.record.handledInputIds,
-          });
-        } else {
-          await logger.log("memory_state_unchanged", {
-            requestId,
-            sessionKey,
-            taskUpdateSeq: result.record.memory.taskUpdateSeq,
-            handledInputIds: result.record.handledInputIds,
-          });
-        }
-        await logger.log(`${METRICS_EVENT_PREFIX}memory_state`, {
-          marker: METRICS_MARKER,
+        let finalMemory = record.memory;
+        let memoryUpdateError: string | null = null;
+        const rewrite = await rewriteRequestWithMemory(body, record.memory, config);
+        await logger.log("rewritten_context", {
           requestId,
           sessionKey,
-          changed: result.changed,
-          ...memoryStateMetrics(result.record.memory, result.record.handledInputIds),
-        });
-        const rewrite = await rewriteRequestWithMemory(
-          body,
-          result.record.memory,
-          config.syntheticCharBudget,
-          { handledInputIds: result.record.handledInputIds },
-        );
-        const rewritten = rewrite.body;
-        await logger.log(`${METRICS_EVENT_PREFIX}rewritten_context`, {
-          marker: METRICS_MARKER,
-          requestId,
-          sessionKey,
-          rawApproxInputTokens: estimateTokensForValue(body),
-          rewrittenApproxInputTokens: estimateTokensForValue(rewritten),
-          approxInputTokenDelta: estimateTokensForValue(rewritten) - estimateTokensForValue(body),
-          rawInputItemCount: Array.isArray(body.input) ? body.input.length : undefined,
-          rewrittenInputItemCount: Array.isArray(rewritten.input)
-            ? rewritten.input.length
-            : undefined,
           droppedInputIds: rewrite.diff.droppedInputIds,
           keptInputIds: rewrite.diff.keptInputIds,
-          rawInputTypeCounts: rewrite.diff.rawInputTypeCounts,
-          rewrittenInputTypeCounts: rewrite.diff.rewrittenInputTypeCounts,
-          droppedInputTypeCounts: rewrite.diff.droppedInputTypeCounts,
-          insertedSyntheticMemoryChars: rewrite.diff.insertedSyntheticMemoryChars,
-          ...requestContextMetrics(rewritten),
+          insertedTaskCount: rewrite.diff.insertedTaskCount,
+          indexedPieceCount: rewrite.diff.indexedPieceCount,
+          ...requestContextMetrics(rewrite.body),
         });
-        return rewritten;
-      });
 
-      return await forwardResponsesRequest(config, {
-        authHeader,
-        body: rewritten,
-        logger,
-        metrics: upstreamMetricsOptions(sessionKey, requestId, rewritten, usageTracker),
-        onCompletion: async (completion) => {
-          if (completion.termination !== "end") {
-            return;
-          }
-          const assistantResponses = await extractAssistantResponsesFromResponseText(
-            completion.bodyText,
-            rawInputItemCount(body),
+        const loop = await runResponsesLoop(
+          config,
+          { authHeader, body: rewrite.body, logger },
+          store,
+          sessionKey,
+          record.memory,
+        );
+        if (!loop.ok) {
+          return loop.response;
+        }
+
+        try {
+          const structuredClients = createStructuredClients(
+            config,
+            requestModel(body),
+            authHeader,
+            (selection) =>
+              logger.log("structured_model_selected", {
+                requestId,
+                sessionKey,
+                ...selection,
+              }),
           );
-          await logger.log("memory_response_end_assistant_extracted", {
-            requestId,
-            sessionKey,
-            responseIds: assistantResponses.map((response) => response.responseId),
-            assistantResponses: assistantResponses.map((response) => ({
-              responseId: response.responseId,
-              textLength: response.text.length,
-            })),
-          });
-          if (assistantResponses.length === 0) {
-            return;
-          }
-          await store.withLock(sessionKey, async () => {
-            const record = await store.load(sessionKey);
-            const result = await runAssistantResponseReview(
-              assistantResponses,
-              record,
-              config,
-              authHeader,
-              requestModel(rewritten),
-              { logger, sessionKey },
-            );
-            if (result.changed) {
-              await store.save(sessionKey, result.record);
-              await logger.log("memory_state_saved", {
-                requestId,
-                sessionKey,
-                source: "response_end",
-                taskUpdateSeq: result.record.memory.taskUpdateSeq,
-                taskIds: result.record.memory.tasks.map((task) => task.id),
-                keptUserMessageIds: result.record.memory.keptUserMessages.map((message) =>
-                  message.messageId
-                ),
-                memoryChunkIds: result.record.memory.memoryLibrary.map((chunk) => chunk.id),
-                handledInputIds: result.record.handledInputIds,
-              });
-            } else {
-              await logger.log("memory_state_unchanged", {
-                requestId,
-                sessionKey,
-                source: "response_end",
-                taskUpdateSeq: result.record.memory.taskUpdateSeq,
-                handledInputIds: result.record.handledInputIds,
-              });
-            }
-            await logger.log(`${METRICS_EVENT_PREFIX}memory_state`, {
-              marker: METRICS_MARKER,
+          const memoryUpdate = await updateMemoryForCompletedRound(
+            body,
+            record.memory,
+            loop.finalBody,
+            loop.assistantSources,
+            structuredClients,
+            config,
+            { logger, requestId, sessionKey },
+          );
+          finalMemory = memoryUpdate.memory;
+          if (memoryUpdate.changed) {
+            await store.save(sessionKey, { memory: memoryUpdate.memory });
+            await logger.log("memory_state_saved", {
               requestId,
               sessionKey,
-              source: "response_end",
-              changed: result.changed,
-              ...memoryStateMetrics(result.record.memory, result.record.handledInputIds),
+              newPieceIds: memoryUpdate.newPieceIds,
+              droppedPieceIds: memoryUpdate.droppedPieceIds,
+              ...memoryStateMetrics(memoryUpdate.memory),
             });
+          }
+        } catch (error) {
+          memoryUpdateError = messageFor(error);
+          await logger.log("memory_update_failed", {
+            requestId,
+            sessionKey,
+            message: memoryUpdateError,
           });
-        },
+        }
+
+        const usage = extractUsageMetrics(loop.finalBody);
+        const usageTotals = usage ? usageTracker.add(sessionKey, usage) : null;
+        if (usage) {
+          await logger.log("usage", {
+            requestId,
+            sessionKey,
+            ...usageTotals,
+          });
+        }
+        await logger.log("round_complete", {
+          requestId,
+          sessionKey,
+          memoryUpdateError,
+          localContextFetchCount: loop.fetches.length,
+          localContextFetches: loop.fetches,
+          returnedContextPieceIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedPieceIds))],
+          ...memoryStateMetrics(finalMemory),
+          ...(usageTotals ? usageTotals : {}),
+        });
+        return loop.response;
       });
     } catch (error) {
-      return jsonResponse(
-        {
-          error: "pando_proxy_failed",
-          message: messageFor(error),
-        },
-        502,
-      );
+      return jsonResponse({ error: "pando_proxy_failed", message: messageFor(error) }, 502);
     }
-  };
-}
-
-function rawInputItemCount(body: Record<string, unknown>): number {
-  if (Array.isArray(body.input)) {
-    return body.input.length;
-  }
-  return typeof body.input === "string" ? 1 : 0;
-}
-
-function upstreamMetricsOptions(
-  sessionKey: string,
-  requestId: string,
-  body: Record<string, unknown>,
-  usageTracker: TokenUsageTracker,
-) {
-  return {
-    sessionKey,
-    requestId,
-    approxInputTokens: estimateTokensForValue(body),
-    onUsage: (usage: Parameters<TokenUsageTracker["add"]>[1]) =>
-      usageTracker.add(sessionKey, usage),
   };
 }
 
@@ -267,9 +167,7 @@ export async function serve(config: ProxyConfig): Promise<void> {
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value, null, 2), {
     status,
-    headers: {
-      "content-type": "application/json",
-    },
+    headers: { "content-type": "application/json" },
   });
 }
 

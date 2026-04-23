@@ -1,189 +1,161 @@
-import { ProxyConfig } from "../src/config.ts";
+import { assertEquals, assertMatch } from "jsr:@std/assert";
+
+import type { ProxyConfig } from "../src/config.ts";
 import { createHandler } from "../src/server.ts";
 import { SessionStore } from "../src/store.ts";
 
-Deno.test("responses proxy injects existing memory and passes upstream response through", async () => {
+Deno.test("server rewrites with task memory and services context_get locally", async () => {
   const tempDir = await Deno.makeTempDir();
-  let capturedBody: Record<string, unknown> | null = null;
-  const upstream = Deno.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    onListen: () => {},
-  }, async (request) => {
-    capturedBody = await request.json();
-    return new Response('data: {"ok":true}\n\n', {
-      headers: { "content-type": "text/event-stream" },
-    });
+  const config = testConfig(tempDir);
+  const store = new SessionStore(tempDir, config.inlinePieceByteLimit);
+  await store.save("session_1", {
+    memory: {
+      roundSeq: 1,
+      tasks: [{ id: "task_1", text: "Inspect the proxy", status: "open", kind: "do" }],
+      pieces: [{
+        id: "piece_1",
+        sourceKind: "tool",
+        sourceId: "tool_1",
+        toolName: "mcp__pando__.find_nodes",
+        taskIds: ["task_1"],
+        payloadInline: { path: "src/server.ts#1" },
+        previewText: "src/server.ts",
+        byteSize: 20,
+        createdSeq: 1,
+        selector: { kind: "whole" },
+      }],
+      processedSourceIds: [],
+    },
   });
 
-  try {
-    const config: ProxyConfig = {
-      host: "127.0.0.1",
-      port: 8787,
-      upstreamBaseUrl: `http://127.0.0.1:${upstream.addr.port}`,
-      apiKey: "test-key",
-      maintenanceModel: "test-model",
-      stateDir: tempDir,
-      syntheticCharBudget: 4_000,
-      maintenanceTimeoutMs: 5_000,
-      memoryEnabled: true,
-      logFile: null,
-    };
-    const store = new SessionStore(tempDir);
-    await store.save("session-1", {
-      memory: {
-        taskUpdateSeq: 1,
-        tasks: [{ id: "task_1", text: "Implement proxy", status: "in_progress", kind: "do" }],
-        activeTaskId: "task_1",
-        keptUserMessages: [],
-        memoryLibrary: [{
-          id: "chunk_1",
-          title: "SSE",
-          summary: "Stream upstream bytes unchanged.",
-          kind: "tool",
-          taskIds: ["task_1"],
-        }],
-      },
-      handledInputIds: [],
-    });
-
-    const handler = createHandler(config, store);
-    const response = await handler(
-      new Request("http://local.test/v1/responses", {
-        method: "POST",
-        headers: {
-          "authorization": "Bearer test-key",
-          "x-pando-session-id": "session-1",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "test-main-model",
-          stream: true,
-          input: [
-            {
-              type: "message",
-              role: "developer",
-              content: [{ type: "input_text", text: "rules" }],
-            },
-          ],
+  const seenBodies: Record<string, unknown>[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(String((init as RequestInit | undefined)?.body));
+    seenBodies.push(body);
+    const formatName = body?.text?.format?.name;
+    if (formatName === "source_chunk") {
+      return jsonResponse({
+        output_text: JSON.stringify({ chunks: [{ kind: "whole" }] }),
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ chunks: [{ kind: "whole" }] }) }] }],
+      });
+    }
+    if (formatName === "round_update") {
+      const pieceIds = (body.input?.[0]?.content?.[0]?.text ?? "").includes("assistant_msg_1:0")
+        ? ["user_msg_1:0", "assistant_msg_1:0"]
+        : ["user_msg_1:0"];
+      return jsonResponse({
+        output_text: JSON.stringify({
+          tasksAfter: [{ id: "task_1", text: "Inspect the proxy", status: "open", kind: "do" }],
+          pieceSelection: { mode: "keep_only", ids: pieceIds },
+          keptPieceTaskLinks: pieceIds.map((id: string) => ({ id, taskIds: ["task_1"] })),
         }),
+        output: [{
+          type: "message",
+          role: "assistant",
+          content: [{
+            type: "output_text",
+            text: JSON.stringify({
+              tasksAfter: [{ id: "task_1", text: "Inspect the proxy", status: "open", kind: "do" }],
+              pieceSelection: { mode: "keep_only", ids: pieceIds },
+              keptPieceTaskLinks: pieceIds.map((id: string) => ({ id, taskIds: ["task_1"] })),
+            }),
+          }],
+        }],
+      });
+    }
+    if (seenBodies.length === 1) {
+      return jsonResponse({
+        id: "resp_1",
+        output: [{
+          type: "function_call",
+          call_id: "call_1",
+          name: "context_get",
+          arguments: JSON.stringify({ pieceIds: ["piece_1"] }),
+        }],
+      });
+    }
+    if (seenBodies.length === 2) {
+      return jsonResponse({
+        id: "resp_2",
+        output: [{
+          id: "assistant_msg_1",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Done." }],
+        }],
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+      });
+    }
+    throw new Error(`Unexpected fetch call ${seenBodies.length} to ${String(input)}`);
+  };
+
+  try {
+    const handler = createHandler(config, store);
+    const response = await handler(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test",
+        "x-pando-session-id": "session_1",
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        input: [{
+          id: "user_msg_1",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Please inspect the proxy" }],
+        }],
       }),
-    );
-
-    assertEquals(response.headers.get("content-type"), "text/event-stream");
-    assertEquals(await response.text(), 'data: {"ok":true}\n\n');
-    const body = capturedBody as Record<string, unknown> | null;
-    assert(body !== null);
-    const input = body.input as Array<Record<string, unknown>>;
-    assertEquals(input.length, 2);
-    assertEquals(input[0].role, "developer");
-    assert(JSON.stringify(input[1]).includes("<context_memory>"));
-  } finally {
-    await upstream.shutdown();
-    await Deno.remove(tempDir, { recursive: true });
-  }
-});
-
-Deno.test("responses proxy logs rewrite diff metrics", async () => {
-  const tempDir = await Deno.makeTempDir();
-  const logFile = `${tempDir}/proxy.jsonl`;
-  const upstream = Deno.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    onListen: () => {},
-  }, () =>
-    new Response('data: {"ok":true}\n\n', {
-      headers: { "content-type": "text/event-stream" },
     }));
 
-  try {
-    const config: ProxyConfig = {
-      host: "127.0.0.1",
-      port: 8787,
-      upstreamBaseUrl: `http://127.0.0.1:${upstream.addr.port}`,
-      apiKey: "test-key",
-      maintenanceModel: null,
-      stateDir: tempDir,
-      syntheticCharBudget: 4_000,
-      maintenanceTimeoutMs: 5_000,
-      memoryEnabled: true,
-      logFile,
-    };
-    const store = new SessionStore(tempDir);
-    await store.save("session-1", {
-      memory: {
-        taskUpdateSeq: 1,
-        tasks: [{ id: "task_1", text: "Keep working", status: "in_progress", kind: "do" }],
-        activeTaskId: "task_1",
-        keptUserMessages: [{ messageId: "user_msg_1", summary: "Do the task.", taskIds: ["task_1"] }],
-        memoryLibrary: [],
-      },
-      handledInputIds: ["user_msg_1"],
-    });
-    const handler = createHandler(config, store);
-    await handler(
-      new Request("http://local.test/v1/responses", {
-        method: "POST",
-        headers: {
-          "authorization": "Bearer test-key",
-          "x-pando-session-id": "session-1",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "test-main-model",
-          stream: true,
-          input: [
-            {
-              type: "message",
-              role: "developer",
-              content: [{ type: "input_text", text: "rules" }],
-            },
-            {
-              type: "message",
-              role: "user",
-              id: "env",
-              content: [{
-                type: "input_text",
-                text: "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>",
-              }],
-            },
-            {
-              type: "message",
-              role: "user",
-              id: "msg_1",
-              content: [{ type: "input_text", text: "Do the task." }],
-            },
-          ],
-        }),
-      }),
-    );
+    assertEquals(response.status, 200);
+    const responseJson = await response.json();
+    assertEquals(responseJson.id, "resp_2");
 
-    const metrics = (await Deno.readTextFile(logFile))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line))
-      .find((row) => row.event === "pando_proxy_metrics_rewritten_context");
-    assert(metrics);
-    assert(Array.isArray(metrics.droppedInputIds));
-    assert(metrics.droppedInputIds.length >= 1);
-    assert(typeof metrics.insertedSyntheticMemoryChars === "number");
-    assert(metrics.rawInputTypeCounts["message:user"] >= 2);
+    const firstBody = seenBodies[0];
+    const rewrittenInput = firstBody.input as Array<Record<string, unknown>>;
+    const memoryMessage = rewrittenInput.find((item) => item.name === "pando_task_memory");
+    assertEquals(Boolean(memoryMessage), true);
+    assertMatch(String((memoryMessage?.content as Array<Record<string, unknown>>)[0].text), /pieceId=piece_1/);
+    assertEquals(((firstBody.tools as Array<Record<string, unknown>>).some((tool) => tool.name === "context_get")), true);
+
+    const secondBody = seenBodies[1];
+    assertEquals(secondBody.previous_response_id, "resp_1");
+    assertMatch(String((secondBody.input as Array<Record<string, unknown>>)[0].output), /piece_1/);
+
+    const stored = await store.load("session_1");
+    assertEquals(stored.memory.pieces.some((piece) => piece.id === "assistant_msg_1:0"), true);
   } finally {
-    await upstream.shutdown();
-    await Deno.remove(tempDir, { recursive: true });
+    globalThis.fetch = originalFetch;
   }
 });
 
-function assert(value: unknown, message = "Assertion failed"): asserts value {
-  if (!value) {
-    throw new Error(message);
-  }
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
 }
 
-function assertEquals(actual: unknown, expected: unknown): void {
-  const actualJson = JSON.stringify(actual);
-  const expectedJson = JSON.stringify(expected);
-  if (actualJson !== expectedJson) {
-    throw new Error(`Expected ${expectedJson}, got ${actualJson}`);
-  }
+function testConfig(stateDir: string): ProxyConfig {
+  return {
+    host: "127.0.0.1",
+    port: 8787,
+    upstreamBaseUrl: "https://api.openai.com/v1",
+    apiKey: "test",
+    smallStructuredModel: "gpt-4.1-mini",
+    overflowStructuredModel: "gpt-5-mini",
+    smallStructuredContextWindow: 32_000,
+    overflowStructuredContextWindow: 128_000,
+    modelTimeoutMs: 30_000,
+    stateDir,
+    memoryEnabled: true,
+    logFile: null,
+    inlinePieceByteLimit: 4_096,
+    piecePreviewCharLimit: 80,
+    maxIndexedPiecesPerTask: 8,
+    maxLocalContextToolCalls: 3,
+  };
 }

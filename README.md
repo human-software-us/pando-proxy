@@ -1,87 +1,105 @@
 # pando-proxy
 
-Run Codex through a local task-memory proxy with one `npx` command.
+`pando-proxy` is an OpenAI Responses-compatible proxy with a deliberately mechanical memory system.
 
-`pando-proxy` starts a localhost proxy, runs the system `codex` command with process-local provider
-overrides, and rewrites upstream model requests so Codex gets compact task-scoped memory instead of
-stale raw transcript history.
+The proxy does not maintain prose summaries of prior work. Instead it keeps:
 
-## Usage
+- a live task list
+- exact stored pieces of user, assistant, and tool content that are still required by those live tasks
+- a local `context_get` tool for exact fetch-on-demand by piece id
 
-```sh
-npx -y pando-proxy exec "Help me with this repo"
+## Memory Model
+
+The durable abstraction of user intent is the task list.
+
+At the end of each completed round, the proxy takes:
+
+- the existing live task list
+- the new exact content observed during that round
+
+and runs a single structured `round_update` call that returns:
+
+- the next full live task list
+- an explicit keep/drop decision for the new pieces
+- task links for every kept piece
+
+Everything else is dropped. Nothing is summarized.
+
+## Piece Rules
+
+- User messages are kept whole.
+- Assistant outputs are chunked by a cheap structured-output model and stored exactly.
+- Non-Pando tool outputs are chunked by the same structured-output model and stored exactly.
+- Pando outputs are split deterministically in code.
+- Kept pieces are stored exactly, inline when small and by local blob reference when large.
+- If no live task references a piece anymore, it is pruned deterministically.
+
+## Prompt Rewrite
+
+The upstream request is rewritten from:
+
+- leading instructions
+- the current live task list
+- a deterministic per-task piece index
+- the current round tail
+
+The proxy does not replay old raw user history upstream and does not inject any synthetic memory prose.
+
+The piece index includes exact `pieceId`s plus structured locator metadata and exact short previews so the model knows what it can later fetch with `context_get`.
+
+## Local Context Fetch
+
+The proxy injects a local tool:
+
+```json
+{ "name": "context_get", "arguments": { "pieceIds": ["piece_1", "piece_2"] } }
 ```
 
-Proxy-owned flags go before the Codex command and use the `--proxy-*` prefix:
+The tool returns exact stored payloads for those piece ids only. No fuzzy search, ranking, or broad task-scoped lookup exists in v1.
 
-```sh
-npx -y pando-proxy --proxy-no-memory exec "Reply with exactly: ok"
-```
+## Models
 
-The wrapper starts a localhost proxy on the first available port at or above `40123`, then runs the
-system `codex` command with process-local provider overrides pointing at that proxy. Logging is off
-by default. The first non-proxy argument is passed to Codex, so forms like `exec`, `resume`,
-`help exec`, and `app-server` keep their normal Codex meaning.
+The system is intentionally small:
 
-Memory is enabled by default. Use `--proxy-no-memory` for a pure pass-through transport check.
+- one required structured model call per completed round: `round_update`
+- one structured chunker for assistant and non-Pando tool outputs
+- deterministic retention and persistence
 
-## Design
+The default path uses the cheap structured model. The proxy only escalates to the configured overflow model when the serialized structured-input payload exceeds the small model window.
 
-pando-proxy is designed to be invisible in normal Codex use:
+## Observability
 
-- Codex remains the UI and command surface.
-- Codex-provided authorization is preferred; API keys are only a fallback when Codex sends no
-  authorization header.
-- The wrapper does not edit Codex config files.
-- Logging is explicit and disabled by default.
-- Memory is task-scoped, eager, and derived from user messages, assistant responses, and tool
-  outputs.
+Logging is off unless a log file is configured.
 
-## Modes
+When enabled, the proxy logs:
 
-`pando-proxy` uses three Codex paths:
+- request rewrite metrics
+- structured model selection
+- round source discovery
+- exact chunk materialization
+- explicit `round_update` keep/drop decisions and task transitions
+- local `context_get` fetches
+- saved memory totals
+- end-of-round aggregate state in `round_complete`
 
-| Mode                 | Codex form                                                             | Behavior                                                                                                               |
-| -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `exec-json`          | `exec` / `e`                                                           | Adds `--json` once, forwards stdout, and logs structured Codex events when logging is enabled.                         |
-| `interactive-remote` | prompt, no args, `resume`, `fork`                                      | Starts `codex app-server`, relays websocket traffic, then starts the normal Codex TUI with a wrapper-owned `--remote`. |
-| `passthrough`        | `help`, `--version`, `login`, `logout`, `app-server`, utility commands | Runs Codex directly with the same process-local provider overrides. Utility commands may not make model requests.      |
+`round_complete` includes the current task ids/count, piece ids/count, total stored piece bytes, processed source count, local fetch counts, and any memory-update error for that round.
 
-Interactive mode owns `--remote`; pass normal Codex prompt/session arguments and let the wrapper
-create the app-server and relay.
+## Files
 
-## Requirements
+Core files:
 
-- `codex` installed and logged in.
-- `deno` available on `PATH`.
-- `node`/`npm` available for `npx`.
+- `src/server.ts`
+- `src/upstream.ts`
+- `src/memory_pipeline.ts`
+- `src/prompt_view.ts`
+- `src/round_update.ts`
+- `src/chunking.ts`
+- `src/store.ts`
+- `src/structured_model.ts`
 
-`pando-proxy` does not edit `~/.codex/config.toml`.
+Design docs:
 
-## Useful Commands
-
-```sh
-npx -y pando-proxy --proxy-help
-npx -y pando-proxy "Help me with this repo"
-npx -y pando-proxy --proxy-no-memory exec "Reply with exactly: pass-through ok"
-npx -y pando-proxy --proxy-log-file /tmp/pando-proxy.jsonl "Reply with exactly: logged tui ok"
-npx -y pando-proxy exec --help
-npx -y pando-proxy resume --last
-npx -y pando-proxy --proxy-log exec "Run with a unique JSONL log file"
-npx -y pando-proxy serve --no-memory --log-file /tmp/pando-proxy.jsonl
-```
-
-See [LIVE_E2E.md](./LIVE_E2E.md) for a live end-to-end test procedure and
-[MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md) for memory/logging operational details. When logging
-is enabled, searchable metrics events use the `pando_proxy_metrics_` prefix and
-`PANDO_PROXY_METRICS` marker.
-
-Documentation:
-
-| Document                                               | Purpose                                                     |
-| ------------------------------------------------------ | ----------------------------------------------------------- |
-| [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md)         | Goals, intent, and design principles.                       |
-| [REFERENCE.md](./REFERENCE.md)                         | Complete flag, environment, auth, state, and dev reference. |
-| [MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md)         | Memory maintenance, logging, and metrics behavior.          |
-| [LIVE_E2E.md](./LIVE_E2E.md)                           | Live end-to-end test procedure.                             |
-| [CONTEXT_MEMORY_DESIGN.md](./CONTEXT_MEMORY_DESIGN.md) | Detailed context-memory design notes.                       |
+- `DESIGN_PRINCIPLES.md`
+- `MEMORY_OPERATIONS.md`
+- `REFERENCE.md`
+- `CONTEXT_MEMORY_DESIGN.md`
