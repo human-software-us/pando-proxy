@@ -28,7 +28,13 @@ Runtime shape:
   event.
 - interactive prompt / `resume` / `fork`: the wrapper starts `codex app-server` on loopback, starts
   a loopback websocket relay, then runs the Codex TUI with `--remote` pointed at the relay.
-- utility commands: the wrapper runs Codex directly with the proxy provider overrides.
+- utility commands: the wrapper runs Codex directly with the proxy provider overrides. These
+  commands may not make a model request, so only wrapper lifecycle events may appear in logs.
+
+Mode classification handles leading Codex global flags before the command. For example,
+`pando-proxy --model gpt-5.4 exec "..."` still runs in `exec-json` mode. Interactive mode owns
+`--remote`; passing a user `--remote` is an error because the wrapper must insert its websocket
+relay.
 
 ## Logging
 
@@ -59,6 +65,13 @@ credential fields are redacted:
 
 Do not use content regex scans to decide whether a log is safe. Upstream events can legitimately
 contain opaque encrypted payloads or schema text with token-like substrings.
+
+Mode-specific log events:
+
+- `codex_exec_event`: observed JSONL events from `codex exec --json`.
+- `codex_app_server_frame`: websocket frames relayed between the TUI and `codex app-server`.
+- `thread/tokenUsage/updated`: app-server token usage for interactive runs.
+- `wrapper_start`, `wrapper_codex_start`, and `wrapper_exit`: lifecycle events for all modes.
 
 ## Memory Pipeline Events
 
@@ -169,6 +182,9 @@ transcript history.
 for callers that explicitly need it, but the proxy uses `keepRawHistory: false` by default when
 memory is enabled.
 
+The rewrite does not edit Codex's canonical session transcript. It only changes the upstream model
+request for the current turn.
+
 ## Useful Live Coverage
 
 The live memory tests should cover these distinct paths:
@@ -185,3 +201,18 @@ The live memory tests should cover these distinct paths:
 - stream cancellation as well as normal stream completion,
 - resume with handled input skipping,
 - resume with retained chunks loaded from persisted state.
+
+## Mode E2E Coverage
+
+A minimal live wrapper matrix should run two invocations for each mode:
+
+- `exec-json`: one memory-disabled transport check and one memory-enabled check with a separate
+  state dir.
+- `interactive-remote`: one memory-disabled TUI/app-server relay check and one memory-enabled check
+  with a separate state dir.
+- `passthrough`: two utility commands, such as `help exec` and `--version`, to prove argument
+  forwarding and lifecycle logging.
+
+For model-call modes, verify both directions: the request reaches the proxy and the expected agent
+message comes back. For passthrough utility commands, verify Codex output plus `wrapper_exit` with
+exit code `0`.

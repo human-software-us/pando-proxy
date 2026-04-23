@@ -14,9 +14,9 @@ request forwarding, and response streaming before testing memory maintenance.
 No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex
 provider overrides for that process only, then runs `codex`.
 
-## Wrapper Pass-Through Test
+## Exec JSON Transport Tests
 
-Run turn one:
+Run a memory-disabled first turn. The wrapper will inject `--json` if it is missing:
 
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
@@ -25,7 +25,6 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   --proxy-no-memory \
   exec \
   --sandbox read-only \
-  --json \
   -o /tmp/pando-proxy-turn1.txt \
   "Do not run tools. Reply with exactly: pando proxy live ok turn one"
 ```
@@ -46,7 +45,6 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   --proxy-no-memory \
   exec resume \
   --last \
-  --json \
   -o /tmp/pando-proxy-turn2.txt \
   "Do not run tools. Reply with exactly: pando proxy live ok turn two"
 ```
@@ -69,6 +67,69 @@ The port starts at `40123` and increments until an available port is found. Logg
 default. `--proxy-log` creates a unique JSONL log file under `~/.pando-proxy/logs`;
 `--proxy-log-file` writes to the specified path.
 
+## Per-Mode Smoke Matrix
+
+Use fixed log files when you want deterministic inspection.
+
+Exec mode:
+
+```sh
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-log-file /tmp/pando-e2e-mode-exec-1.jsonl \
+  --proxy-no-memory \
+  exec "Reply exactly PANDO_MODE_EXEC_1."
+
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-log-file /tmp/pando-e2e-mode-exec-2.jsonl \
+  --proxy-state-dir /tmp/pando-e2e-mode-state-exec-2 \
+  exec "Reply exactly PANDO_MODE_EXEC_2."
+```
+
+Expected stdout includes `item.completed` agent messages with the exact requested text and a
+`turn.completed` event with token usage.
+
+Interactive mode:
+
+```sh
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-log-file /tmp/pando-e2e-mode-interactive-1.jsonl \
+  --proxy-no-memory \
+  --no-alt-screen \
+  "Reply exactly PANDO_MODE_INTERACTIVE_1."
+
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-log-file /tmp/pando-e2e-mode-interactive-2.jsonl \
+  --proxy-state-dir /tmp/pando-e2e-mode-state-interactive-2 \
+  --no-alt-screen \
+  "Reply exactly PANDO_MODE_INTERACTIVE_2."
+```
+
+Expected TUI output includes the exact requested text. Stop the TUI with `Ctrl-C` after the
+response. Logs should include `turn/start`, `item/completed` for the user and agent messages,
+`thread/tokenUsage/updated`, and `turn/completed`.
+
+Passthrough mode:
+
+```sh
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-log-file /tmp/pando-e2e-mode-passthrough-1.jsonl \
+  help exec
+
+deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
+  src/main.ts \
+  --proxy-log-file /tmp/pando-e2e-mode-passthrough-2.jsonl \
+  --version
+```
+
+Expected stdout is the normal Codex help/version output. These utility commands generally do not
+make upstream model requests, so their logs should show wrapper lifecycle events but no
+`incoming_request`.
+
 ## Verify Logs
 
 Use the log paths printed by the two runs:
@@ -86,7 +147,7 @@ for (const file of process.argv.slice(2)) {
 NODE
 ```
 
-Expected minimum counts in each Codex-call log:
+Expected minimum counts in each model-call log:
 
 ```json
 {
@@ -97,6 +158,37 @@ Expected minimum counts in each Codex-call log:
   "upstream_response_end": 1,
   "wrapper_exit": 1
 }
+```
+
+For exec-mode JSONL observation:
+
+```sh
+jq -r 'select(.event=="codex_exec_event" or .event=="wrapper_exit") |
+  [.ts,.event,.eventType,(.payload.item.text // ""),(.payload.usage.input_tokens // ""),
+   (.payload.usage.cached_input_tokens // ""),(.payload.usage.output_tokens // ""),
+   (.success // ""),(.code // "")] | @tsv' \
+  /tmp/pando-e2e-mode-exec-1.jsonl /tmp/pando-e2e-mode-exec-2.jsonl
+```
+
+For interactive app-server relay observation:
+
+```sh
+jq -r 'select(.event=="codex_app_server_frame" or .event=="wrapper_exit") |
+  [.ts,.event,(.direction // ""),(.method // ""),(.itemType // ""),
+   (.payload.params.item.text // ""),
+   (.payload.params.tokenUsage.total.inputTokens // ""),
+   (.payload.params.tokenUsage.total.cachedInputTokens // ""),
+   (.payload.params.tokenUsage.total.outputTokens // ""),
+   (.success // ""),(.code // "")] | @tsv' \
+  /tmp/pando-e2e-mode-interactive-1.jsonl /tmp/pando-e2e-mode-interactive-2.jsonl
+```
+
+For passthrough lifecycle checks:
+
+```sh
+jq -r 'select(.event=="wrapper_start" or .event=="wrapper_codex_start" or .event=="wrapper_exit") |
+  [.ts,.event,.mode,(.success // ""),(.code // "")] | @tsv' \
+  /tmp/pando-e2e-mode-passthrough-1.jsonl /tmp/pando-e2e-mode-passthrough-2.jsonl
 ```
 
 The log intentionally preserves request and response payloads as received. Only explicit credential
@@ -181,7 +273,7 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
 ```
 
 That exercises task-update, tool-result chunking, retention, prompt rewriting, maintenance model
-calls, persistence, and upstream forwarding.
+calls, assistant-response review on the next request, persistence, and upstream forwarding.
 
 For more detailed memory/logging expectations, including SSE maintenance parsing, stream
 cancelation, eager retention, and resume coverage, see

@@ -17,10 +17,15 @@ The wrapper uses three Codex execution paths:
 
 - `exec-json`: for `codex exec` / `codex e`; injects `--json`, forwards stdout, and observes JSONL
   events.
-- `interactive-remote`: for normal interactive prompts plus `resume` and `fork`; starts
+- `interactive-remote`: for no args, normal interactive prompts, `resume`, and `fork`; starts
   `codex app-server`, places a local websocket relay in front of it, and runs the Codex TUI with
-  `--remote` pointed at the relay.
+  wrapper-managed `--remote` pointed at the relay.
 - `passthrough`: for utility commands such as `help`, `login`, `logout`, and `app-server`.
+
+The classifier skips leading Codex global options such as `-c`, `--model`, `--sandbox`, `--cd`, and
+their inline forms where Codex supports them. It treats top-level `--help`, `-h`, `--version`, and
+`-V` as passthrough. Interactive mode rejects user-provided `--remote` because the websocket relay
+must own that endpoint.
 
 Proxy-owned commands are:
 
@@ -53,6 +58,8 @@ Examples:
 
 ```sh
 npx -y pando-proxy exec "Help me with this repo"
+npx -y pando-proxy e "Short alias for exec"
+npx -y pando-proxy --model gpt-5.4 exec "Leading Codex globals are preserved"
 npx -y pando-proxy exec --help
 npx -y pando-proxy resume --last
 npx -y pando-proxy help exec
@@ -178,9 +185,11 @@ The memory pass:
 - reviews unhandled assistant responses and creates task-linked assistant chunks only for durable
   information that still supports live tasks,
 - chunks Pando tool results in code,
-- chunks non-Pando tool results with a maintenance model call and falls back to local summaries if
-  the model response is invalid,
+- chunks non-Pando tool results with batched maintenance model calls and, after one invalid retry,
+  falls back to a conservative local chunk for each result,
 - asks the maintenance model what chunks to retain,
+- after one invalid retention retry, falls back to mechanically keeping chunks that reference live
+  tasks or the active task,
 - prunes retained messages/chunks to live task IDs.
 
 Live tasks have:
@@ -198,7 +207,22 @@ Retained memory chunks include:
 - `kind`
 - `taskIds`
 - optional `pointer`
-- optional `source`
+- optional `source`: `tool`, `user`, or `assistant`
+
+## Prompt Rewriting
+
+When memory is enabled, upstream requests use `buildDerivedPrompt(..., { keepRawHistory: false })`.
+The derived prompt:
+
+1. Removes previous synthetic `<context_memory>` items.
+2. Keeps leading `system` and `developer` messages.
+3. Inserts the current synthetic memory item after those leading instructions.
+4. Keeps the latest raw user message and any following protocol items.
+5. Drops earlier raw user/assistant history from the upstream request.
+
+When no latest user message can be found, the proxy keeps the input shape unchanged except for
+synthetic-memory replacement. The canonical Codex transcript is not modified; this rewrite only
+changes the request body forwarded upstream.
 
 ## Pando Tool Chunking
 
@@ -239,6 +263,17 @@ Upstream streaming logs can end with either:
 
 - `upstream_response_end`, when the stream flushes normally,
 - `upstream_response_cancel`, when Codex stops reading before flush.
+
+Wrapper observation events:
+
+- `codex_exec_event`: one event per JSONL line observed from `codex exec --json`.
+- `codex_app_server_frame`: one event per websocket frame relayed between the Codex TUI and
+  `codex app-server`.
+- `thread/tokenUsage/updated`: app-server token usage for interactive runs.
+- `turn.completed`: exec-mode token usage when Codex emits it.
+
+Passthrough utility commands may only emit wrapper lifecycle events because they often do not call
+the model.
 
 ## Development
 

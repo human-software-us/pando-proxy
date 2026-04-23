@@ -143,6 +143,29 @@ Deno.test("codex mode classifier detects exec with leading global options", () =
   );
 });
 
+Deno.test("exec-json mode covers command aliases and inline global options", () => {
+  assertEquals(classifyCodexRunMode(["exec", "hello"]), "exec-json");
+  assertEquals(classifyCodexRunMode(["e", "hello"]), "exec-json");
+  assertEquals(classifyCodexRunMode(["--model=gpt-5.4", "exec", "hello"]), "exec-json");
+  assertEquals(classifyCodexRunMode(["-c", "model=gpt-5.4", "e", "hello"]), "exec-json");
+});
+
+Deno.test("exec-json mode injects json exactly after exec command", () => {
+  assertEquals(ensureExecJsonArg(["exec", "--sandbox", "read-only", "hello"]), [
+    "exec",
+    "--json",
+    "--sandbox",
+    "read-only",
+    "hello",
+  ]);
+  assertEquals(ensureExecJsonArg(["--model=gpt-5.4", "e", "hello"]), [
+    "--model=gpt-5.4",
+    "e",
+    "--json",
+    "hello",
+  ]);
+});
+
 Deno.test("codex mode classifier keeps explicit exec json unchanged", () => {
   assertEquals(ensureExecJsonArg(["exec", "--json", "hello"]), ["exec", "--json", "hello"]);
 });
@@ -154,6 +177,50 @@ Deno.test("codex mode classifier detects interactive and passthrough forms", () 
   assertEquals(classifyCodexRunMode(["help", "exec"]), "passthrough");
   assertEquals(classifyCodexRunMode(["app-server", "--listen", "stdio://"]), "passthrough");
   assertEquals(classifyCodexRunMode(["Help me with this repo"]), "interactive-remote");
+});
+
+Deno.test("interactive-remote mode covers prompts, empty args, and session commands", () => {
+  assertEquals(classifyCodexRunMode([]), "interactive-remote");
+  assertEquals(classifyCodexRunMode(["Help me with this repo"]), "interactive-remote");
+  assertEquals(classifyCodexRunMode(["--model", "gpt-5.4", "Help me"]), "interactive-remote");
+  assertEquals(classifyCodexRunMode(["resume", "--last"]), "interactive-remote");
+  assertEquals(classifyCodexRunMode(["fork", "019abc"]), "interactive-remote");
+});
+
+Deno.test("interactive-remote mode prepends wrapper-managed remote endpoint", () => {
+  assertEquals(buildRemoteCodexArgs([], "ws://127.0.0.1:40125"), [
+    "--remote",
+    "ws://127.0.0.1:40125",
+  ]);
+  assertEquals(
+    buildRemoteCodexArgs(["--model", "gpt-5.4", "resume", "--last"], "ws://127.0.0.1:40125"),
+    ["--remote", "ws://127.0.0.1:40125", "--model", "gpt-5.4", "resume", "--last"],
+  );
+});
+
+Deno.test("interactive-remote mode detects user-provided remote args", () => {
+  assertEquals(hasCodexRemoteArg(["--remote", "ws://127.0.0.1:1"]), true);
+  assertEquals(hasCodexRemoteArg(["--remote=ws://127.0.0.1:1"]), true);
+  assertEquals(hasCodexRemoteArg(["--model", "gpt-5.4", "resume", "--last"]), false);
+});
+
+Deno.test("passthrough mode covers utility commands and top-level flags", () => {
+  assertEquals(classifyCodexRunMode(["help", "exec"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["--help"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["--version"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["login"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["logout"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["app-server", "--listen", "ws://127.0.0.1:1"]), "passthrough");
+  assertEquals(classifyCodexRunMode(["mcp", "list"]), "passthrough");
+});
+
+Deno.test("passthrough mode does not add exec json to non-exec commands", () => {
+  assertEquals(ensureExecJsonArg(["help", "exec"]), ["help", "exec"]);
+  assertEquals(ensureExecJsonArg(["app-server", "--listen", "stdio://"]), [
+    "app-server",
+    "--listen",
+    "stdio://",
+  ]);
 });
 
 Deno.test("remote codex args prepend wrapper-managed relay", () => {

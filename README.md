@@ -19,9 +19,18 @@ system `codex` command with process-local provider overrides pointing at that pr
 by default. The first non-proxy argument is passed to Codex, so forms like `exec`, `resume`,
 `help exec`, and `app-server` keep their normal Codex meaning.
 
-For `codex exec`, the wrapper runs Codex with `--json` so it can observe structured events while
-forwarding stdout. For interactive Codex, the wrapper starts a local Codex `app-server`, inserts a
-local websocket relay, then starts the normal Codex TUI with `--remote` pointed at that relay.
+## Modes
+
+`pando-proxy` uses three Codex paths:
+
+| Mode                 | Codex form                                                             | Behavior                                                                                                               |
+| -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `exec-json`          | `exec` / `e`                                                           | Adds `--json` once, forwards stdout, and logs structured Codex events when logging is enabled.                         |
+| `interactive-remote` | prompt, no args, `resume`, `fork`                                      | Starts `codex app-server`, relays websocket traffic, then starts the normal Codex TUI with a wrapper-owned `--remote`. |
+| `passthrough`        | `help`, `--version`, `login`, `logout`, `app-server`, utility commands | Runs Codex directly with the same process-local provider overrides. Utility commands may not make model requests.      |
+
+Interactive mode owns `--remote`; pass normal Codex prompt/session arguments and let the wrapper
+create the app-server and relay.
 
 ## Requirements
 
@@ -37,6 +46,7 @@ local websocket relay, then starts the normal Codex TUI with `--remote` pointed 
 npx -y pando-proxy --proxy-help
 npx -y pando-proxy "Help me with this repo"
 npx -y pando-proxy --proxy-no-memory exec "Reply with exactly: pass-through ok"
+npx -y pando-proxy --proxy-log-file /tmp/pando-proxy.jsonl "Reply with exactly: logged tui ok"
 npx -y pando-proxy exec --help
 npx -y pando-proxy resume --last
 npx -y pando-proxy --proxy-log exec "Run with a unique JSONL log file"

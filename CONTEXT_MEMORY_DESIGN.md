@@ -10,11 +10,24 @@ Implement the app in Deno + TypeScript. Library-shaped modules are allowed only 
 
 The memory design below exists to serve that proxy. All task update, tool chunking, retention, prompt injection, snapshot persistence, wrapper launch, and upstream forwarding behavior must be wired through the local proxy request path and CLI.
 
+## Current Repository Status
+
+The current implementation is the no-source-change proxy/wrapper path:
+
+- `pando-proxy [codex args...]` starts a per-instance localhost proxy, then runs the system `codex` command with process-local provider overrides.
+- It does not edit `~/.codex/config.toml`.
+- `exec` / `e` run through `exec-json` mode, where the wrapper injects `--json` and observes Codex JSONL events.
+- No-arg interactive use, prompt arguments, `resume`, and `fork` run through `interactive-remote` mode, where the wrapper starts `codex app-server`, inserts a websocket relay, and launches the normal Codex TUI against that relay.
+- Utility commands such as `help`, `--version`, `login`, `logout`, `mcp`, and `app-server` run in passthrough mode.
+- Logging is disabled by default. When enabled, JSONL logs include timestamps and full request/response payloads except exact credential fields.
+- Memory-enabled requests use a derived prompt view with `keepRawHistory: false`, so stale raw prior user/assistant history is removed from the upstream request while Codex's canonical transcript remains untouched.
+
 ## Goal
 
-Inside the `pando-proxy` binary, keep context useful without letting it accumulate. Every user message and every tool result must be explicitly handled before the next work turn:
+Inside the `pando-proxy` binary, keep context useful without letting it accumulate. Every user message, useful prior assistant response, and every tool result must be explicitly handled before the next work turn:
 
 - update the task list from the latest user message,
+- review assistant responses for durable facts that still support live tasks,
 - chunk every tool result, whether it came from MCP or a native tool,
 - keep only chunks that are still needed for live tasks,
 - drop everything else immediately.
@@ -52,7 +65,7 @@ type MemoryChunk = {
   kind: string;
   taskIds: string[];
   pointer?: object;
-  source?: "tool" | "user";
+  source?: "tool" | "user" | "assistant";
 };
 ```
 
@@ -312,7 +325,8 @@ The implementation in this repository is the standalone `pando-proxy` app. It sh
 The best no-source-change shape is a local OpenAI-compatible model-provider proxy:
 
 - Codex continues to run normally.
-- Users configure stock Codex to send model requests to `http://127.0.0.1:<port>/v1`.
+- The wrapper configures stock Codex for the current process with `-c` provider overrides that send
+  model requests to `http://127.0.0.1:<port>/v1`.
 - The proxy receives every model turn, runs task update/chunking/retention, rewrites the request input to include compact memory, forwards the request to the real upstream model provider, and streams the upstream SSE response back unchanged.
 - Memory is local to the user's machine. This is a local helper process, not a hosted backend service.
 
@@ -352,7 +366,8 @@ The proxy should expose the same wire shape Codex expects from an OpenAI-compati
 
 - `POST /v1/responses`
 - streaming SSE responses
-- Bearer auth forwarding from `OPENAI_API_KEY`
+- Bearer auth forwarding from Codex-sent `Authorization`, with `OPENAI_API_KEY` only as a fallback
+  when the request has no auth header
 - the request fields Codex sends today, including `model`, `instructions`, `input`, `tools`, `tool_choice`, `parallel_tool_calls`, `reasoning`, `store`, `stream`, `include`, `prompt_cache_key`, and `text`
 
 Later, the proxy may also support Chat Completions if needed, but the first version should target `wire_api = "responses"` because that is the main Codex path for modern OpenAI models.
@@ -392,11 +407,16 @@ Keep the first implementation small and boring. This is an application layout fo
 src/
   main.ts             # CLI entrypoint: wrapper/serve/doctor
   wrapper.ts          # dynamic port, unique logs, and codex process launch
+  codex_modes.ts      # classify exec-json, interactive-remote, and passthrough runs
+  codex_events.ts     # observe Codex exec JSONL and app-server websocket events
+  websocket_relay.ts  # relay and log interactive app-server websocket frames
   server.ts           # HTTP server and routing only
   upstream.ts         # OpenAI-compatible forwarding and SSE passthrough
   codex_request.ts    # parse and normalize Codex model requests
+  memory_pipeline.ts  # request-time memory orchestration
   memory_state.ts     # MemoryState types and pure state transitions
   task_update.ts      # task-update model call, validation, retry once
+  assistant_memory.ts # assistant-response review and chunk materialization
   tool_results.ts     # extract tool outputs from Codex request input
   chunking.ts         # pando deterministic chunking and non-pando batch chunking
   retention.ts        # retention model call, validation, applyRetention
@@ -406,9 +426,11 @@ src/
 tests/
   memory_state_test.ts
   task_update_test.ts
+  assistant_memory_test.ts
   chunking_test.ts
   retention_test.ts
   prompt_view_test.ts
+  wrapper_test.ts
 ```
 
 The HTTP server should stay thin. The important logic belongs in pure modules that are easy to test without a running server.
@@ -429,18 +451,23 @@ For each incoming `POST /v1/responses` request:
    - validate the full `TaskUpdate`,
    - retry once with validation errors if invalid,
    - fail closed if still invalid.
-6. Extract tool results from `input` that have not been handled yet.
-7. Normalize tool results into `ToolResultEnvelope` values.
-8. Chunk all tool results:
+6. Extract assistant responses from prior turns in `input` that have not been handled yet.
+7. Ask the assistant-memory model which durable assistant facts, if any, should become chunks for
+   live tasks.
+8. Run eager retention over existing `memoryLibrary` plus assistant chunks.
+9. Extract tool results from `input` that have not been handled yet.
+10. Normalize tool results into `ToolResultEnvelope` values.
+11. Chunk all tool results:
    - pando tool results in code,
    - non-pando tool results by batched model call.
-9. Run eager retention over existing `memoryLibrary` plus the transient inbox.
-10. Validate and apply retention.
-11. Persist a full memory snapshot.
-12. Derive a compact synthetic memory context item from the updated state.
-13. Rewrite the upstream request to include that synthetic memory context.
-14. Forward the request to the real upstream provider.
-15. Stream the upstream SSE response back to Codex unchanged.
+12. Run eager retention over existing `memoryLibrary` plus the transient tool-result inbox.
+13. Validate and apply retention.
+14. Persist a full memory snapshot when state or handled ids changed.
+15. Derive a compact synthetic memory context item from the updated state.
+16. Rewrite the upstream request to include that synthetic memory context while dropping stale raw
+    prior transcript history from the model-visible request.
+17. Forward the request to the real upstream provider.
+18. Stream the upstream SSE response back to Codex unchanged.
 
 The proxy should not wait for the upstream response to do memory maintenance. Maintenance is based on the request Codex is about to send, because that request contains the prior user messages and tool outputs that must be handled before the next model turn.
 
@@ -517,7 +544,10 @@ Relevant retained context:
 
 In the proxy implementation, this synthetic memory item is inserted into the request sent upstream. The original request body received from Codex should be treated as input evidence, not as the durable memory store.
 
-Later, for real token savings, the proxy can also implement prompt rewriting that omits or summarizes older raw transcript items before forwarding upstream. That must still be a derived prompt view. It should not corrupt the canonical Codex rollout or the proxy's memory snapshots.
+For token savings, the proxy implements prompt rewriting as a derived prompt view. It removes prior
+synthetic memory items, keeps leading `system`/`developer` instructions, inserts the latest
+synthetic memory item, then keeps only the latest raw user turn and following protocol items. It
+does not corrupt the canonical Codex rollout or the proxy's memory snapshots.
 
 The key distinction: memory retention decides what remains relevant; transcript persistence preserves what happened.
 
@@ -549,19 +579,22 @@ Rules:
 
 ### Upstream Model Calls For Maintenance
 
-The proxy needs model calls for three maintenance tasks:
+The proxy needs model calls for four maintenance tasks:
 
 - task update,
+- assistant-response review,
 - non-pando chunking,
 - retention.
 
 Use a smaller/cheaper model by default, configurable separately from the user's main Codex model. These maintenance calls should not expose tools. They should request strict JSON output and then validate it locally.
 
-Fail-closed policy:
+Current implementation policy:
 
 - If task update validation fails twice, return an error to Codex instead of forwarding the next work turn.
-- If chunking fails for non-pando output, create one conservative fallback chunk with a pointer/summary when safe, or fail if the output is essential and cannot be represented.
-- If retention validation fails twice, keep the previous memory library and new chunks only if they can be mechanically attached to the active live task; otherwise fail closed.
+- If assistant-response review fails twice, create no assistant chunks for that pass.
+- If chunking fails twice for non-pando output, create one conservative local fallback chunk per result.
+- If retention validation fails twice, mechanically retain chunks that already reference live tasks, or attach them to the active live task when one exists.
+- In every case, retained chunks are pruned back to live task ids before persistence.
 
 ### Pando Tool Detection
 
