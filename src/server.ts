@@ -2,22 +2,68 @@ import type { ProxyConfig } from "./config.ts";
 import { authHeaderFor, parseJsonBody, requestModel, sessionKeyFor } from "./codex_request.ts";
 import { createLogger } from "./logger.ts";
 import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
+import type { MemoryState } from "./memory_state.ts";
 import { extractUsageMetrics, memoryStateMetrics, requestContextMetrics, TokenUsageTracker } from "./metrics.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
 import { createStructuredClients } from "./structured_model.ts";
 import { SessionStore } from "./store.ts";
-import { forwardResponsesRequest, runResponsesLoop } from "./upstream.ts";
+import type { RoundSource } from "./tool_results.ts";
+import { forwardResponsesRequest, type LocalContextFetch, runResponsesLoop } from "./upstream.ts";
+
+const OBSERVED_TURN_SOURCES_TIMEOUT_MS = 3_000;
+const FINALIZATION_DRAIN_TIMEOUT_MS = 10_000;
+
+export type StartedProxyServer = {
+  server: Deno.HttpServer;
+  awaitIdle: (timeoutMs?: number) => Promise<void>;
+};
 
 export function createHandler(
   config: ProxyConfig,
   store = new SessionStore(config.stateDir, config.inlinePieceByteLimit),
   fallbackSessionKeyForRequest?: () => string | null | undefined,
+  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>,
 ) {
   const logger = createLogger(config.logFile);
   const usageTracker = new TokenUsageTracker();
   const fallbackSessionKey = `wrapper_${crypto.randomUUID()}`;
+  const pendingFinalizations = new Map<string, Promise<void>>();
 
-  return async (request: Request): Promise<Response> => {
+  const waitForPendingFinalization = async (sessionKey: string): Promise<void> => {
+    const pending = pendingFinalizations.get(sessionKey);
+    if (!pending) {
+      return;
+    }
+    try {
+      await pending;
+    } catch {
+      // Prior round failures are logged on the round itself. New requests should still proceed.
+    }
+  };
+
+  const scheduleFinalization = (sessionKey: string, run: () => Promise<unknown>): void => {
+    const previous = pendingFinalizations.get(sessionKey) ?? Promise.resolve();
+    const next: Promise<void> = previous
+      .catch(() => {})
+      .then(run)
+      .then(() => undefined)
+      .finally(() => {
+        if (pendingFinalizations.get(sessionKey) === next) {
+          pendingFinalizations.delete(sessionKey);
+        }
+      });
+    pendingFinalizations.set(sessionKey, next);
+  };
+
+  const awaitIdle = async (timeoutMs = FINALIZATION_DRAIN_TIMEOUT_MS): Promise<void> => {
+    const pending = [...pendingFinalizations.values()];
+    if (pending.length === 0) {
+      return;
+    }
+    await promiseWithTimeout(Promise.allSettled(pending).then(() => undefined), timeoutMs);
+  };
+
+  const handler = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
       return jsonResponse({ ok: true, service: "pando-proxy" });
@@ -42,6 +88,7 @@ export function createHandler(
       body,
       fallbackSessionKeyForRequest?.() ?? fallbackSessionKey,
     );
+    await waitForPendingFinalization(sessionKey);
     const requestId = crypto.randomUUID();
 
     await logger.log("incoming_request", {
@@ -88,36 +135,50 @@ export function createHandler(
         }
 
         try {
-          const structuredClients = createStructuredClients(
-            config,
-            requestModel(body),
-            authHeader,
-            (selection) =>
-              logger.log("structured_model_selected", {
-                requestId,
-                sessionKey,
-                ...selection,
-              }),
-          );
-          const memoryUpdate = await updateMemoryForCompletedRound(
-            rewrite.body,
-            record.memory,
-            loop.finalBody,
-            loop.assistantSources,
-            structuredClients,
-            config,
-            { logger, requestId, sessionKey },
-          );
-          finalMemory = memoryUpdate.memory;
-          if (memoryUpdate.changed) {
-            await store.save(sessionKey, { memory: memoryUpdate.memory });
-            await logger.log("memory_state_saved", {
+          if (observedRoundSourcesForSession) {
+            await logger.log("memory_finalize_scheduled", {
               requestId,
               sessionKey,
-              newChunkIds: memoryUpdate.newChunkIds,
-              droppedChunkIds: memoryUpdate.droppedChunkIds,
-              ...memoryStateMetrics(memoryUpdate.memory),
+              timeoutMs: OBSERVED_TURN_SOURCES_TIMEOUT_MS,
             });
+            scheduleFinalization(
+              sessionKey,
+              () =>
+                finalizeRoundMemory({
+                  config,
+                  store,
+                  logger,
+                  usageTracker,
+                  requestId,
+                  sessionKey,
+                  requestBody: body,
+                  rewriteBody: rewrite.body,
+                  previousMemory: record.memory,
+                  loopFinalBody: loop.finalBody,
+                  assistantSources: loop.assistantSources,
+                  fetches: loop.fetches,
+                  authHeader,
+                  observedRoundSourcesForSession,
+                }),
+            );
+          } else {
+            const completion = await finalizeRoundMemory({
+              config,
+              store,
+              logger,
+              usageTracker,
+              requestId,
+              sessionKey,
+              requestBody: body,
+              rewriteBody: rewrite.body,
+              previousMemory: record.memory,
+              loopFinalBody: loop.finalBody,
+              assistantSources: loop.assistantSources,
+              fetches: loop.fetches,
+              authHeader,
+            });
+            finalMemory = completion.memory;
+            memoryUpdateError = completion.memoryUpdateError;
           }
         } catch (error) {
           memoryUpdateError = messageFor(error);
@@ -126,52 +187,180 @@ export function createHandler(
             sessionKey,
             message: memoryUpdateError,
           });
-        }
-
-        const usage = extractUsageMetrics(loop.finalBody);
-        const usageTotals = usage ? usageTracker.add(sessionKey, usage) : null;
-        if (usage) {
-          await logger.log("usage", {
+          const usage = extractUsageMetrics(loop.finalBody);
+          const usageTotals = usage ? usageTracker.add(sessionKey, usage) : null;
+          if (usageTotals) {
+            await logger.log("usage", {
+              requestId,
+              sessionKey,
+              ...usageTotals,
+            });
+          }
+          await logger.log("round_complete", {
             requestId,
             sessionKey,
-            ...usageTotals,
+            memoryUpdateError,
+            localMemoryFetchCount: loop.fetches.length,
+            localMemoryFetches: loop.fetches,
+            returnedMemoryChunkIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedChunkIds))],
+            ...memoryStateMetrics(finalMemory),
+            ...(usageTotals ? usageTotals : {}),
           });
         }
-        await logger.log("round_complete", {
-          requestId,
-          sessionKey,
-          memoryUpdateError,
-          localMemoryFetchCount: loop.fetches.length,
-          localMemoryFetches: loop.fetches,
-          returnedMemoryChunkIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedChunkIds))],
-          ...memoryStateMetrics(finalMemory),
-          ...(usageTotals ? usageTotals : {}),
-        });
         return loop.response;
       });
     } catch (error) {
       return jsonResponse({ error: "pando_proxy_failed", message: messageFor(error) }, 502);
     }
   };
+
+  return { handler, awaitIdle };
 }
 
 export function startServer(
   config: ProxyConfig,
   fallbackSessionKeyForRequest?: () => string | null | undefined,
-): Deno.HttpServer {
-  const handler = createHandler(config, undefined, fallbackSessionKeyForRequest);
-  return Deno.serve({
+  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>,
+): StartedProxyServer {
+  const { handler, awaitIdle } = createHandler(
+    config,
+    undefined,
+    fallbackSessionKeyForRequest,
+    observedRoundSourcesForSession,
+  );
+  const server = Deno.serve({
     hostname: config.host,
     port: config.port,
     onListen: () => {},
   }, handler);
+  return { server, awaitIdle };
 }
 
 export async function serve(config: ProxyConfig): Promise<void> {
-  const server = startServer(config);
+  const { server } = startServer(config);
   console.log(`Pando Proxy is running at http://${config.host}:${config.port}/v1`);
   console.log("Leave this terminal open while using Codex.");
   await server.finished;
+}
+
+type FinalizeRoundOptions = {
+  config: ProxyConfig;
+  store: SessionStore;
+  logger: ReturnType<typeof createLogger>;
+  usageTracker: TokenUsageTracker;
+  requestId: string;
+  sessionKey: string;
+  requestBody: Record<string, unknown>;
+  rewriteBody: Record<string, unknown>;
+  previousMemory: MemoryState;
+  loopFinalBody: Record<string, unknown>;
+  assistantSources: RoundSource[];
+  fetches: LocalContextFetch[];
+  authHeader: string | null;
+  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>;
+};
+
+type FinalizeRoundResult = {
+  memory: MemoryState;
+  memoryUpdateError: string | null;
+};
+
+async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<FinalizeRoundResult> {
+  const {
+    config,
+    store,
+    logger,
+    usageTracker,
+    requestId,
+    sessionKey,
+    requestBody,
+    rewriteBody,
+    previousMemory,
+    loopFinalBody,
+    assistantSources,
+    fetches,
+    authHeader,
+    observedRoundSourcesForSession,
+  } = options;
+
+  let finalMemory = previousMemory;
+  let memoryUpdateError: string | null = null;
+
+  try {
+    const structuredClients = createStructuredClients(
+      config,
+      requestModel(requestBody),
+      authHeader,
+      (selection) =>
+        logger.log("structured_model_selected", {
+          requestId,
+          sessionKey,
+          ...selection,
+        }),
+    );
+    const observedWaitStartedAt = Date.now();
+    const observedSources = observedRoundSourcesForSession
+      ? await observedRoundSourcesForSession(sessionKey, OBSERVED_TURN_SOURCES_TIMEOUT_MS)
+      : [];
+    await logger.log("observed_round_sources", {
+      requestId,
+      sessionKey,
+      timeoutMs: OBSERVED_TURN_SOURCES_TIMEOUT_MS,
+      waitedMs: Date.now() - observedWaitStartedAt,
+      observedSourceCount: observedSources.length,
+      observedSourceIds: observedSources.map((source) => source.sourceId),
+    });
+    const memoryUpdate = await updateMemoryForCompletedRound(
+      rewriteBody,
+      previousMemory,
+      loopFinalBody,
+      [...assistantSources, ...observedSources],
+      structuredClients,
+      config,
+      { logger, requestId, sessionKey },
+    );
+    finalMemory = memoryUpdate.memory;
+    if (memoryUpdate.changed) {
+      await store.withLock(sessionKey, async () => {
+        await store.save(sessionKey, { memory: memoryUpdate.memory });
+      });
+      await logger.log("memory_state_saved", {
+        requestId,
+        sessionKey,
+        newChunkIds: memoryUpdate.newChunkIds,
+        droppedChunkIds: memoryUpdate.droppedChunkIds,
+        ...memoryStateMetrics(memoryUpdate.memory),
+      });
+    }
+  } catch (error) {
+    memoryUpdateError = messageFor(error);
+    await logger.log("memory_update_failed", {
+      requestId,
+      sessionKey,
+      message: memoryUpdateError,
+    });
+  }
+
+  const usage = extractUsageMetrics(loopFinalBody);
+  const usageTotals = usage ? usageTracker.add(sessionKey, usage) : null;
+  if (usageTotals) {
+    await logger.log("usage", {
+      requestId,
+      sessionKey,
+      ...usageTotals,
+    });
+  }
+  await logger.log("round_complete", {
+    requestId,
+    sessionKey,
+    memoryUpdateError,
+    localMemoryFetchCount: fetches.length,
+    localMemoryFetches: fetches,
+    returnedMemoryChunkIds: [...new Set(fetches.flatMap((fetch) => fetch.returnedChunkIds))],
+    ...memoryStateMetrics(finalMemory),
+    ...(usageTotals ? usageTotals : {}),
+  });
+  return { memory: finalMemory, memoryUpdateError };
 }
 
 function jsonResponse(value: unknown, status = 200): Response {
@@ -183,4 +372,13 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
 }

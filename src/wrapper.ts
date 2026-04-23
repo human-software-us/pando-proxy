@@ -9,12 +9,14 @@ import {
 import { CliOptions, expandHome, loadConfig, ProxyConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { startServer } from "./server.ts";
+import type { RoundSource } from "./tool_results.ts";
 import { startWebSocketRelayOnAvailablePort } from "./websocket_relay.ts";
 
 export const DEFAULT_WRAPPER_PORT_START = 40123;
 export const PANDO_PROVIDER_ID = "pando-proxy";
 export const CODEX_ALIAS_COMMAND = "npx -y pando-proxy";
 export const WRAPPER_PREFERENCES_RELATIVE_PATH = ".pando-proxy/wrapper-preferences.json";
+export const WRAPPER_LAST_THREAD_RELATIVE_PATH = "wrapper-last-thread.json";
 const SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS = 1_500;
 
 export type WrapperOptions = CliOptions & {
@@ -31,6 +33,7 @@ export type ParsedWrapperArgs = {
 export type StartedProxy = {
   config: ProxyConfig;
   server: Deno.HttpServer;
+  awaitIdle: (timeoutMs?: number) => Promise<void>;
 };
 
 type StartedCodexAppServer = {
@@ -149,6 +152,8 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   await maybeOfferCodexAlias();
 
   const baseConfig = loadConfig(parsed.options);
+  const effectiveCodexArgs = await rewriteResumeLastArgs(parsed.codexArgs, baseConfig.stateDir);
+  const mode = classifyCodexRunMode(effectiveCodexArgs);
   const logFile = await resolveWrapperLogFile(parsed.options, baseConfig.stateDir);
   const logger = createLogger(logFile);
   const observer = new CodexEventObserver(logger);
@@ -157,8 +162,8 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     { ...baseConfig, logFile },
     portStart,
     () => observer.latestExecThreadId(),
+    mode === "exec-json" ? (sessionKey, timeoutMs) => observer.waitForExecTurn(sessionKey, timeoutMs) : undefined,
   );
-  const mode = classifyCodexRunMode(parsed.codexArgs);
   const cleanup = installProxyCleanup(started.server, logger);
 
   if (logFile) {
@@ -169,25 +174,28 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   await logger.log("wrapper_start", {
     proxyUrl: `http://${started.config.host}:${started.config.port}/v1`,
     requestedCodexArgs: parsed.codexArgs,
+    effectiveCodexArgs,
     mode,
     memoryEnabled: started.config.memoryEnabled,
   });
 
   try {
+    let exitCode: number;
     if (mode === "exec-json") {
-      return await runCodexExecJson(parsed.codexArgs, started.config, logger, observer);
-    }
-    if (mode === "interactive-remote") {
-      return await runCodexInteractiveRemote(
-        parsed.codexArgs,
+      exitCode = await runCodexExecJson(effectiveCodexArgs, started.config, logger, observer);
+    } else if (mode === "interactive-remote") {
+      exitCode = await runCodexInteractiveRemote(
+        effectiveCodexArgs,
         started.config,
         logger,
         observer,
         portStart,
       );
+    } else {
+      exitCode = await runCodexPassthrough(effectiveCodexArgs, started.config, logger);
     }
-
-    return await runCodexPassthrough(parsed.codexArgs, started.config, logger);
+    await saveLatestWrapperThreadId(baseConfig.stateDir, observer.latestExecThreadId());
+    return exitCode;
   } catch (error) {
     await logger.log("wrapper_error", { message: messageFor(error) });
     if (error instanceof Deno.errors.NotFound) {
@@ -196,9 +204,61 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     }
     throw error;
   } finally {
+    await started.awaitIdle().catch(async (error) => {
+      await logger.log("wrapper_pending_finalization_timeout", {
+        message: messageFor(error),
+      });
+    });
     await cleanup.shutdown("wrapper_exit");
     cleanup.dispose();
   }
+}
+
+async function rewriteResumeLastArgs(codexArgs: string[], stateDir: string): Promise<string[]> {
+  const savedThreadId = await loadLatestWrapperThreadId(stateDir);
+  if (!savedThreadId) {
+    return [...codexArgs];
+  }
+
+  const rewritten = [...codexArgs];
+  for (let index = 0; index < rewritten.length - 1; index += 1) {
+    if (rewritten[index] !== "resume" || rewritten[index + 1] !== "--last") {
+      continue;
+    }
+    rewritten.splice(index + 1, 1, savedThreadId);
+    break;
+  }
+  return rewritten;
+}
+
+async function loadLatestWrapperThreadId(stateDir: string): Promise<string | null> {
+  try {
+    const text = await Deno.readTextFile(wrapperLastThreadPath(stateDir));
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const threadId = (parsed as Record<string, unknown>).threadId;
+    return typeof threadId === "string" && threadId.length > 0 ? threadId : null;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function saveLatestWrapperThreadId(stateDir: string, threadId: string | null): Promise<void> {
+  if (!threadId) {
+    return;
+  }
+  const path = wrapperLastThreadPath(stateDir);
+  await Deno.mkdir(dirname(path), { recursive: true });
+  await Deno.writeTextFile(path, `${JSON.stringify({ threadId }, null, 2)}\n`);
+}
+
+function wrapperLastThreadPath(stateDir: string): string {
+  return expandHome(`${stateDir}/${WRAPPER_LAST_THREAD_RELATIVE_PATH}`);
 }
 
 export async function maybeOfferCodexAlias(
@@ -710,11 +770,13 @@ export function startProxyOnAvailablePort(
   baseConfig: ProxyConfig,
   portStart = DEFAULT_WRAPPER_PORT_START,
   fallbackSessionKeyForRequest?: () => string | null | undefined,
+  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>,
 ): StartedProxy {
   for (let port = portStart; port <= 65_535; port += 1) {
     const config = { ...baseConfig, port };
     try {
-      return { config, server: startServer(config, fallbackSessionKeyForRequest) };
+      const started = startServer(config, fallbackSessionKeyForRequest, observedRoundSourcesForSession);
+      return { config, server: started.server, awaitIdle: started.awaitIdle };
     } catch (error) {
       if (isAddressInUse(error)) {
         continue;

@@ -355,5 +355,12 @@ const EXPLICIT_CLOSE_PATTERNS = [
   /\bend this task\b/i,
   /\bno longer need\b/i,
   /\bclear (?:that|this|it)\b/i,
+  /\bclear (?:all )?(?:retained )?memory\b/i,
+  /\bdrop (?:all )?(?:retained )?memory\b/i,
+  /\bdrop all retained memory\b/i,
+  /\bdelete (?:all )?(?:retained )?memory\b/i,
+  /\bremove (?:all )?(?:retained )?memory\b/i,
+  /\bend (?:this )?session\b/i,
+  /\bclose (?:this )?session\b/i,
   /\btask is over\b/i,
 ];

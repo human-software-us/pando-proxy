@@ -356,6 +356,12 @@ Rules:
 - Do not keep user instruction text that only says to remember or recall something when the actual exact supporting chunk is already kept.
 - Do not keep assistant acknowledgements, chatter, or confirmations when the underlying exact evidence is already kept.
 - Prefer original tool outputs over user instructions and assistant restatements whenever both carry the same fact.
+- In a tool-driven recall flow, the ideal retained set is usually just the original exact tool chunk and nothing else.
+- If a retained exact chunk explicitly tells the model to call memory(offset, limit), and the user says that exact instruction will matter in a later turn, keep that instruction chunk together with the underlying exact evidence it is meant to retrieve.
+- In that special case, keep both the visible instruction chunk and the hidden exact evidence chunk so fallback can actually be exercised later.
+- If a user message is operational scaffolding such as "run this", "remember this", "reply exactly", or "without running any tool", drop it once the exact evidence it referred to is retained elsewhere.
+- If an assistant message only says "stored", "closed", repeats a value already present in a kept exact chunk, or wraps exact content in formatting, drop it.
+- Keep user-message chunks only when they contain durable facts that are not preserved in a kept exact tool or assistant chunk.
 - If the user clearly ends the work or says the memory is no longer needed, set objectiveAfter to null and keep no chunks.
 - Do not summarize or rewrite content. Only decide the live objective and exact keep/drop ids.
 - Return JSON only.

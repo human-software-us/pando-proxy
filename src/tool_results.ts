@@ -49,18 +49,38 @@ export async function extractAssistantSourcesFromResponse(response: unknown): Pr
   }
 
   const output = Array.isArray(response.output) ? response.output : [];
+  const toolNamesByCallId = collectToolNamesByCallId(output);
   const out: RoundSource[] = [];
 
   for (let index = 0; index < output.length; index += 1) {
     const item = output[index];
-    if (!isAssistantMessageItem(item)) {
+    if (isAssistantMessageItem(item)) {
+      out.push({
+        sourceId: await responseItemId(item, response, index),
+        sourceKind: "assistant",
+        payload: item,
+      });
       continue;
     }
-    out.push({
-      sourceId: await responseItemId(item, response, index),
-      sourceKind: "assistant",
-      payload: item,
-    });
+    if (isRecord(item)) {
+      const type = typeof item.type === "string" ? item.type : "";
+      if (isToolOutputItem(type)) {
+        const sourceId = await responseItemId(item, response, index);
+        const callId = typeof item.call_id === "string" ? item.call_id : undefined;
+        const toolName = (typeof item.name === "string" ? item.name : undefined) ??
+          (callId ? toolNamesByCallId.get(callId) : undefined);
+        out.push({
+          sourceId,
+          sourceKind: "tool",
+          payload: normalizeToolPayload(toolName, "output" in item ? item.output : item),
+          ...(toolName ? { toolName } : {}),
+          pointer: {
+            ...(callId ? { callId } : {}),
+            itemType: type,
+          },
+        });
+      }
+    }
   }
 
   if (out.length > 0) {

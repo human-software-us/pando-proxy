@@ -1,11 +1,15 @@
 import { ProxyLogger } from "./logger.ts";
 import { isRecord } from "./memory_state.ts";
+import type { RoundSource } from "./tool_results.ts";
 
 export type AppServerDirection = "client_to_server" | "server_to_client";
 
 export class CodexEventObserver {
   #logger: ProxyLogger;
   #latestExecThreadId: string | null = null;
+  #currentExecTurnSourcesByThread = new Map<string, RoundSource[]>();
+  #completedExecTurnsByThread = new Map<string, RoundSource[][]>();
+  #waitersByThread = new Map<string, Array<(sources: RoundSource[]) => void>>();
 
   constructor(logger: ProxyLogger) {
     this.#logger = logger;
@@ -21,6 +25,13 @@ export class CodexEventObserver {
     const threadId = extractExecThreadId(payload);
     if (threadId) {
       this.#latestExecThreadId = threadId;
+    }
+    this.#observeExecTurnBoundary(payload, this.#latestExecThreadId);
+    const toolSource = extractExecToolSource(payload);
+    if (toolSource && this.#latestExecThreadId) {
+      const existing = this.#currentExecTurnSourcesByThread.get(this.#latestExecThreadId) ?? [];
+      existing.push(toolSource);
+      this.#currentExecTurnSourcesByThread.set(this.#latestExecThreadId, existing);
     }
     await this.#logger.log("codex_exec_event", {
       source: "codex_exec_json",
@@ -41,6 +52,70 @@ export class CodexEventObserver {
 
   latestExecThreadId(): string | null {
     return this.#latestExecThreadId;
+  }
+
+  waitForExecTurn(threadId: string, timeoutMs: number): Promise<RoundSource[]> {
+    const completed = this.#completedExecTurnsByThread.get(threadId);
+    if (completed && completed.length > 0) {
+      const next = completed.shift() ?? [];
+      if (completed.length === 0) {
+        this.#completedExecTurnsByThread.delete(threadId);
+      }
+      return Promise.resolve(next);
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        const waiters = this.#waitersByThread.get(threadId) ?? [];
+        this.#waitersByThread.set(
+          threadId,
+          waiters.filter((waiter) => waiter !== onReady),
+        );
+        resolve([]);
+      }, timeoutMs);
+
+      const onReady = (sources: RoundSource[]) => {
+        clearTimeout(timer);
+        resolve(sources);
+      };
+
+      const waiters = this.#waitersByThread.get(threadId) ?? [];
+      waiters.push(onReady);
+      this.#waitersByThread.set(threadId, waiters);
+    });
+  }
+
+  #observeExecTurnBoundary(payload: unknown, threadId: string | null): void {
+    if (!threadId || !isRecord(payload) || typeof payload.type !== "string") {
+      return;
+    }
+    if (payload.type === "turn.started") {
+      this.#currentExecTurnSourcesByThread.set(threadId, []);
+      return;
+    }
+    if (payload.type === "turn.completed") {
+      const sources = this.#currentExecTurnSourcesByThread.get(threadId) ?? [];
+      this.#currentExecTurnSourcesByThread.delete(threadId);
+      this.#enqueueCompletedExecTurn(threadId, sources);
+    }
+  }
+
+  #enqueueCompletedExecTurn(threadId: string, sources: RoundSource[]): void {
+    const waiters = this.#waitersByThread.get(threadId);
+    if (waiters && waiters.length > 0) {
+      const next = waiters.shift();
+      if (waiters.length === 0) {
+        this.#waitersByThread.delete(threadId);
+      } else {
+        this.#waitersByThread.set(threadId, waiters);
+      }
+      next?.(sources);
+      return;
+    }
+
+    const completed = this.#completedExecTurnsByThread.get(threadId) ?? [];
+    completed.push(sources);
+    this.#completedExecTurnsByThread.set(threadId, completed);
   }
 }
 
@@ -84,6 +159,33 @@ function extractExecThreadId(payload: unknown): string | null {
   return null;
 }
 
+function extractExecToolSource(payload: unknown): RoundSource | null {
+  if (!isRecord(payload) || payload.type !== "item.completed") {
+    return null;
+  }
+  const item = isRecord(payload.item) ? payload.item : null;
+  if (!item || item.type !== "command_execution" || item.status !== "completed") {
+    return null;
+  }
+  const output = typeof item.aggregated_output === "string" ? item.aggregated_output : "";
+  if (!output) {
+    return null;
+  }
+  const itemId = typeof item.id === "string" && item.id ? item.id : null;
+  const command = typeof item.command === "string" ? item.command : null;
+  return {
+    sourceId: itemId ? `exec_observed_${itemId}` : `exec_observed_${shortHashString(output)}`,
+    sourceKind: "tool",
+    toolName: "exec_command",
+    payload: output,
+    pointer: {
+      itemType: "command_execution",
+      ...(itemId ? { itemId } : {}),
+      ...(command ? { command } : {}),
+    },
+  };
+}
+
 function summaryFor(payload: unknown): Record<string, unknown> {
   if (!isRecord(payload)) {
     return { parsed: false };
@@ -119,4 +221,13 @@ function base64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
+}
+
+function shortHashString(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0).toString(16);
 }
