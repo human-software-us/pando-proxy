@@ -4,6 +4,7 @@ import {
   responsesUrl,
 } from "./config.ts";
 import { extractJsonObject, stableJson } from "./json.ts";
+import { extractUsageMetrics, type UsageMetrics } from "./metrics.ts";
 import { ChunkSelector } from "./memory_state.ts";
 import { WorkingMemoryUpdateRequest, WorkingMemoryUpdateResponse } from "./round_update.ts";
 
@@ -13,6 +14,18 @@ export type StructuredModelSelection = {
   estimatedInputTokens: number;
   chosenModel: string;
   selectionReason: "fits_small_window" | "overflow_to_large";
+};
+
+export type StructuredModelUsage = {
+  classifier: StructuredModelSelection["classifier"];
+  requestModel: string | null;
+  chosenModel: string;
+  estimatedInputTokens: number;
+  selectionReason: StructuredModelSelection["selectionReason"];
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
 };
 
 export type SourceChunkRequest = {
@@ -36,15 +49,22 @@ const APPROX_CHARS_PER_TOKEN = 4;
 
 type JsonSchema = Record<string, unknown>;
 
+type StructuredJsonCallResult<T> = {
+  value: T;
+  usage: UsageMetrics | null;
+  selection: StructuredModelSelection;
+};
+
 export function createStructuredClients(
   config: ProxyConfig,
   requestModel: string | null,
   authHeader: string | null,
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
+  onUsage?: (usage: StructuredModelUsage) => Promise<void> | void,
 ): StructuredClients {
   return {
-    workingMemoryUpdate: (request) =>
-      callStructuredJson<WorkingMemoryUpdateResponse>(
+    workingMemoryUpdate: async (request) => {
+      const result = await callStructuredJson<WorkingMemoryUpdateResponse>(
         config,
         requestModel,
         authHeader,
@@ -53,12 +73,25 @@ export function createStructuredClients(
         workingMemoryUpdateJsonSchema,
         "working_memory_update",
         onSelection,
-      ),
+      );
+      await onUsage?.({
+        classifier: result.selection.classifier,
+        requestModel: result.selection.requestModel,
+        chosenModel: result.selection.chosenModel,
+        estimatedInputTokens: result.selection.estimatedInputTokens,
+        selectionReason: result.selection.selectionReason,
+        inputTokens: result.usage?.inputTokens,
+        cachedInputTokens: result.usage?.cachedInputTokens,
+        outputTokens: result.usage?.outputTokens,
+        totalTokens: result.usage?.totalTokens,
+      });
+      return result.value;
+    },
     sourceChunk: async (request) => {
       if (!canFitOverflowModel(config, sourceChunkSystemPrompt, request, sourceChunkJsonSchema)) {
         return { chunks: [{ kind: "whole" }] };
       }
-      return await callStructuredJson<SourceChunkResponse>(
+      const result = await callStructuredJson<SourceChunkResponse>(
         config,
         requestModel,
         authHeader,
@@ -68,6 +101,18 @@ export function createStructuredClients(
         "source_chunk",
         onSelection,
       );
+      await onUsage?.({
+        classifier: result.selection.classifier,
+        requestModel: result.selection.requestModel,
+        chosenModel: result.selection.chosenModel,
+        estimatedInputTokens: result.selection.estimatedInputTokens,
+        selectionReason: result.selection.selectionReason,
+        inputTokens: result.usage?.inputTokens,
+        cachedInputTokens: result.usage?.cachedInputTokens,
+        outputTokens: result.usage?.outputTokens,
+        totalTokens: result.usage?.totalTokens,
+      });
+      return result.value;
     },
   };
 }
@@ -101,7 +146,7 @@ async function callStructuredJson<T>(
   schema: JsonSchema,
   classifier: StructuredModelSelection["classifier"],
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
-): Promise<T> {
+): Promise<StructuredJsonCallResult<T>> {
   if (!authHeader) {
     throw new Error("No Authorization header or OPENAI_API_KEY available for structured model calls");
   }
@@ -147,7 +192,12 @@ async function callStructuredJson<T>(
   if (!text) {
     throw new Error("Structured model response did not include text");
   }
-  return extractJsonObject(text) as T;
+  const usage = extractUsageMetricsFromStructuredResponse(response, bodyText);
+  return {
+    value: extractJsonObject(text) as T,
+    usage,
+    selection,
+  };
 }
 
 function chooseStructuredModel(
@@ -216,6 +266,43 @@ function extractResponseTextFromSseText(streamText: string): string {
   }
 
   return completedText || deltas.join("");
+}
+
+function extractUsageMetricsFromStructuredResponse(response: Response, bodyText: string): UsageMetrics | null {
+  if (isEventStream(response, bodyText)) {
+    return extractUsageMetricsFromSseText(bodyText);
+  }
+  try {
+    return extractUsageMetrics(JSON.parse(bodyText));
+  } catch {
+    return null;
+  }
+}
+
+function extractUsageMetricsFromSseText(streamText: string): UsageMetrics | null {
+  let usage: UsageMetrics | null = null;
+
+  for (const line of streamText.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) {
+      continue;
+    }
+    const data = line.slice("data:".length).trim();
+    if (!data || data === "[DONE]") {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(data);
+      usage = extractUsageMetrics(parsed) ?? extractUsageMetrics(
+        parsed && typeof parsed === "object" && "response" in parsed
+          ? (parsed as Record<string, unknown>).response
+          : parsed,
+      ) ?? usage;
+    } catch {
+      continue;
+    }
+  }
+
+  return usage;
 }
 
 function extractResponseTextFromEvent(value: unknown): string {

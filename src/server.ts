@@ -285,6 +285,12 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
 
   let finalMemory = previousMemory;
   let memoryUpdateError: string | null = null;
+  const structuredUsageTotals = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+  };
 
   try {
     const structuredClients = createStructuredClients(
@@ -297,6 +303,18 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
           sessionKey,
           ...selection,
         }),
+      async (usage) => {
+        structuredUsageTotals.inputTokens += usage.inputTokens ?? 0;
+        structuredUsageTotals.cachedInputTokens += usage.cachedInputTokens ?? 0;
+        structuredUsageTotals.outputTokens += usage.outputTokens ?? 0;
+        structuredUsageTotals.totalTokens += usage.totalTokens ??
+          ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0));
+        await logger.log("structured_model_usage", {
+          requestId,
+          sessionKey,
+          ...usage,
+        });
+      },
     );
     const observedWaitStartedAt = Date.now();
     const observedSources = observedRoundSourcesForSession
@@ -357,7 +375,24 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     localMemoryFetchCount: fetches.length,
     localMemoryFetches: fetches,
     returnedMemoryChunkIds: [...new Set(fetches.flatMap((fetch) => fetch.returnedChunkIds))],
+    internalManagerInputTokens: structuredUsageTotals.inputTokens,
+    internalManagerCachedInputTokens: structuredUsageTotals.cachedInputTokens,
+    internalManagerOutputTokens: structuredUsageTotals.outputTokens,
+    internalManagerTotalTokens: structuredUsageTotals.totalTokens,
     ...memoryStateMetrics(finalMemory),
+    ...(usageTotals
+      ? {
+        allInInputTokens: usageTotals.inputTokens + structuredUsageTotals.inputTokens,
+        allInCachedInputTokens: usageTotals.cachedInputTokens + structuredUsageTotals.cachedInputTokens,
+        allInOutputTokens: usageTotals.outputTokens + structuredUsageTotals.outputTokens,
+        allInTotalTokens: usageTotals.totalTokens + structuredUsageTotals.totalTokens,
+      }
+      : {
+        allInInputTokens: structuredUsageTotals.inputTokens,
+        allInCachedInputTokens: structuredUsageTotals.cachedInputTokens,
+        allInOutputTokens: structuredUsageTotals.outputTokens,
+        allInTotalTokens: structuredUsageTotals.totalTokens,
+      }),
     ...(usageTotals ? usageTotals : {}),
   });
   return { memory: finalMemory, memoryUpdateError };

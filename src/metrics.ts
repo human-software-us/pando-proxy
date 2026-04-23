@@ -5,6 +5,7 @@ const APPROX_CHARS_PER_TOKEN = 4;
 
 export type UsageMetrics = {
   inputTokens?: number;
+  cachedInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   raw: Record<string, unknown>;
@@ -13,6 +14,7 @@ export type UsageMetrics = {
 export type UsageTotals = {
   responsesWithUsage: number;
   inputTokens: number;
+  cachedInputTokens: number;
   outputTokens: number;
   totalTokens: number;
 };
@@ -24,14 +26,19 @@ export class TokenUsageTracker {
     const previous = this.#bySession.get(sessionKey) ?? {
       responsesWithUsage: 0,
       inputTokens: 0,
+      cachedInputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
     };
     const next = {
       responsesWithUsage: previous.responsesWithUsage + 1,
       inputTokens: previous.inputTokens + (usage.inputTokens ?? 0),
+      cachedInputTokens: previous.cachedInputTokens + (usage.cachedInputTokens ?? 0),
       outputTokens: previous.outputTokens + (usage.outputTokens ?? 0),
-      totalTokens: previous.totalTokens + (usage.totalTokens ?? 0),
+      totalTokens: previous.totalTokens + (
+        usage.totalTokens ??
+          ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))
+      ),
     };
     this.#bySession.set(sessionKey, next);
     return next;
@@ -102,8 +109,10 @@ export function extractUsageMetrics(value: unknown): UsageMetrics | null {
   }
   return {
     inputTokens: numberField(usage, ["input_tokens", "prompt_tokens"]),
+    cachedInputTokens: cachedInputTokensField(usage),
     outputTokens: numberField(usage, ["output_tokens", "completion_tokens"]),
-    totalTokens: numberField(usage, ["total_tokens"]),
+    totalTokens: numberField(usage, ["total_tokens"]) ??
+      sumDefined(numberField(usage, ["input_tokens", "prompt_tokens"]), numberField(usage, ["output_tokens", "completion_tokens"])),
     raw: usage,
   };
 }
@@ -137,4 +146,33 @@ function numberField(value: Record<string, unknown>, keys: string[]): number | u
     }
   }
   return undefined;
+}
+
+function cachedInputTokensField(value: Record<string, unknown>): number | undefined {
+  const direct = numberField(value, ["cached_input_tokens"]);
+  if (direct !== undefined) {
+    return direct;
+  }
+  const details = objectField(value, ["input_tokens_details", "prompt_tokens_details"]);
+  if (!details) {
+    return undefined;
+  }
+  return numberField(details, ["cached_tokens"]);
+}
+
+function objectField(value: Record<string, unknown>, keys: string[]): Record<string, unknown> | undefined {
+  for (const key of keys) {
+    const field = value[key];
+    if (field && typeof field === "object" && !Array.isArray(field)) {
+      return field as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+function sumDefined(a?: number, b?: number): number | undefined {
+  if (a === undefined && b === undefined) {
+    return undefined;
+  }
+  return (a ?? 0) + (b ?? 0);
 }
