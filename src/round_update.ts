@@ -113,7 +113,11 @@ export async function applyRoundUpdate(
     }));
 
   const objectiveAfter = normalizeObjective(parsed.response.objectiveAfter);
-  const combinedKeptChunks = pruneRedundantUserChunks(dedupeChunks([...keptOldChunks, ...keptNewChunks]));
+  const replacementKeys = detectReplacementFactKeys(newChunks);
+  const combinedKeptChunks = pruneSupersededAssistantChunks(
+    pruneRedundantUserChunks(dedupeChunks([...keptOldChunks, ...keptNewChunks])),
+    replacementKeys,
+  );
   const memory = {
     roundSeq: nextSeq,
     objective: objectiveAfter,
@@ -393,6 +397,35 @@ function pruneRedundantUserChunks(chunks: ChunkRecord[]): ChunkRecord[] {
   });
 }
 
+function pruneSupersededAssistantChunks(chunks: ChunkRecord[], replacementKeys: Set<string>): ChunkRecord[] {
+  if (replacementKeys.size === 0) {
+    return chunks;
+  }
+
+  return chunks.filter((chunk, index) => {
+    if (chunk.sourceKind !== "assistant") {
+      return true;
+    }
+
+    const facts = extractConcreteFactRecords(textFromPayload(chunk.payload));
+    if (facts.length === 0 || !facts.some((fact) => replacementKeys.has(fact.key))) {
+      return true;
+    }
+
+    const otherFactRecords = chunks
+      .filter((_, otherIndex) => otherIndex !== index)
+      .flatMap((otherChunk) => extractConcreteFactRecords(textFromPayload(otherChunk.payload)));
+    const exactFactsElsewhere = new Set(otherFactRecords.map((fact) => fact.fact));
+    const factKeysElsewhere = new Set(otherFactRecords.map((fact) => fact.key));
+
+    const fullyCoveredElsewhere = facts.every((fact) =>
+      replacementKeys.has(fact.key) ? factKeysElsewhere.has(fact.key) : exactFactsElsewhere.has(fact.fact)
+    );
+
+    return !fullyCoveredElsewhere;
+  });
+}
+
 function detectRoundIntentSignals(newChunks: ChunkDraft[]): RoundIntentSignals {
   const texts = newChunks
     .filter((chunk) => chunk.sourceKind === "user")
@@ -404,6 +437,23 @@ function detectRoundIntentSignals(newChunks: ChunkDraft[]): RoundIntentSignals {
     explicitCarryForward: texts.some((text) => EXPLICIT_CARRY_FORWARD_PATTERNS.some((pattern) => pattern.test(text))),
     explicitClose: texts.some((text) => EXPLICIT_CLOSE_PATTERNS.some((pattern) => pattern.test(text))),
   };
+}
+
+function detectReplacementFactKeys(newChunks: ChunkDraft[]): Set<string> {
+  const keys = new Set<string>();
+  for (const chunk of newChunks) {
+    if (chunk.sourceKind !== "user") {
+      continue;
+    }
+    const text = textFromPayload(chunk.payload);
+    if (!looksLikeReplacementInstruction(text)) {
+      continue;
+    }
+    for (const fact of extractConcreteFactRecords(text)) {
+      keys.add(fact.key);
+    }
+  }
+  return keys;
 }
 
 function textFromPayload(payload: unknown): string {
@@ -452,6 +502,11 @@ function looksLikeUserScaffolding(text: string): boolean {
   }
   return /\b(?:use|run|print|reply exactly|remember exactly|remember this|store this|without running any tool|call memory)\b/i
     .test(normalized);
+}
+
+function looksLikeReplacementInstruction(text: string): boolean {
+  return /\b(?:forget|instead|replace|replaced|replacement|update|updated|previous|old|no longer be used|no longer use)\b/i
+    .test(text);
 }
 
 function containsDurableFact(text: string): boolean {
