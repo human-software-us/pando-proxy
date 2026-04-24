@@ -42,6 +42,10 @@ export class CodexEventObserver {
 
   async observeAppServerFrame(direction: AppServerDirection, frame: unknown): Promise<void> {
     const payload = await payloadForFrame(frame);
+    const threadId = extractExecThreadId(payload);
+    if (threadId) {
+      this.#latestExecThreadId = threadId;
+    }
     await this.#logger.log("codex_app_server_frame", {
       source: "codex_app_server_ws",
       direction,

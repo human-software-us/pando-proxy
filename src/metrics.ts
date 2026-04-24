@@ -49,8 +49,16 @@ export function estimateTokensForText(text: string): number {
   return Math.ceil(text.length / APPROX_CHARS_PER_TOKEN);
 }
 
+export function estimateBytesForText(text: string): number {
+  return new TextEncoder().encode(text).byteLength;
+}
+
 export function estimateTokensForValue(value: unknown): number {
   return estimateTokensForText(stableJson(value));
+}
+
+export function estimateBytesForValue(value: unknown): number {
+  return estimateBytesForText(stableJson(value));
 }
 
 export function requestContextMetrics(body: Record<string, unknown>): Record<string, unknown> {
@@ -82,6 +90,7 @@ export function requestContextMetrics(body: Record<string, unknown>): Record<str
   return {
     model: typeof body.model === "string" ? body.model : undefined,
     stream: typeof body.stream === "boolean" ? body.stream : undefined,
+    approxInputBytes: estimateBytesForValue(body),
     approxInputTokens: estimateTokensForValue(body),
     inputItemCount: items.length,
     userMessageCount,

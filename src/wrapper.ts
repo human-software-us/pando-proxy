@@ -8,6 +8,7 @@ import {
 } from "./codex_modes.ts";
 import { CliOptions, expandHome, loadConfig, ProxyConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
+import type { ContextWindowStats } from "./server.ts";
 import { startServer } from "./server.ts";
 import type { RoundSource } from "./tool_results.ts";
 import { startWebSocketRelayOnAvailablePort } from "./websocket_relay.ts";
@@ -36,6 +37,10 @@ export type StartedProxy = {
   config: ProxyConfig;
   server: Deno.HttpServer;
   awaitIdle: (timeoutMs?: number) => Promise<void>;
+  contextStats: {
+    latest: () => ContextWindowStats | null;
+    forSession: (sessionKey: string) => ContextWindowStats | null;
+  };
 };
 
 type StartedCodexAppServer = {
@@ -225,7 +230,12 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     } else {
       exitCode = await runCodexPassthrough(effectiveCodexArgs, started.config, logger);
     }
-    await saveLatestWrapperThreadId(baseConfig.stateDir, observer.latestExecThreadId());
+    const threadId = observer.latestExecThreadId();
+    await saveLatestWrapperThreadId(baseConfig.stateDir, threadId);
+    printContextWindowSummary(
+      threadId,
+      threadId ? started.contextStats.forSession(threadId) ?? started.contextStats.latest() : started.contextStats.latest(),
+    );
     return exitCode;
   } catch (error) {
     await logger.log("wrapper_error", { message: messageFor(error) });
@@ -955,7 +965,12 @@ export function startProxyOnAvailablePort(
     const config = { ...baseConfig, port };
     try {
       const started = startServer(config, fallbackSessionKeyForRequest, observedRoundSourcesForSession);
-      return { config, server: started.server, awaitIdle: started.awaitIdle };
+      return {
+        config,
+        server: started.server,
+        awaitIdle: started.awaitIdle,
+        contextStats: started.contextStats,
+      };
     } catch (error) {
       if (isAddressInUse(error)) {
         continue;
@@ -964,6 +979,20 @@ export function startProxyOnAvailablePort(
     }
   }
   throw new Error(`No available port found at or above ${portStart}`);
+}
+
+function printContextWindowSummary(threadId: string | null, stats: ContextWindowStats | null): void {
+  if (!stats) {
+    return;
+  }
+  const sessionLabel = threadId ? ` (${threadId})` : "";
+  console.error(
+    `Pando Proxy context bytes${sessionLabel}: min ${formatCount(stats.minBytes)}, avg ${formatCount(stats.avgBytes)}, max ${formatCount(stats.maxBytes)}`,
+  );
+}
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 export function findAvailablePort(host: string, portStart: number): number {

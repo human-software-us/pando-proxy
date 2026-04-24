@@ -3,7 +3,13 @@ import { authHeaderFor, parseJsonBody, requestModel, sessionKeyFor } from "./cod
 import { createLogger } from "./logger.ts";
 import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
 import type { MemoryState } from "./memory_state.ts";
-import { extractUsageMetrics, memoryStateMetrics, requestContextMetrics, TokenUsageTracker } from "./metrics.ts";
+import {
+  estimateBytesForValue,
+  extractUsageMetrics,
+  memoryStateMetrics,
+  requestContextMetrics,
+  TokenUsageTracker,
+} from "./metrics.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
 import { createStructuredClients } from "./structured_model.ts";
 import { SessionStore } from "./store.ts";
@@ -16,7 +22,60 @@ const FINALIZATION_DRAIN_TIMEOUT_MS = 10_000;
 export type StartedProxyServer = {
   server: Deno.HttpServer;
   awaitIdle: (timeoutMs?: number) => Promise<void>;
+  contextStats: {
+    latest: () => ContextWindowStats | null;
+    forSession: (sessionKey: string) => ContextWindowStats | null;
+  };
 };
+
+export type ContextWindowStats = {
+  samples: number;
+  minBytes: number;
+  avgBytes: number;
+  maxBytes: number;
+};
+
+type MutableContextWindowStats = ContextWindowStats & {
+  totalBytes: number;
+};
+
+class ContextWindowStatsTracker {
+  #latestSessionKey: string | null = null;
+  #bySession = new Map<string, MutableContextWindowStats>();
+
+  record(sessionKey: string, byteCount: number): void {
+    if (!Number.isFinite(byteCount) || byteCount < 0) {
+      return;
+    }
+    const previous = this.#bySession.get(sessionKey);
+    const next: MutableContextWindowStats = previous
+      ? {
+        samples: previous.samples + 1,
+        minBytes: Math.min(previous.minBytes, byteCount),
+        avgBytes: 0,
+        maxBytes: Math.max(previous.maxBytes, byteCount),
+        totalBytes: previous.totalBytes + byteCount,
+      }
+      : {
+        samples: 1,
+        minBytes: byteCount,
+        avgBytes: 0,
+        maxBytes: byteCount,
+        totalBytes: byteCount,
+      };
+    next.avgBytes = Math.round(next.totalBytes / next.samples);
+    this.#bySession.set(sessionKey, next);
+    this.#latestSessionKey = sessionKey;
+  }
+
+  latest(): ContextWindowStats | null {
+    return this.#latestSessionKey ? this.forSession(this.#latestSessionKey) : null;
+  }
+
+  forSession(sessionKey: string): ContextWindowStats | null {
+    return snapshotContextWindowStats(this.#bySession.get(sessionKey));
+  }
+}
 
 export function createHandler(
   config: ProxyConfig,
@@ -26,6 +85,7 @@ export function createHandler(
 ) {
   const logger = createLogger(config.logFile);
   const usageTracker = new TokenUsageTracker();
+  const contextWindowStats = new ContextWindowStatsTracker();
   const fallbackSessionKey = `wrapper_${crypto.randomUUID()}`;
   const pendingFinalizations = new Map<string, Promise<void>>();
 
@@ -99,6 +159,7 @@ export function createHandler(
     });
 
     if (!config.memoryEnabled) {
+      contextWindowStats.record(sessionKey, estimateBytesForValue(body));
       try {
         return await forwardResponsesRequest(config, { authHeader, body, logger });
       } catch (error) {
@@ -122,6 +183,7 @@ export function createHandler(
           omittedChunkCount: rewrite.diff.omittedChunkCount,
           ...requestContextMetrics(rewrite.body),
         });
+        contextWindowStats.record(sessionKey, estimateBytesForValue(rewrite.body));
 
         const loop = await runResponsesLoop(
           config,
@@ -216,7 +278,14 @@ export function createHandler(
     }
   };
 
-  return { handler, awaitIdle };
+  return {
+    handler,
+    awaitIdle,
+    contextStats: {
+      latest: () => contextWindowStats.latest(),
+      forSession: (sessionKey: string) => contextWindowStats.forSession(sessionKey),
+    },
+  };
 }
 
 export function startServer(
@@ -224,7 +293,7 @@ export function startServer(
   fallbackSessionKeyForRequest?: () => string | null | undefined,
   observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>,
 ): StartedProxyServer {
-  const { handler, awaitIdle } = createHandler(
+  const { handler, awaitIdle, contextStats } = createHandler(
     config,
     undefined,
     fallbackSessionKeyForRequest,
@@ -235,7 +304,19 @@ export function startServer(
     port: config.port,
     onListen: () => {},
   }, handler);
-  return { server, awaitIdle };
+  return { server, awaitIdle, contextStats };
+}
+
+function snapshotContextWindowStats(value: MutableContextWindowStats | undefined): ContextWindowStats | null {
+  if (!value || value.samples === 0) {
+    return null;
+  }
+  return {
+    samples: value.samples,
+    minBytes: value.minBytes,
+    avgBytes: value.avgBytes,
+    maxBytes: value.maxBytes,
+  };
 }
 
 export async function serve(config: ProxyConfig): Promise<void> {
