@@ -206,11 +206,22 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   const logFile = await resolveWrapperLogFile(parsed.options, baseConfig.stateDir);
   const logger = createLogger(logFile);
   const observer = new CodexEventObserver(logger);
+  let interactiveCodexHome: string | null = null;
+  let interactiveSessionKeyHint: string | null = null;
+  if (mode === "interactive-direct") {
+    interactiveCodexHome = await prepareInteractiveCodexHome(baseConfig.stateDir, logger);
+    interactiveSessionKeyHint = await resolveInteractiveSessionKeyHint(
+      effectiveCodexArgs,
+      baseConfig.stateDir,
+      interactiveCodexHome,
+      logger,
+    );
+  }
   const portStart = parsed.options.portStart ?? DEFAULT_WRAPPER_PORT_START;
   const started = startProxyOnAvailablePort(
     { ...baseConfig, logFile },
     portStart,
-    () => observer.latestExecThreadId(),
+    () => observer.latestExecThreadId() ?? interactiveSessionKeyHint,
     mode !== "passthrough"
       ? (sessionKey, timeoutMs) => observer.waitForExecTurn(sessionKey, timeoutMs)
       : undefined,
@@ -241,6 +252,7 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
         started.config,
         logger,
         observer,
+        interactiveCodexHome,
       );
     } else {
       exitCode = await runCodexPassthrough(effectiveCodexArgs, started.config, logger);
@@ -416,6 +428,146 @@ async function prepareInteractiveCodexHome(
     sharedEntries: [...SHARED_CODEX_HOME_ENTRIES],
   });
   return privateHome;
+}
+
+async function resolveInteractiveSessionKeyHint(
+  codexArgs: string[],
+  stateDir: string,
+  codexHome: string,
+  logger: ReturnType<typeof createLogger>,
+): Promise<string | null> {
+  const explicitSessionId = explicitInteractiveSessionId(codexArgs);
+  if (explicitSessionId) {
+    await logger.log("interactive_session_key_hint_resolved", {
+      source: "explicit_arg",
+      sessionId: explicitSessionId,
+    });
+    return explicitSessionId;
+  }
+
+  if (!requestsPriorInteractiveSession(codexArgs)) {
+    return null;
+  }
+
+  const savedThreadId = await loadLatestWrapperThreadId(stateDir);
+  if (savedThreadId) {
+    await logger.log("interactive_session_key_hint_resolved", {
+      source: "wrapper_last_thread",
+      sessionId: savedThreadId,
+    });
+    return savedThreadId;
+  }
+
+  const rolloutSessionId = await latestInteractiveRolloutSessionId(`${codexHome}/sessions`);
+  if (rolloutSessionId) {
+    await logger.log("interactive_session_key_hint_resolved", {
+      source: "latest_rollout_file",
+      sessionId: rolloutSessionId,
+    });
+    return rolloutSessionId;
+  }
+
+  await logger.log("interactive_session_key_hint_unresolved", {
+    codexArgs,
+  });
+  return null;
+}
+
+function explicitInteractiveSessionId(codexArgs: string[]): string | null {
+  for (let index = 0; index < codexArgs.length; index += 1) {
+    const arg = codexArgs[index];
+    if (arg !== "resume" && arg !== "fork") {
+      continue;
+    }
+    const candidate = codexArgs[index + 1];
+    if (candidate && !candidate.startsWith("-")) {
+      return candidate;
+    }
+    return null;
+  }
+  return null;
+}
+
+function requestsPriorInteractiveSession(codexArgs: string[]): boolean {
+  return codexArgs.includes("resume") || codexArgs.includes("fork");
+}
+
+async function latestInteractiveRolloutSessionId(sessionsDir: string): Promise<string | null> {
+  const files = await listInteractiveRolloutFiles(sessionsDir);
+  if (files.length === 0) {
+    return null;
+  }
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  for (const file of files) {
+    try {
+      const firstLine = (await Deno.readTextFile(file.path)).split("\n", 1)[0]?.trim() ?? "";
+      if (!firstLine) {
+        continue;
+      }
+      const parsed = JSON.parse(firstLine);
+      if (!parsed || typeof parsed !== "object") {
+        continue;
+      }
+      const record = parsed as Record<string, unknown>;
+      const payload = record.payload;
+      if (record.type !== "session_meta" || !payload || typeof payload !== "object") {
+        continue;
+      }
+      const sessionId = (payload as Record<string, unknown>).id;
+      if (typeof sessionId === "string" && sessionId.length > 0) {
+        return sessionId;
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return null;
+}
+
+async function listInteractiveRolloutFiles(
+  path: string,
+): Promise<Array<{ path: string; mtimeMs: number }>> {
+  const out: Array<{ path: string; mtimeMs: number }> = [];
+  await walkInteractiveRolloutFiles(path, out);
+  return out;
+}
+
+async function walkInteractiveRolloutFiles(
+  path: string,
+  out: Array<{ path: string; mtimeMs: number }>,
+): Promise<void> {
+  let entries: Deno.DirEntry[] = [];
+  try {
+    for await (const entry of Deno.readDir(path)) {
+      entries.push(entry);
+    }
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return;
+    }
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const childPath = `${path}/${entry.name}`;
+    if (entry.isDirectory) {
+      await walkInteractiveRolloutFiles(childPath, out);
+      continue;
+    }
+    if (!entry.isFile || !entry.name.endsWith(".jsonl")) {
+      continue;
+    }
+    const stat = await Deno.stat(childPath);
+    out.push({
+      path: childPath,
+      mtimeMs: stat.mtime?.getTime() ?? 0,
+    });
+  }
 }
 
 function sourceCodexHomePath(): string {
@@ -873,9 +1025,10 @@ async function runCodexInteractiveDirect(
   config: ProxyConfig,
   logger: ReturnType<typeof createLogger>,
   observer: CodexEventObserver,
+  preparedCodexHome?: string | null,
 ): Promise<number> {
   const args = buildCodexArgs(codexArgs, config);
-  const codexHome = await prepareInteractiveCodexHome(config.stateDir, logger);
+  const codexHome = preparedCodexHome ?? await prepareInteractiveCodexHome(config.stateDir, logger);
   const tailer = await startInteractiveRolloutTailer({
     cwd: Deno.cwd(),
     observer,
