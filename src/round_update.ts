@@ -370,31 +370,42 @@ function validateDroppedKeptFactChunk(
 }
 
 function pruneRedundantUserChunks(chunks: ChunkRecord[]): ChunkRecord[] {
-  return chunks.filter((chunk, index) => {
+  const factsFromNonUserChunks = new Set(
+    chunks
+      .filter((chunk) => chunk.sourceKind !== "user")
+      .flatMap((chunk) => extractConcreteFactRecords(textFromPayload(chunk.payload)))
+      .map((fact) => fact.fact),
+  );
+  const keptFacts = new Set(factsFromNonUserChunks);
+  const kept: ChunkRecord[] = [];
+
+  for (const chunk of chunks) {
     if (chunk.sourceKind !== "user") {
-      return true;
+      kept.push(chunk);
+      continue;
     }
+
     const text = textFromPayload(chunk.payload).trim();
     if (!text) {
-      return false;
+      continue;
     }
     const facts = extractConcreteFactRecords(text);
-    const otherFacts = new Set(
-      chunks
-        .filter((_, otherIndex) => otherIndex !== index)
-        .flatMap((otherChunk) => extractConcreteFactRecords(textFromPayload(otherChunk.payload)))
-        .map((fact) => fact.fact),
-    );
-    const factsPreservedElsewhere = facts.every((fact) => otherFacts.has(fact.fact));
+    const factsPreservedElsewhere = facts.every((fact) => keptFacts.has(fact.fact));
 
     if (isOperationalUserQuery(text) && (facts.length === 0 || factsPreservedElsewhere)) {
-      return false;
+      continue;
     }
     if (looksLikeUserScaffolding(text) && facts.length > 0 && factsPreservedElsewhere) {
-      return false;
+      continue;
     }
-    return true;
-  });
+
+    kept.push(chunk);
+    for (const fact of facts) {
+      keptFacts.add(fact.fact);
+    }
+  }
+
+  return kept;
 }
 
 function pruneSupersededAssistantChunks(chunks: ChunkRecord[], replacementKeys: Set<string>): ChunkRecord[] {
