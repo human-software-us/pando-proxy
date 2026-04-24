@@ -119,8 +119,8 @@ export async function describeInputItems(input: unknown): Promise<InputItemDescr
   return await Promise.all(items.map((item, index) => describeInputItem(item, index)));
 }
 
-export async function inputItemId(item: unknown, index: number): Promise<string> {
-  return await stableSourceId(item, `input_${index}`);
+export async function inputItemId(item: unknown, _index: number): Promise<string> {
+  return await stableSourceId(item, "input");
 }
 
 export function itemTypeCounts(items: InputItemDescriptor[]): Record<string, number> {

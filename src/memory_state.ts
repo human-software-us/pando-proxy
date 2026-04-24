@@ -1,3 +1,5 @@
+import { stableJson } from "./json.ts";
+
 export type ChunkSelector =
   | { kind: "whole" }
   | { kind: "line_range"; startLine: number; endLine: number }
@@ -105,7 +107,11 @@ export function dedupeChunks(chunks: ChunkRecord[]): ChunkRecord[] {
   for (const chunk of chunks) {
     map.set(chunk.id, chunk);
   }
-  return chronologicalChunks([...map.values()]);
+  const semanticMap = new Map<string, ChunkRecord>();
+  for (const chunk of chronologicalChunks([...map.values()])) {
+    semanticMap.set(chunkSemanticKey(chunk), chunk);
+  }
+  return chronologicalChunks([...semanticMap.values()]);
 }
 
 export function unique<T>(values: T[]): T[] {
@@ -122,4 +128,13 @@ export function normalizeObjective(value: string | null | undefined): string | n
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function chunkSemanticKey(chunk: ChunkRecord): string {
+  return stableJson([
+    chunk.sourceKind,
+    chunk.toolName ?? null,
+    chunk.selector,
+    chunk.payload,
+  ]);
 }
