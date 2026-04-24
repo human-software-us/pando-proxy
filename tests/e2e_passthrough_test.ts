@@ -53,6 +53,7 @@ Deno.test("E2E pass-through mode forwards Codex-like request auth and SSE unchan
     piecePreviewCharLimit: 80,
     maxIndexedPiecesPerTask: 8,
     maxLocalContextToolCalls: 3,
+    codexAutoCompactTokenLimit: 280_000,
   };
   const proxy = Deno.serve({
     hostname: "127.0.0.1",

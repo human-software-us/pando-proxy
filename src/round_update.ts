@@ -2,8 +2,8 @@ import {
   type ChunkDraft,
   type ChunkRecord,
   dedupeChunks,
-  normalizeObjective,
   type MemoryState,
+  normalizeObjective,
   unique,
 } from "./memory_state.ts";
 
@@ -40,7 +40,19 @@ export type AppliedRoundUpdate = {
   droppedOldChunkIds: string[];
   keptNewChunkIds: string[];
   droppedNewChunkIds: string[];
+  forcedKeepOldChunkIds: string[];
+  forcedKeepNewChunkIds: string[];
+  forcedKeepReasons: Array<{ chunkId: string; source: "old" | "new"; reason: ConstraintPinReason }>;
 };
+
+export type ConstraintPinReason =
+  | "constraint_negative_change"
+  | "constraint_without_changing"
+  | "constraint_keep_unchanged"
+  | "constraint_leave_unchanged"
+  | "constraint_leave_alone"
+  | "constraint_avoid_changing"
+  | "constraint_preserve_interface";
 
 export async function applyRoundUpdate(
   state: MemoryState,
@@ -59,6 +71,9 @@ export async function applyRoundUpdate(
       droppedOldChunkIds: [],
       keptNewChunkIds: [],
       droppedNewChunkIds: [],
+      forcedKeepOldChunkIds: [],
+      forcedKeepNewChunkIds: [],
+      forcedKeepReasons: [],
     };
   }
 
@@ -97,13 +112,17 @@ export async function applyRoundUpdate(
     if (fallback) {
       parsed = { ok: true, response: fallback };
     } else {
-      throw new Error(`working_memory_update validation failed: ${(parsed?.errors ?? []).join("; ")}`);
+      throw new Error(
+        `working_memory_update validation failed: ${(parsed?.errors ?? []).join("; ")}`,
+      );
     }
   }
 
+  const objectiveAfter = normalizeObjective(parsed.response.objectiveAfter);
+  const forcedKeeps = collectForcedPinnedConstraintKeeps(state.chunks, newChunks, objectiveAfter);
   const nextSeq = state.roundSeq + 1;
-  const keptOldSet = new Set(parsed.response.keepOldChunkIds);
-  const keptNewSet = new Set(parsed.response.keepNewChunkIds);
+  const keptOldSet = new Set([...parsed.response.keepOldChunkIds, ...forcedKeeps.keepOldChunkIds]);
+  const keptNewSet = new Set([...parsed.response.keepNewChunkIds, ...forcedKeeps.keepNewChunkIds]);
   const keptOldChunks = state.chunks.filter((chunk) => keptOldSet.has(chunk.id));
   const keptNewChunks: ChunkRecord[] = newChunks
     .filter((chunk) => keptNewSet.has(chunk.id))
@@ -112,10 +131,11 @@ export async function applyRoundUpdate(
       createdSeq: nextSeq,
     }));
 
-  const objectiveAfter = normalizeObjective(parsed.response.objectiveAfter);
   const replacementKeys = detectReplacementFactKeys(newChunks);
+  const dedupedCombinedChunks = dedupeChunks([...keptOldChunks, ...keptNewChunks]);
+  const pinnedCombinedChunkIds = collectPinnedConstraintChunkIds(dedupedCombinedChunks);
   const combinedKeptChunks = pruneSupersededAssistantChunks(
-    pruneRedundantUserChunks(dedupeChunks([...keptOldChunks, ...keptNewChunks])),
+    pruneRedundantUserChunks(dedupedCombinedChunks, pinnedCombinedChunkIds),
     replacementKeys,
   );
   const memory = {
@@ -131,13 +151,17 @@ export async function applyRoundUpdate(
   return {
     memory,
     response: {
-      ...parsed.response,
       objectiveAfter,
+      keepOldChunkIds: [...keptOldSet],
+      keepNewChunkIds: [...keptNewSet],
     },
     keptOldChunkIds: [...keptOldSet],
     droppedOldChunkIds: state.chunks.map((chunk) => chunk.id).filter((id) => !keptOldSet.has(id)),
     keptNewChunkIds: [...keptNewSet],
     droppedNewChunkIds: newChunks.map((chunk) => chunk.id).filter((id) => !keptNewSet.has(id)),
+    forcedKeepOldChunkIds: forcedKeeps.keepOldChunkIds,
+    forcedKeepNewChunkIds: forcedKeeps.keepNewChunkIds,
+    forcedKeepReasons: forcedKeeps.reasons,
   };
 }
 
@@ -197,12 +221,28 @@ export function validateRoundUpdate(
   if (!objectiveAfter && keptCount > 0) {
     errors.push("Cleared objective cannot keep chunks");
   }
+  if (objectiveAfter) {
+    validatePinnedConstraintRetention(
+      "keepOldChunkIds",
+      previous.chunks,
+      response.keepOldChunkIds,
+      errors,
+    );
+    validatePinnedConstraintRetention(
+      "keepNewChunkIds",
+      newChunks,
+      response.keepNewChunkIds,
+      errors,
+    );
+  }
 
   const keptChunks = [
     ...previous.chunks.filter((chunk) => response.keepOldChunkIds.includes(chunk.id)),
     ...newChunks.filter((chunk) => response.keepNewChunkIds.includes(chunk.id)),
   ];
-  const keptFactRecords = keptChunks.flatMap((chunk) => extractConcreteFactRecords(textFromPayload(chunk.payload)));
+  const keptFactRecords = keptChunks.flatMap((chunk) =>
+    extractConcreteFactRecords(textFromPayload(chunk.payload))
+  );
   const keptFacts = new Set(keptFactRecords.map((fact) => fact.fact));
   const keptFactKeys = new Set(keptFactRecords.map((fact) => fact.key));
   const keptNonAssistantFactRecords = keptChunks
@@ -263,8 +303,12 @@ function coerceWorkingMemoryUpdate(value: unknown): WorkingMemoryUpdateResponse 
     objectiveAfter: typeof record.objectiveAfter === "string" || record.objectiveAfter === null
       ? normalizeObjective(record.objectiveAfter as string | null)
       : null,
-    keepOldChunkIds: Array.isArray(record.keepOldChunkIds) ? record.keepOldChunkIds.map(String) : [],
-    keepNewChunkIds: Array.isArray(record.keepNewChunkIds) ? record.keepNewChunkIds.map(String) : [],
+    keepOldChunkIds: Array.isArray(record.keepOldChunkIds)
+      ? record.keepOldChunkIds.map(String)
+      : [],
+    keepNewChunkIds: Array.isArray(record.keepNewChunkIds)
+      ? record.keepNewChunkIds.map(String)
+      : [],
   };
 }
 
@@ -338,7 +382,10 @@ function validateRetainedChunk(
   if (!text) {
     return;
   }
-  if (isOperationalUserQuery(text) && !containsDurableFact(text)) {
+  if (
+    isOperationalUserQuery(text) && !containsDurableFact(text) &&
+    !pinnedConstraintReasonForText(text)
+  ) {
     errors.push("Operational user query chunks should not be retained as memory");
   }
 }
@@ -378,18 +425,27 @@ function validateDroppedKeptFactChunk(
     return;
   }
   if (facts.some((fact) => !keptFacts.has(fact.fact) && !keptFactKeys.has(fact.key))) {
-    errors.push("Dropping a retained fact chunk would lose exact facts without preservation or replacement");
+    errors.push(
+      "Dropping a retained fact chunk would lose exact facts without preservation or replacement",
+    );
     return;
   }
   if (
     chunk.sourceKind !== "assistant" &&
-    facts.some((fact) => !keptNonAssistantFacts.has(fact.fact) && !keptNonAssistantFactKeys.has(fact.key))
+    facts.some((fact) =>
+      !keptNonAssistantFacts.has(fact.fact) && !keptNonAssistantFactKeys.has(fact.key)
+    )
   ) {
-    errors.push("Dropping original user/tool fact chunks cannot rely only on assistant restatements");
+    errors.push(
+      "Dropping original user/tool fact chunks cannot rely only on assistant restatements",
+    );
   }
 }
 
-function pruneRedundantUserChunks(chunks: ChunkRecord[]): ChunkRecord[] {
+function pruneRedundantUserChunks(
+  chunks: ChunkRecord[],
+  pinnedChunkIds: Set<string>,
+): ChunkRecord[] {
   const factsFromAuthoritativeChunks = new Set(
     chunks
       .filter((chunk) => chunk.sourceKind === "tool")
@@ -407,6 +463,13 @@ function pruneRedundantUserChunks(chunks: ChunkRecord[]): ChunkRecord[] {
 
     const text = textFromPayload(chunk.payload).trim();
     if (!text) {
+      continue;
+    }
+    if (pinnedChunkIds.has(chunk.id)) {
+      kept.push(chunk);
+      for (const fact of extractConcreteFactRecords(text)) {
+        keptFacts.add(fact.fact);
+      }
       continue;
     }
     const facts = extractConcreteFactRecords(text);
@@ -428,7 +491,10 @@ function pruneRedundantUserChunks(chunks: ChunkRecord[]): ChunkRecord[] {
   return kept;
 }
 
-function pruneSupersededAssistantChunks(chunks: ChunkRecord[], replacementKeys: Set<string>): ChunkRecord[] {
+function pruneSupersededAssistantChunks(
+  chunks: ChunkRecord[],
+  replacementKeys: Set<string>,
+): ChunkRecord[] {
   if (replacementKeys.size === 0) {
     return chunks;
   }
@@ -450,7 +516,9 @@ function pruneSupersededAssistantChunks(chunks: ChunkRecord[], replacementKeys: 
     const factKeysElsewhere = new Set(otherFactRecords.map((fact) => fact.key));
 
     const fullyCoveredElsewhere = facts.every((fact) =>
-      replacementKeys.has(fact.key) ? factKeysElsewhere.has(fact.key) : exactFactsElsewhere.has(fact.fact)
+      replacementKeys.has(fact.key)
+        ? factKeysElsewhere.has(fact.key)
+        : exactFactsElsewhere.has(fact.fact)
     );
 
     return !fullyCoveredElsewhere;
@@ -465,8 +533,12 @@ function detectRoundIntentSignals(newChunks: ChunkDraft[]): RoundIntentSignals {
     .map((text) => text.toLowerCase());
 
   return {
-    explicitCarryForward: texts.some((text) => EXPLICIT_CARRY_FORWARD_PATTERNS.some((pattern) => pattern.test(text))),
-    explicitClose: texts.some((text) => EXPLICIT_CLOSE_PATTERNS.some((pattern) => pattern.test(text))),
+    explicitCarryForward: texts.some((text) =>
+      EXPLICIT_CARRY_FORWARD_PATTERNS.some((pattern) => pattern.test(text))
+    ),
+    explicitClose: texts.some((text) =>
+      EXPLICIT_CLOSE_PATTERNS.some((pattern) => pattern.test(text))
+    ),
   };
 }
 
@@ -485,6 +557,27 @@ function detectReplacementFactKeys(newChunks: ChunkDraft[]): Set<string> {
     }
   }
   return keys;
+}
+
+export function pinnedConstraintReasonForChunk(
+  chunk: { sourceKind: "user" | "assistant" | "tool"; payload: unknown },
+): ConstraintPinReason | null {
+  if (chunk.sourceKind !== "user") {
+    return null;
+  }
+  return pinnedConstraintReasonForText(textFromPayload(chunk.payload));
+}
+
+export function collectPinnedConstraintChunkIds(
+  chunks: Array<{ id: string; sourceKind: "user" | "assistant" | "tool"; payload: unknown }>,
+): Set<string> {
+  const chunkIds = new Set<string>();
+  for (const chunk of chunks) {
+    if (pinnedConstraintReasonForChunk(chunk)) {
+      chunkIds.add(chunk.id);
+    }
+  }
+  return chunkIds;
 }
 
 function textFromPayload(payload: unknown): string {
@@ -540,11 +633,28 @@ function looksLikeReplacementInstruction(text: string): boolean {
     .test(text);
 }
 
+function pinnedConstraintReasonForText(text: string): ConstraintPinReason | null {
+  const normalized = text.trim();
+  if (!normalized) {
+    return null;
+  }
+  for (const { reason, pattern } of CONSTRAINT_PIN_PATTERNS) {
+    if (pattern.test(normalized)) {
+      return reason;
+    }
+  }
+  return null;
+}
+
 function containsDurableFact(text: string): boolean {
   if (extractConcreteFacts(text).length > 0) {
     return true;
   }
-  if (/\b(?:remember|keep|preserve)\b.*\b(?:for later|for future|for recall|exactly this)\b/i.test(text)) {
+  if (
+    /\b(?:remember|keep|preserve)\b.*\b(?:for later|for future|for recall|exactly this)\b/i.test(
+      text,
+    )
+  ) {
     return true;
   }
   return false;
@@ -595,3 +705,96 @@ const EXPLICIT_CLOSE_PATTERNS = [
   /\bclose (?:this )?session\b/i,
   /\btask is over\b/i,
 ];
+
+const CONSTRAINT_PIN_PATTERNS: Array<{ reason: ConstraintPinReason; pattern: RegExp }> = [
+  {
+    reason: "constraint_negative_change",
+    pattern:
+      /\b(?:do not|don't|must not)\b.*\b(?:touch|change|modify|edit|refactor|rename|remove|break)\b/i,
+  },
+  {
+    reason: "constraint_without_changing",
+    pattern: /\bwithout changing\b/i,
+  },
+  {
+    reason: "constraint_keep_unchanged",
+    pattern: /\bkeep\b.*\bunchanged\b/i,
+  },
+  {
+    reason: "constraint_leave_unchanged",
+    pattern: /\bleave\b.*\bunchanged\b/i,
+  },
+  {
+    reason: "constraint_leave_alone",
+    pattern: /\bleave\b.*\balone\b/i,
+  },
+  {
+    reason: "constraint_avoid_changing",
+    pattern: /\bavoid changing\b/i,
+  },
+  {
+    reason: "constraint_preserve_interface",
+    pattern:
+      /\bpreserve\b.*\b(?:public api|api|cli behavior|behavior|interface|migrations?|schema|contract)\b/i,
+  },
+];
+
+function validatePinnedConstraintRetention(
+  field: "keepOldChunkIds" | "keepNewChunkIds",
+  chunks: Array<{ id: string; sourceKind: "user" | "assistant" | "tool"; payload: unknown }>,
+  keptChunkIds: string[],
+  errors: string[],
+): void {
+  const keptChunkIdSet = new Set(keptChunkIds);
+  for (const chunk of chunks) {
+    const reason = pinnedConstraintReasonForChunk(chunk);
+    if (reason && !keptChunkIdSet.has(chunk.id)) {
+      errors.push(
+        `${field} must retain pinned constraint chunk ${chunk.id} (${reason}) while objective remains live`,
+      );
+    }
+  }
+}
+
+function collectForcedPinnedConstraintKeeps(
+  previous: MemoryState["chunks"],
+  newChunks: ChunkDraft[],
+  objectiveAfter: string | null,
+): {
+  keepOldChunkIds: string[];
+  keepNewChunkIds: string[];
+  reasons: Array<{ chunkId: string; source: "old" | "new"; reason: ConstraintPinReason }>;
+} {
+  if (!objectiveAfter) {
+    return { keepOldChunkIds: [], keepNewChunkIds: [], reasons: [] };
+  }
+
+  const keepOldChunkIds: string[] = [];
+  const keepNewChunkIds: string[] = [];
+  const reasons: Array<{ chunkId: string; source: "old" | "new"; reason: ConstraintPinReason }> =
+    [];
+
+  for (const chunk of previous) {
+    const reason = pinnedConstraintReasonForChunk(chunk);
+    if (!reason) {
+      continue;
+    }
+    keepOldChunkIds.push(chunk.id);
+    reasons.push({ chunkId: chunk.id, source: "old", reason });
+  }
+
+  for (const chunk of newChunks) {
+    const reason = pinnedConstraintReasonForChunk(chunk);
+    if (!reason) {
+      continue;
+    }
+    keepNewChunkIds.push(chunk.id);
+    reasons.push({ chunkId: chunk.id, source: "new", reason });
+  }
+
+  return {
+    keepOldChunkIds: unique(keepOldChunkIds),
+    keepNewChunkIds: unique(keepNewChunkIds),
+    reasons,
+  };
+}

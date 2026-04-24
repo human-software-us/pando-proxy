@@ -2,3 +2,7 @@ dist/
 pando-proxy-*.tgz
 .env
 tmp/
+benchmarks/transcripts/raw/
+benchmarks/transcripts/converted/
+benchmarks/transcripts/devstral_verified_all/
+benchmarks/transcripts/manifest.json

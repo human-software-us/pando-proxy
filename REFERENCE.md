@@ -122,11 +122,15 @@ Tool schema:
 - `chunkIds`: fetch exact retained chunks by id
 - `offset` + `limit`: page through hidden retained chunks in deterministic chronological order
 
-The response contains exact stored payloads only. It skips chunks already included in the rewritten prompt and chunks already returned by earlier `memory(...)` calls in the same round.
+The response contains exact stored payloads only. It skips chunks already included in the rewritten
+prompt and chunks already returned by earlier `memory(...)` calls in the same round.
 
 ## Wrapper Notes
 
-**Important:** if `pando-proxy` or an aliased `codex` appears frozen before the proxy receives any request, Codex may be waiting on its own update chooser. Run `npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct` to launch raw Codex directly and make the choice there.
+**Important:** if `pando-proxy` or an aliased `codex` appears frozen before the proxy receives any
+request, Codex may be waiting on its own update chooser. Run
+`npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct` to launch raw
+Codex directly and make the choice there.
 
 Alias removal:
 
@@ -156,4 +160,9 @@ Important log events:
 - `memory_state_saved`
 - `round_complete`
 
-`round_complete` is the round-level aggregate record. It should include the current objective, chunk ids/count, total stored chunk bytes, processed source count, local fetch count, returned fetch ids, and any memory-update error.
+`memory_round_decision` includes the normal kept/dropped ids plus any deterministic override fields
+such as `forcedKeepOldChunkIds`, `forcedKeepNewChunkIds`, and `forcedKeepReasons`.
+
+`round_complete` is the round-level aggregate record. It should include the current objective, chunk
+ids/count, total stored chunk bytes, processed source count, local fetch count, returned fetch ids,
+and any memory-update error.

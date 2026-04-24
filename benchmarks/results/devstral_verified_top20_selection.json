@@ -1,0 +1,149 @@
+{
+  "dataset": "pankajmathur/devstral-24b-swebench-verified-traj",
+  "dataset_url": "https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj",
+  "selection_method": "top 10 by rounds, then top 10 additional by raw transcript bytes",
+  "samples": 20,
+  "total_rounds": 3807,
+  "items": [
+    {
+      "id": "django__django-15525__django__django-15525",
+      "rounds": 251,
+      "raw_bytes": 1679798,
+      "converted_bytes": 805916,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "matplotlib__matplotlib-24177__matplotlib__matplotlib-24177",
+      "rounds": 251,
+      "raw_bytes": 1342952,
+      "converted_bytes": 622960,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "django__django-15022__django__django-15022",
+      "rounds": 251,
+      "raw_bytes": 1255913,
+      "converted_bytes": 592685,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "pydata__xarray-4356__pydata__xarray-4356",
+      "rounds": 251,
+      "raw_bytes": 930792,
+      "converted_bytes": 416100,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "astropy__astropy-13453__astropy__astropy-13453",
+      "rounds": 251,
+      "raw_bytes": 914865,
+      "converted_bytes": 422857,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "django__django-15731__django__django-15731",
+      "rounds": 251,
+      "raw_bytes": 826188,
+      "converted_bytes": 364132,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "scikit-learn__scikit-learn-14053__scikit-learn__scikit-learn-14053",
+      "rounds": 251,
+      "raw_bytes": 770920,
+      "converted_bytes": 334193,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "pydata__xarray-3677__pydata__xarray-3677",
+      "rounds": 251,
+      "raw_bytes": 758382,
+      "converted_bytes": 326932,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "matplotlib__matplotlib-25775__matplotlib__matplotlib-25775",
+      "rounds": 251,
+      "raw_bytes": 752052,
+      "converted_bytes": 347107,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "django__django-16100__django__django-16100",
+      "rounds": 251,
+      "raw_bytes": 722719,
+      "converted_bytes": 300325,
+      "selection_reason": "top_rounds"
+    },
+    {
+      "id": "sphinx-doc__sphinx-10673__sphinx-doc__sphinx-10673",
+      "rounds": 85,
+      "raw_bytes": 2807283,
+      "converted_bytes": 1427860,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "psf__requests-1142__psf__requests-1142",
+      "rounds": 119,
+      "raw_bytes": 2243467,
+      "converted_bytes": 1113083,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "sphinx-doc__sphinx-7454__sphinx-doc__sphinx-7454",
+      "rounds": 91,
+      "raw_bytes": 1545724,
+      "converted_bytes": 826386,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "sphinx-doc__sphinx-10449__sphinx-doc__sphinx-10449",
+      "rounds": 48,
+      "raw_bytes": 1460582,
+      "converted_bytes": 748292,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "sphinx-doc__sphinx-7462__sphinx-doc__sphinx-7462",
+      "rounds": 42,
+      "raw_bytes": 1299050,
+      "converted_bytes": 655087,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "django__django-12273__django__django-12273",
+      "rounds": 195,
+      "raw_bytes": 1174470,
+      "converted_bytes": 558644,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "sphinx-doc__sphinx-10614__sphinx-doc__sphinx-10614",
+      "rounds": 157,
+      "raw_bytes": 1118213,
+      "converted_bytes": 555215,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "django__django-16263__django__django-16263",
+      "rounds": 238,
+      "raw_bytes": 1029021,
+      "converted_bytes": 494531,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "pydata__xarray-7229__pydata__xarray-7229",
+      "rounds": 244,
+      "raw_bytes": 887819,
+      "converted_bytes": 412557,
+      "selection_reason": "top_raw_bytes"
+    },
+    {
+      "id": "django__django-14351__django__django-14351",
+      "rounds": 78,
+      "raw_bytes": 874250,
+      "converted_bytes": 471335,
+      "selection_reason": "top_raw_bytes"
+    }
+  ]
+}

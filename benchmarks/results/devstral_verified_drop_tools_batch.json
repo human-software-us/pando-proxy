@@ -1,0 +1,20 @@
+{
+  "samples": 345,
+  "totalRounds": 21709,
+  "avgBaselineMin": 1402,
+  "avgPandoMin": 1404,
+  "avgBaselineAvg": 15199,
+  "avgPandoAvg": 7508,
+  "avgBaselineMax": 33636,
+  "avgPandoMax": 14651,
+  "avgAvgSavings": 7690,
+  "avgMaxSavings": 18985,
+  "positiveAvgSavingsRate": 71.3,
+  "positiveMaxSavingsRate": 71.3,
+  "aggregateAvgReductionPct": 50.6,
+  "aggregateMaxReductionPct": 56.4,
+  "meanPerTraceAvgReductionPct": 43.0,
+  "meanPerTraceMaxReductionPct": 55.3,
+  "medianPerTraceAvgReductionPct": 41.1,
+  "medianPerTraceMaxReductionPct": 55.9
+}

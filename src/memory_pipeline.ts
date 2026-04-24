@@ -102,6 +102,9 @@ export async function updateMemoryForCompletedRound(
     droppedOldChunkIds: applied.droppedOldChunkIds,
     keptNewChunkIds: applied.keptNewChunkIds,
     droppedNewChunkIds: applied.droppedNewChunkIds,
+    forcedKeepOldChunkIds: applied.forcedKeepOldChunkIds,
+    forcedKeepNewChunkIds: applied.forcedKeepNewChunkIds,
+    forcedKeepReasons: applied.forcedKeepReasons,
   });
 
   await logContext.logger?.log("memory_round_updated", {

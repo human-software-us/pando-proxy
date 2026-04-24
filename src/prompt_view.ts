@@ -1,7 +1,13 @@
 import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
 import { chronologicalChunks, type ChunkRecord, type MemoryState } from "./memory_state.ts";
-import { itemTypeCounts, type InputItemDescriptor, describeInputItems, inputItems } from "./tool_results.ts";
+import { pinnedConstraintReasonForChunk } from "./round_update.ts";
+import {
+  describeInputItems,
+  type InputItemDescriptor,
+  inputItems,
+  itemTypeCounts,
+} from "./tool_results.ts";
 
 export type RewriteDiff = {
   droppedInputIds: string[];
@@ -47,7 +53,9 @@ export async function rewriteRequestWithMemory(
   return {
     body: rewrittenBody,
     diff: {
-      droppedInputIds: filtered.filter((item) => !tailOrInstructionContains(item, instructions, tail))
+      droppedInputIds: filtered.filter((item) =>
+        !tailOrInstructionContains(item, instructions, tail)
+      )
         .map((item) => item.ref),
       keptInputIds: [...instructions, ...tail].map((item) => item.ref),
       rawInputTypeCounts: itemTypeCounts(raw),
@@ -79,7 +87,9 @@ export async function buildDerivedPrompt(
   return {
     input: items,
     diff: {
-      droppedInputIds: filtered.filter((item) => !tailOrInstructionContains(item, instructions, tail))
+      droppedInputIds: filtered.filter((item) =>
+        !tailOrInstructionContains(item, instructions, tail)
+      )
         .map((item) => item.ref),
       keptInputIds: [...instructions, ...tail].map((item) => item.ref),
       rawInputTypeCounts: itemTypeCounts(raw),
@@ -125,13 +135,27 @@ export function buildWorkingMemoryText(
   }
   lines.push("</exact_chunks>");
   lines.push("<memory_fallback>");
-  lines.push("If the attached exact chunks are insufficient, call memory({chunkIds:[...]}) to fetch exact retained chunks by id when you already know those ids from visible context or earlier memory() results.");
-  lines.push("Use memory({offset, limit}) to paginate additional exact retained chunks from the hidden retained set.");
-  lines.push("memory() skips any chunks already visible in this prompt or already returned by earlier memory() calls in this turn.");
-  lines.push("If you do not know the needed chunk ids, browse with memory({offset, limit}) until you find the exact chunk, then request specific ids if helpful.");
-  lines.push("Prefer attached chunks over running new tools when they already contain the needed exact fact.");
-  lines.push("Do not claim prior captured data is unavailable until you have used memory() when the visible chunks are insufficient.");
-  lines.push("When asked to restate or recall exact prior captured content, use memory({chunkIds:[...]}) or memory({offset, limit}) before answering from absence.");
+  lines.push(
+    "If the attached exact chunks are insufficient, call memory({chunkIds:[...]}) to fetch exact retained chunks by id when you already know those ids from visible context or earlier memory() results.",
+  );
+  lines.push(
+    "Use memory({offset, limit}) to paginate additional exact retained chunks from the hidden retained set.",
+  );
+  lines.push(
+    "memory() skips any chunks already visible in this prompt or already returned by earlier memory() calls in this turn.",
+  );
+  lines.push(
+    "If you do not know the needed chunk ids, browse with memory({offset, limit}) until you find the exact chunk, then request specific ids if helpful.",
+  );
+  lines.push(
+    "Prefer attached chunks over running new tools when they already contain the needed exact fact.",
+  );
+  lines.push(
+    "Do not claim prior captured data is unavailable until you have used memory() when the visible chunks are insufficient.",
+  );
+  lines.push(
+    "When asked to restate or recall exact prior captured content, use memory({chunkIds:[...]}) or memory({offset, limit}) before answering from absence.",
+  );
   lines.push("</memory_fallback>");
   lines.push("</pando_working_memory>");
   return lines.join("\n");
@@ -149,11 +173,19 @@ function selectPromptChunks(
   if (maxInlineChunks <= 0 || ordered.length <= maxInlineChunks) {
     return { inlineChunks: ordered, omittedChunks: [] };
   }
-  const inlineChunks = [...ordered]
+  const reservedPinnedChunks = ordered.filter((chunk) => pinnedConstraintReasonForChunk(chunk))
+    .slice(-maxInlineChunks);
+  const reservedPinnedChunkIds = new Set(reservedPinnedChunks.map((chunk) => chunk.id));
+  const remainingSlots = Math.max(0, maxInlineChunks - reservedPinnedChunks.length);
+  const scoredChunks = ordered
+    .filter((chunk) => !reservedPinnedChunkIds.has(chunk.id))
     .sort(compareInlinePriority)
-    .slice(0, maxInlineChunks)
+    .slice(0, remainingSlots);
+  const inlineChunks = [...reservedPinnedChunks, ...scoredChunks]
     .sort((left, right) =>
-      left.createdSeq === right.createdSeq ? left.id.localeCompare(right.id) : left.createdSeq - right.createdSeq
+      left.createdSeq === right.createdSeq
+        ? left.id.localeCompare(right.id)
+        : left.createdSeq - right.createdSeq
     );
   const inlineIds = new Set(inlineChunks.map((chunk) => chunk.id));
   return {
@@ -222,7 +254,8 @@ function injectMemoryTool(tools: unknown, omittedChunks: ChunkRecord[]): unknown
         chunkIds: {
           type: "array",
           items: { type: "string" },
-          description: "Exact retained chunk ids to fetch. Chunks already visible in the prompt are skipped.",
+          description:
+            "Exact retained chunk ids to fetch. Chunks already visible in the prompt are skipped.",
         },
         offset: {
           type: "integer",
@@ -233,7 +266,8 @@ function injectMemoryTool(tools: unknown, omittedChunks: ChunkRecord[]): unknown
           type: "integer",
           minimum: 1,
           maximum: 50,
-          description: "How many additional retained chunks to return when browsing omitted chunks.",
+          description:
+            "How many additional retained chunks to return when browsing omitted chunks.",
         },
       },
     },

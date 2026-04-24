@@ -46,9 +46,8 @@ public results include:
 - a slower real-LLM sample over `20` trajectories from that same dataset, selected as top `10` by
   round count plus top `10` additional by raw transcript size
 
-On that public top-20 sample, pinning the maintenance path to full `gpt-5.4` reduced average
-prompt size from `43,924` to `5,714` tokens and average max prompt size from `142,623` to `65,005`
-tokens.
+On that public top-20 sample, pinning the maintenance path to full `gpt-5.4` reduced average prompt
+size from `43,924` to `5,714` tokens and average max prompt size from `142,623` to `65,005` tokens.
 
 ## Why this exists
 
@@ -154,8 +153,8 @@ The wrapper auto-detects how to run Codex and picks one of three modes:
 - `resume` / `fork` (or no command) → **interactive-direct**: runs `codex` directly with the same
   local provider overrides, but under a wrapper-owned private `CODEX_HOME`. The wrapper symlinks
   shared inputs (`config.toml`, `auth.json`, `.credentials.json`, `skills/`, `vendor_imports/`,
-  `installation_id`) from the real Codex home and keeps `sessions/` private so rollout attachment
-  is exact.
+  `installation_id`) from the real Codex home and keeps `sessions/` private so rollout attachment is
+  exact.
 - any other top-level command (`login`, `mcp`, `help`, `app-server`, etc.) → **passthrough**: Codex
   runs with the provider overrides but nothing is intercepted.
 
