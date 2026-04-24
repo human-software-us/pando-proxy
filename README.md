@@ -316,14 +316,15 @@ git commit -m "Release x.y.z"
 set -a
 . ./.env
 set +a
-npm publish
+npm publish --//registry.npmjs.org/:_authToken="$NPM_TOKEN"
 ```
 
 Notes:
 
 - `.env` should provide `NPM_TOKEN`.
 - Do not commit `.env`.
-- If your npm account enforces an OTP for publish, use a publish-capable token or rerun with `npm publish --otp=<code>`.
+- The `--//registry.npmjs.org/:_authToken=...` flag overrides any token baked into `~/.npmrc` for this invocation. Without it, a stale non-publish token in `~/.npmrc` will win over the env var and you'll get `EOTP` even with a publish-capable token in `.env`.
+- If your npm account enforces an OTP on top of a publish token, rerun with `npm publish --otp=<code>` (and the same `--_authToken` flag).
 - After publish, the existing shell alias `codex='npx -y pando-proxy'` will pick up the new package version automatically.
 
 ## Files
