@@ -128,6 +128,14 @@ The response contains exact stored payloads only. It skips chunks already includ
 
 **Important:** if `pando-proxy` or an aliased `codex` appears frozen before the proxy receives any request, Codex may be waiting on its own update chooser. Run `npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct` to launch raw Codex directly and make the choice there.
 
+Alias removal:
+
+```sh
+npx -y pando-proxy --uninstall-codex-alias
+# or, if `codex` is still aliased to pando-proxy in the current shell:
+codex --uninstall-codex-alias
+```
+
 Default native Codex compaction threshold injected by the wrapper:
 
 - `--proxy-codex-auto-compact-token-limit 280000`
