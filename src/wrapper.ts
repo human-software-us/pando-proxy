@@ -28,6 +28,7 @@ export type ParsedWrapperArgs = {
   codexArgs: string[];
   options: WrapperOptions;
   directCodex: boolean;
+  uninstallCodexAlias: boolean;
   help: boolean;
 };
 
@@ -63,6 +64,13 @@ export type CodexAliasInstallResult = {
   message?: string;
 };
 
+export type CodexAliasUninstallResult = {
+  status: "removed" | "not_present" | "failed";
+  path?: string;
+  shell?: string;
+  message?: string;
+};
+
 export type CodexAliasTarget = {
   path: string;
   shell: string;
@@ -82,6 +90,7 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
   const codexArgs: string[] = [];
   let help = false;
   let directCodex = false;
+  let uninstallCodexAlias = false;
   let passthrough = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -97,6 +106,10 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
     }
     if (arg === "--proxy-help" || arg === "--help" || arg === "-h") {
       help = true;
+      continue;
+    }
+    if (arg === "--uninstall-codex-alias") {
+      uninstallCodexAlias = true;
       continue;
     }
     if (arg === "--proxy-run-codex-direct") {
@@ -150,7 +163,7 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
     codexArgs.push(arg);
   }
 
-  return { codexArgs, options, directCodex, help };
+  return { codexArgs, options, directCodex, uninstallCodexAlias, help };
 }
 
 export async function runCodexWrapper(args: string[]): Promise<number> {
@@ -158,6 +171,9 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   if (parsed.help) {
     printWrapperHelp();
     return 0;
+  }
+  if (parsed.uninstallCodexAlias) {
+    return await runCodexAliasUninstall();
   }
   if (parsed.directCodex) {
     return await runCodexDirect(parsed.codexArgs);
@@ -370,6 +386,31 @@ export async function installCodexAlias(
   return { status: "installed", path: target.path, shell: target.shell };
 }
 
+export async function uninstallCodexAlias(
+  homeDir: string,
+  shell: string | null,
+  os = Deno.build.os,
+): Promise<CodexAliasUninstallResult> {
+  const target = codexAliasTarget(homeDir, shell, os);
+  let existing = "";
+  try {
+    existing = await Deno.readTextFile(target.path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { status: "not_present", path: target.path, shell: target.shell };
+    }
+    throw error;
+  }
+
+  const updated = removeCodexAliasSnippet(existing);
+  if (updated === existing) {
+    return { status: "not_present", path: target.path, shell: target.shell };
+  }
+
+  await Deno.writeTextFile(target.path, updated);
+  return { status: "removed", path: target.path, shell: target.shell };
+}
+
 export function codexAliasTarget(
   homeDir: string,
   shell: string | null,
@@ -462,6 +503,17 @@ function codexAliasAlreadyPresent(text: string): boolean {
     /function\s+codex\s*\{[^}]*pando-proxy/s.test(text);
 }
 
+function removeCodexAliasSnippet(text: string): string {
+  let updated = text.replace(
+    /(?:^|\n)# >>> pando-proxy codex alias >>>\n[\s\S]*?\n# <<< pando-proxy codex alias <<<\n?/g,
+    "\n",
+  );
+  updated = updated.replace(/^alias\s+codex=.*pando-proxy.*\n?/gm, "");
+  updated = updated.replace(/^function\s+codex\s*\{[^}]*pando-proxy[^}]*\}\n?/gms, "");
+  updated = updated.replace(/\n{3,}/g, "\n\n");
+  return updated.trim().length === 0 ? "" : `${updated.replace(/^\n+/, "")}`;
+}
+
 function aliasSnippet(aliasLine: string): string {
   return [
     "# >>> pando-proxy codex alias >>>",
@@ -473,6 +525,39 @@ function aliasSnippet(aliasLine: string): string {
 
 function userHomeDir(): string | null {
   return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? null;
+}
+
+async function runCodexAliasUninstall(): Promise<number> {
+  const homeDir = userHomeDir();
+  if (!homeDir) {
+    console.error("pando-proxy: could not determine the user home directory.");
+    return 1;
+  }
+
+  try {
+    const result = await uninstallCodexAlias(homeDir, Deno.env.get("SHELL") ?? null);
+    if (result.status === "removed") {
+      console.error(`pando-proxy: removed codex alias from ${result.path}.`);
+      await clearCodexAliasPromptPreference(homeDir);
+      return 0;
+    }
+    if (result.status === "not_present") {
+      console.error(`pando-proxy: no pando-proxy codex alias found in ${result.path}.`);
+      return 0;
+    }
+    console.error(`pando-proxy: failed to remove codex alias: ${result.message ?? "unknown error"}`);
+    return 1;
+  } catch (error) {
+    console.error(`pando-proxy: failed to remove codex alias: ${messageFor(error)}`);
+    return 1;
+  }
+}
+
+async function clearCodexAliasPromptPreference(homeDir: string): Promise<void> {
+  const path = wrapperPreferencesPath(homeDir);
+  const preferences = await loadWrapperPreferences(path);
+  delete preferences.codexAliasPrompt;
+  await saveWrapperPreferences(path, preferences);
 }
 
 function isInteractiveTerminal(): boolean {
@@ -938,6 +1023,7 @@ Proxy wrapper options:
   --proxy-log                              Enable full JSONL logging to ~/.pando-proxy/logs
   --proxy-log-file <path>                  Enable full JSONL logging to this file
   --proxy-run-codex-direct                 Run codex directly with no proxy/wrapper
+  --uninstall-codex-alias                  Remove the pando-proxy codex shell alias and exit
   --proxy-help, --help, -h                 Show this help
 
 Examples:
@@ -945,6 +1031,7 @@ Examples:
   pando-proxy resume --last
   pando-proxy --proxy-run-codex-direct
   pando-proxy --proxy-run-codex-direct --help
+  pando-proxy --uninstall-codex-alias
   pando-proxy help exec
 
 Everything after -- is passed to codex unchanged.

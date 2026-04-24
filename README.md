@@ -155,6 +155,7 @@ Use `serve` when you want the proxy running independently (e.g. for tests that s
 | `--proxy-log` | off | Enable JSONL logging to a unique file under `<state-dir>/logs`. |
 | `--proxy-log-file <path>` | (off) | Enable logging to a specific path. |
 | `--proxy-run-codex-direct` | off | Escape hatch: skip the wrapper and proxy entirely, run raw `codex` with inherited stdio. Put this flag **before** any Codex args. |
+| `--uninstall-codex-alias` | off | Remove the `codex -> npx -y pando-proxy` shell alias that pando-proxy installed, then exit. |
 | `--proxy-help`, `--help`, `-h` | — | Print wrapper + proxy help. |
 
 > **Important — apparent freeze before any proxy request arrives.** Codex sometimes waits on its own update-chooser prompt before making its first Responses call. When that happens, `pando-proxy` (or an aliased `codex`) will look frozen because no request has reached the proxy yet. Re-run with `--proxy-run-codex-direct` to bypass the wrapper entirely and let Codex display its prompt directly:
@@ -163,6 +164,12 @@ Use `serve` when you want the proxy running independently (e.g. for tests that s
 > npx -y pando-proxy --proxy-run-codex-direct         # or: codex --proxy-run-codex-direct
 > npx -y pando-proxy --proxy-run-codex-direct --help
 > ```
+
+To remove the installed shell alias later:
+
+```sh
+npx -y pando-proxy --uninstall-codex-alias
+```
 
 ## `serve` / `doctor` options
 
