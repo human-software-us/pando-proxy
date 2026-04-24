@@ -8,7 +8,7 @@ import {
 } from "./codex_modes.ts";
 import { CliOptions, expandHome, loadConfig, ProxyConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
-import type { ContextWindowStats } from "./server.ts";
+import type { ContextWindowComparisonStats, ContextWindowStats } from "./server.ts";
 import { startServer } from "./server.ts";
 import type { RoundSource } from "./tool_results.ts";
 import {
@@ -43,8 +43,8 @@ export type StartedProxy = {
   server: Deno.HttpServer;
   awaitIdle: (timeoutMs?: number) => Promise<void>;
   contextStats: {
-    latest: () => ContextWindowStats | null;
-    forSession: (sessionKey: string) => ContextWindowStats | null;
+    latest: () => ContextWindowComparisonStats | null;
+    forSession: (sessionKey: string) => ContextWindowComparisonStats | null;
   };
 };
 
@@ -1124,14 +1124,26 @@ export function startProxyOnAvailablePort(
   throw new Error(`No available port found at or above ${portStart}`);
 }
 
-function printContextWindowSummary(threadId: string | null, stats: ContextWindowStats | null): void {
+function printContextWindowSummary(threadId: string | null, stats: ContextWindowComparisonStats | null): void {
   if (!stats) {
     return;
   }
   const sessionLabel = threadId ? ` (${threadId})` : "";
-  console.error(
-    `Pando Proxy context bytes${sessionLabel}: min ${formatCount(stats.minBytes)}, avg ${formatCount(stats.avgBytes)}, max ${formatCount(stats.maxBytes)}`,
-  );
+  const withoutProxy = formatContextWindowSeries(stats.withoutProxy);
+  const withProxy = formatContextWindowSeries(stats.withProxy);
+  if (withoutProxy) {
+    console.error(`Pando Proxy context bytes without proxy${sessionLabel}: ${withoutProxy}`);
+  }
+  if (withProxy) {
+    console.error(`Pando Proxy context bytes with proxy${sessionLabel}: ${withProxy}`);
+  }
+}
+
+function formatContextWindowSeries(stats: ContextWindowStats | null): string | null {
+  if (!stats) {
+    return null;
+  }
+  return `min ${formatCount(stats.minBytes)}, avg ${formatCount(stats.avgBytes)}, max ${formatCount(stats.maxBytes)}`;
 }
 
 function printInteractiveFailureDetails(

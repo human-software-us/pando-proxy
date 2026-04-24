@@ -23,8 +23,8 @@ export type StartedProxyServer = {
   server: Deno.HttpServer;
   awaitIdle: (timeoutMs?: number) => Promise<void>;
   contextStats: {
-    latest: () => ContextWindowStats | null;
-    forSession: (sessionKey: string) => ContextWindowStats | null;
+    latest: () => ContextWindowComparisonStats | null;
+    forSession: (sessionKey: string) => ContextWindowComparisonStats | null;
   };
 };
 
@@ -35,19 +35,37 @@ export type ContextWindowStats = {
   maxBytes: number;
 };
 
+export type ContextWindowComparisonStats = {
+  withoutProxy: ContextWindowStats | null;
+  withProxy: ContextWindowStats | null;
+};
+
 type MutableContextWindowStats = ContextWindowStats & {
   totalBytes: number;
 };
 
 class ContextWindowStatsTracker {
   #latestSessionKey: string | null = null;
-  #bySession = new Map<string, MutableContextWindowStats>();
+  #withoutProxyBySession = new Map<string, MutableContextWindowStats>();
+  #withProxyBySession = new Map<string, MutableContextWindowStats>();
 
-  record(sessionKey: string, byteCount: number): void {
+  recordWithoutProxy(sessionKey: string, byteCount: number): void {
+    this.#record(this.#withoutProxyBySession, sessionKey, byteCount);
+  }
+
+  recordWithProxy(sessionKey: string, byteCount: number): void {
+    this.#record(this.#withProxyBySession, sessionKey, byteCount);
+  }
+
+  #record(
+    bySession: Map<string, MutableContextWindowStats>,
+    sessionKey: string,
+    byteCount: number,
+  ): void {
     if (!Number.isFinite(byteCount) || byteCount < 0) {
       return;
     }
-    const previous = this.#bySession.get(sessionKey);
+    const previous = bySession.get(sessionKey);
     const next: MutableContextWindowStats = previous
       ? {
         samples: previous.samples + 1,
@@ -64,16 +82,19 @@ class ContextWindowStatsTracker {
         totalBytes: byteCount,
       };
     next.avgBytes = Math.round(next.totalBytes / next.samples);
-    this.#bySession.set(sessionKey, next);
+    bySession.set(sessionKey, next);
     this.#latestSessionKey = sessionKey;
   }
 
-  latest(): ContextWindowStats | null {
+  latest(): ContextWindowComparisonStats | null {
     return this.#latestSessionKey ? this.forSession(this.#latestSessionKey) : null;
   }
 
-  forSession(sessionKey: string): ContextWindowStats | null {
-    return snapshotContextWindowStats(this.#bySession.get(sessionKey));
+  forSession(sessionKey: string): ContextWindowComparisonStats | null {
+    return snapshotContextWindowComparisonStats(
+      this.#withoutProxyBySession.get(sessionKey),
+      this.#withProxyBySession.get(sessionKey),
+    );
   }
 }
 
@@ -157,9 +178,10 @@ export function createHandler(
       memoryEnabled: config.memoryEnabled,
       ...requestContextMetrics(body),
     });
+    contextWindowStats.recordWithoutProxy(sessionKey, estimateBytesForValue(body));
 
     if (!config.memoryEnabled) {
-      contextWindowStats.record(sessionKey, estimateBytesForValue(body));
+      contextWindowStats.recordWithProxy(sessionKey, estimateBytesForValue(body));
       try {
         return await forwardResponsesRequest(config, { authHeader, body, logger });
       } catch (error) {
@@ -183,7 +205,7 @@ export function createHandler(
           omittedChunkCount: rewrite.diff.omittedChunkCount,
           ...requestContextMetrics(rewrite.body),
         });
-        contextWindowStats.record(sessionKey, estimateBytesForValue(rewrite.body));
+        contextWindowStats.recordWithProxy(sessionKey, estimateBytesForValue(rewrite.body));
 
         const loop = await runResponsesLoop(
           config,
@@ -316,6 +338,21 @@ function snapshotContextWindowStats(value: MutableContextWindowStats | undefined
     minBytes: value.minBytes,
     avgBytes: value.avgBytes,
     maxBytes: value.maxBytes,
+  };
+}
+
+function snapshotContextWindowComparisonStats(
+  withoutProxy: MutableContextWindowStats | undefined,
+  withProxy: MutableContextWindowStats | undefined,
+): ContextWindowComparisonStats | null {
+  const withoutProxySnapshot = snapshotContextWindowStats(withoutProxy);
+  const withProxySnapshot = snapshotContextWindowStats(withProxy);
+  if (!withoutProxySnapshot && !withProxySnapshot) {
+    return null;
+  }
+  return {
+    withoutProxy: withoutProxySnapshot,
+    withProxy: withProxySnapshot,
   };
 }
 
