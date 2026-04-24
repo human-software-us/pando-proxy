@@ -13,6 +13,9 @@ Real replay runs are summarized in [`QUICK_BENCHMARKS.md`](./QUICK_BENCHMARKS.md
 | Local `exec` stress log | 8 | 7,674 | 5,195 | 32.3% | 13,231 | 7,788 | 41.1% |
 | Local `cli` interactive log | 9 | 193,840 | 60,407 | 68.8% | 286,898 | 87,877 | 69.4% |
 | Public open log (GitHub Gist) | 2 | 1,292 | 885 | 31.5% | 1,502 | 1,084 | 27.8% |
+| SWE-PolyBench `iswe_agent` editing | 69 | 8,331 | 4,464 | 46.4% | 10,046 | 7,385 | 26.5% |
+
+The proxy helps most once a session has real history to carry forward. On short 1-2 turn runs the win can be small or mixed, but on long interactive sessions the baseline keeps replaying old context while Pando stays bounded by the compact working set.
 
 Artifacts from these runs live under `tmp/replay-real/` as `*_stats.json`, `*_turns.jsonl`, `*_series.csv`, and `*_manager-usage.jsonl`.
 
