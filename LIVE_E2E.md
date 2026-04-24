@@ -24,8 +24,8 @@ evidence and drops the rest.
 
 **Important:** if `pando-proxy` or an aliased `codex` looks frozen before the proxy ever receives a
 request, Codex may be blocked on its own update-selection prompt. In that case run raw Codex with
-`npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct`, make the update
-choice directly in Codex, then rerun the proxy test.
+`npx -y pando-proxy --run-codex-direct` or `codex --run-codex-direct`, make the update choice
+directly in Codex, then rerun the proxy test.
 
 No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex
 provider overrides for that process only, then runs `codex`.
@@ -71,7 +71,8 @@ The wrapper rewrites `resume --last` to the concrete session id saved in
 `<state-dir>/wrapper-last-thread.json`, and it hoists any `exec`-global flags written after `resume`
 (such as `--sandbox`, `-C`, `--add-dir`, `--oss`, `-p`/`--profile`, `--output-schema`, `--color`) to
 before `resume`, so Codex's `exec resume` subcommand parser accepts them. You can write the flags in
-either order; the wrapper normalizes.
+either order; the wrapper normalizes. For exact reproduction, read the id from
+`<state-dir>/wrapper-last-thread.json` and use that concrete id directly in later commands.
 
 For a multi-round test, repeat `exec resume --last` with the same log/state paths. For an
 independent new test, switch to a new log path and new state dir.
@@ -83,6 +84,7 @@ Check:
 - `incoming_request`
 - `rewritten_context`
 - `structured_model_selected`
+- `codex_exec_turn_summary` for interactive runs
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
@@ -97,6 +99,8 @@ Confirm:
 
 - the current `objective`
 - retained chunk ids and count
+- `codex_exec_turn_summary` counts line up with the round: tool calls, tool results, reasoning,
+  assistant messages, user messages, and observed tool names
 - any `forcedKeep*` fields when deterministic constraint pinning overrode a model drop
 - total stored chunk bytes
 - processed source count
@@ -125,8 +129,15 @@ There are two wrapper paths:
 
 - `exec` mode injects a temporary Responses provider that points at the local HTTP proxy
 - interactive mode runs `codex` directly with the same provider overrides and a private
-  wrapper-owned `CODEX_HOME`; config/auth are symlinked from the real Codex home while `sessions/`
-  stays private so the rollout tailer cannot attach to the wrong session
+  wrapper-owned `CODEX_HOME`; config/auth/update-banner state are symlinked from the real Codex home
+  while `sessions/` stays private so the rollout tailer cannot attach to the wrong session
+- the interactive rollout tailer streams appended JSONL from that private `sessions/` directory and
+  feeds each line into the same observer used by `exec --json`
+
+## Interactive TUI Note
+
+When you drive the Codex TUI through a PTY, submit prompts with carriage return (`\r`). Plain
+newline (`\n`) often only edits the composer and does not submit the turn.
 
 For memory validation of the real proxy request/response loop, prefer `exec` mode unless you are
 specifically testing the interactive TUI path.

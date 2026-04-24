@@ -128,9 +128,8 @@ prompt and chunks already returned by earlier `memory(...)` calls in the same ro
 ## Wrapper Notes
 
 **Important:** if `pando-proxy` or an aliased `codex` appears frozen before the proxy receives any
-request, Codex may be waiting on its own update chooser. Run
-`npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct` to launch raw
-Codex directly and make the choice there.
+request, Codex may be waiting on its own update chooser. Run `npx -y pando-proxy --run-codex-direct`
+or `codex --run-codex-direct` to launch raw Codex directly and make the choice there.
 
 Alias removal:
 

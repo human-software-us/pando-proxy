@@ -4,10 +4,9 @@
 
 **Important:** if `npx -y pando-proxy` or an aliased `codex` appears to freeze before the proxy sees
 any request, Codex may actually be waiting on its own update chooser. Run
-`npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct` to launch raw
-Codex with full stdio, make the choice directly in Codex, then rerun the proxied command. Put
-`--proxy-run-codex-direct` before any Codex args; everything after it is passed straight to raw
-`codex`.
+`npx -y pando-proxy --run-codex-direct` or `codex --run-codex-direct` to launch raw Codex with full
+stdio, make the choice directly in Codex, then rerun the proxied command. Put `--run-codex-direct`
+before any Codex args; everything after it is passed straight to raw `codex`.
 
 To remove the installed shell alias later:
 

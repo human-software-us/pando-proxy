@@ -23,6 +23,7 @@ const SHARED_CODEX_HOME_ENTRIES = [
   "config.toml",
   "auth.json",
   ".credentials.json",
+  "version.json",
   "skills",
   "vendor_imports",
   "installation_id",
@@ -126,7 +127,7 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
       uninstallCodexAlias = true;
       continue;
     }
-    if (arg === "--proxy-run-codex-direct") {
+    if (arg === "--run-codex-direct" || arg === "--proxy-run-codex-direct") {
       directCodex = true;
       passthrough = true;
       continue;
@@ -197,12 +198,12 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
 
   const baseConfig = loadConfig(parsed.options);
   const requestedMode = classifyCodexRunMode(parsed.codexArgs);
-  const effectiveCodexArgs = await rewriteResumeLastArgs(
+  let effectiveCodexArgs = await rewriteResumeLastArgs(
     parsed.codexArgs,
     baseConfig.stateDir,
     requestedMode,
   );
-  const mode = classifyCodexRunMode(effectiveCodexArgs);
+  let mode = classifyCodexRunMode(effectiveCodexArgs);
   const logFile = await resolveWrapperLogFile(parsed.options, baseConfig.stateDir);
   const logger = createLogger(logFile);
   const observer = new CodexEventObserver(logger);
@@ -216,6 +217,11 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
       interactiveCodexHome,
       logger,
     );
+    effectiveCodexArgs = rewriteInteractiveResumeArgs(
+      effectiveCodexArgs,
+      interactiveSessionKeyHint,
+    );
+    mode = classifyCodexRunMode(effectiveCodexArgs);
   }
   const portStart = parsed.options.portStart ?? DEFAULT_WRAPPER_PORT_START;
   const started = startProxyOnAvailablePort(
@@ -226,7 +232,24 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
       ? (sessionKey, timeoutMs) => observer.waitForExecTurn(sessionKey, timeoutMs)
       : undefined,
   );
-  const cleanup = installProxyCleanup(started.server, logger);
+  let sessionSummaryPrinted = false;
+  const flushAndPrintSessionSummary = async (): Promise<void> => {
+    if (sessionSummaryPrinted) {
+      return;
+    }
+    await started.awaitIdle(SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS).catch(() => {});
+    const threadId = observer.latestExecThreadId() ?? interactiveSessionKeyHint;
+    await saveLatestWrapperThreadId(baseConfig.stateDir, threadId);
+    printCodexSessionSummary(threadId);
+    printContextWindowSummary(
+      threadId,
+      threadId
+        ? started.contextStats.forSession(threadId) ?? started.contextStats.latest()
+        : started.contextStats.latest(),
+    );
+    sessionSummaryPrinted = true;
+  };
+  const cleanup = installProxyCleanup(started.server, logger, flushAndPrintSessionSummary);
 
   if (logFile) {
     console.error(`Pando Proxy log: ${logFile}`);
@@ -257,14 +280,7 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     } else {
       exitCode = await runCodexPassthrough(effectiveCodexArgs, started.config, logger);
     }
-    const threadId = observer.latestExecThreadId();
-    await saveLatestWrapperThreadId(baseConfig.stateDir, threadId);
-    printContextWindowSummary(
-      threadId,
-      threadId
-        ? started.contextStats.forSession(threadId) ?? started.contextStats.latest()
-        : started.contextStats.latest(),
-    );
+    await flushAndPrintSessionSummary();
     return exitCode;
   } catch (error) {
     await logger.log("wrapper_error", { message: messageFor(error) });
@@ -343,6 +359,27 @@ export async function rewriteResumeLastArgs(
     ];
   }
 
+  return rewritten;
+}
+
+export function rewriteInteractiveResumeArgs(
+  codexArgs: string[],
+  sessionId: string | null,
+): string[] {
+  if (!sessionId) {
+    return [...codexArgs];
+  }
+  const rewritten = [...codexArgs];
+  for (let index = 0; index < rewritten.length; index += 1) {
+    const arg = rewritten[index];
+    if (arg !== "resume" && arg !== "fork") {
+      continue;
+    }
+    if (rewritten[index + 1] === "--last") {
+      rewritten.splice(index + 1, 1, sessionId);
+    }
+    return rewritten;
+  }
   return rewritten;
 }
 
@@ -575,7 +612,10 @@ function sourceCodexHomePath(): string {
   return expandHome(configured && configured.trim() ? configured : "~/.codex");
 }
 
-async function ensureSymlinkedCodexHomeEntry(sourcePath: string, targetPath: string): Promise<void> {
+async function ensureSymlinkedCodexHomeEntry(
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
   let sourceInfo: Deno.FileInfo;
   try {
     sourceInfo = await Deno.lstat(sourcePath);
@@ -885,6 +925,7 @@ function isInteractiveTerminal(): boolean {
 function installProxyCleanup(
   server: Deno.HttpServer,
   logger: ReturnType<typeof createLogger>,
+  onSignalExit?: () => Promise<void>,
 ): {
   shutdown: (reason: string, timeoutMs?: number) => Promise<void>;
   dispose: () => void;
@@ -906,6 +947,12 @@ function installProxyCleanup(
       signalExitStarted = true;
       void (async () => {
         await logger.log("wrapper_signal", { signal }).catch(() => {});
+        await onSignalExit?.().catch(async (error) => {
+          await logger.log("wrapper_signal_summary_failed", {
+            signal,
+            message: messageFor(error),
+          }).catch(() => {});
+        });
         await shutdownOnce(`signal:${signal}`, SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS);
         Deno.exit(exitCodeForSignal(signal));
       })();
@@ -1197,6 +1244,14 @@ function printContextWindowSummary(
   }
 }
 
+function printCodexSessionSummary(threadId: string | null): void {
+  if (!threadId) {
+    return;
+  }
+  console.error(`pando-proxy: last Codex session id: ${threadId}`);
+  console.error(`pando-proxy: resume with: codex resume ${threadId}`);
+}
+
 function formatContextWindowSeries(stats: ContextWindowStats | null): string | null {
   if (!stats) {
     return null;
@@ -1317,15 +1372,15 @@ Proxy wrapper options:
   --proxy-no-memory                        Bypass task/piece memory rewrite
   --proxy-log                              Enable full JSONL logging to ~/.pando-proxy/logs
   --proxy-log-file <path>                  Enable full JSONL logging to this file
-  --proxy-run-codex-direct                 Run codex directly with no proxy/wrapper
+  --run-codex-direct                       Run codex directly with no proxy/wrapper
   --uninstall-codex-alias                  Remove the pando-proxy codex shell alias and exit
   --proxy-help, --help, -h                 Show this help
 
 Examples:
   pando-proxy exec "Help me with this repo"
   pando-proxy resume --last
-  pando-proxy --proxy-run-codex-direct
-  pando-proxy --proxy-run-codex-direct --help
+  pando-proxy --run-codex-direct
+  pando-proxy --run-codex-direct --help
   pando-proxy --uninstall-codex-alias
   pando-proxy help exec
 

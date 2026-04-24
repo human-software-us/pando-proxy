@@ -152,9 +152,9 @@ The wrapper auto-detects how to run Codex and picks one of three modes:
   provider overrides; observes stdout JSONL for turn boundaries.
 - `resume` / `fork` (or no command) → **interactive-direct**: runs `codex` directly with the same
   local provider overrides, but under a wrapper-owned private `CODEX_HOME`. The wrapper symlinks
-  shared inputs (`config.toml`, `auth.json`, `.credentials.json`, `skills/`, `vendor_imports/`,
-  `installation_id`) from the real Codex home and keeps `sessions/` private so rollout attachment is
-  exact.
+  shared inputs (`config.toml`, `auth.json`, `.credentials.json`, `version.json`, `skills/`,
+  `vendor_imports/`, `installation_id`) from the real Codex home and keeps `sessions/` private so
+  rollout attachment is exact.
 - any other top-level command (`login`, `mcp`, `help`, `app-server`, etc.) → **passthrough**: Codex
   runs with the provider overrides but nothing is intercepted.
 
@@ -207,6 +207,12 @@ The wrapper does two things to `exec resume --last` so it behaves the way you'd 
    `exec resume --last --sandbox read-only "prompt"` and
    `exec --sandbox read-only resume --last "prompt"` both work.
 
+Interactive `resume --last` and `fork --last` are also normalized to a concrete session id before
+Codex is launched. The wrapper resolves that id from the explicit argument when present, otherwise
+from `<state-dir>/wrapper-last-thread.json`, and finally from the private rollout file under the
+wrapper-owned `CODEX_HOME` if needed. On normal exit and on interrupt, the wrapper prints the last
+observed Codex session id plus a `codex resume <id>` hint.
+
 ## Subcommands
 
 ```
@@ -233,19 +239,19 @@ themselves). Use `doctor` for a fast sanity check before opening a support issue
 | `--proxy-no-memory`                          | off              | Bypass memory rewrite; pass requests straight through.                                                                                    |
 | `--proxy-log`                                | off              | Enable JSONL logging to a unique file under `<state-dir>/logs`.                                                                           |
 | `--proxy-log-file <path>`                    | (off)            | Enable logging to a specific path.                                                                                                        |
-| `--proxy-run-codex-direct`                   | off              | Escape hatch: skip the wrapper and proxy entirely, run raw `codex` with inherited stdio. Put this flag **before** any Codex args.         |
+| `--run-codex-direct`                         | off              | Escape hatch: skip the wrapper and proxy entirely, run raw `codex` with inherited stdio. Put this flag **before** any Codex args.         |
 | `--uninstall-codex-alias`                    | off              | Remove the `codex -> npx -y pando-proxy` shell alias that pando-proxy installed, then exit.                                               |
 | `--proxy-help`, `--help`, `-h`               | —                | Print wrapper + proxy help.                                                                                                               |
 
-> **Important — apparent freeze before any proxy request arrives.** Codex sometimes waits on its own
-> update-chooser prompt before making its first Responses call. When that happens, `pando-proxy` (or
-> an aliased `codex`) will look frozen because no request has reached the proxy yet. Re-run with
-> `--proxy-run-codex-direct` to bypass the wrapper entirely and let Codex display its prompt
-> directly:
+> **Important — apparent freeze before any proxy request arrives.** If wrapped Codex appears stalled
+> before the first proxy request, Codex is usually waiting on an in-terminal prompt of its own.
+> `pando-proxy` now shares `version.json` from the real Codex home, so the update-banner state
+> should normally match raw `codex`. If you still need to answer a Codex-owned prompt directly,
+> re-run with `--run-codex-direct`:
 >
 > ```sh
-> npx -y pando-proxy --proxy-run-codex-direct         # or: codex --proxy-run-codex-direct
-> npx -y pando-proxy --proxy-run-codex-direct --help
+> npx -y pando-proxy --run-codex-direct         # or: codex --run-codex-direct
+> npx -y pando-proxy --run-codex-direct --help
 > ```
 
 To remove the installed shell alias later:

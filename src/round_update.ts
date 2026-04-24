@@ -665,13 +665,67 @@ function extractConcreteFacts(text: string): string[] {
 }
 
 function extractConcreteFactRecords(text: string): Array<{ key: string; fact: string }> {
-  const matches = [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s,.;]+)/g)];
-  return matches
-    .map((match) => ({ key: match[1], fact: `${match[1]}=${match[2]}` }))
-    .filter((record) => {
-      const value = record.fact.split("=")[1] ?? "";
-      return /[A-Za-z0-9]/.test(value) && value !== "...";
-    });
+  const records = new Map<string, { key: string; fact: string }>();
+  const add = (key: string, fact: string): void => {
+    if (!key || !fact) {
+      return;
+    }
+    records.set(`${key}\u0000${fact}`, { key, fact });
+  };
+
+  for (const match of text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s,.;]+)/g)) {
+    const key = match[1] ?? "";
+    const value = match[2] ?? "";
+    if (/[A-Za-z0-9]/.test(value) && value !== "...") {
+      add(key, `${key}=${value}`);
+    }
+  }
+
+  for (
+    const match of text.matchAll(
+      /\b(?:remember(?:ed)?|keep|preserve)\b[^.\n]*\btoken\s+([A-Z0-9][A-Z0-9_-]{2,})\b/gi,
+    )
+  ) {
+    const token = match[1] ?? "";
+    if (token) {
+      add(`remembered_token:${token}`, `remembered_token=${token}`);
+    }
+  }
+
+  for (
+    const match of text.matchAll(/\bline[- ](\d+)\b[^.\n]*\btoken\s+([A-Z0-9][A-Z0-9_-]{2,})\b/gi)
+  ) {
+    const lineNumber = match[1] ?? "";
+    const token = match[2] ?? "";
+    if (lineNumber && token) {
+      add(`line_token:${lineNumber}:${token}`, `line_${lineNumber}_token=${token}`);
+    }
+  }
+
+  for (
+    const match of text.matchAll(
+      /\b(line[- ](\d+)|\d+\s*->)\s*([A-Z][A-Z0-9_]+)\s*\/\s*([A-Z0-9][A-Z0-9_-]{2,})\b/g,
+    )
+  ) {
+    const lineNumber = match[2] ?? "";
+    const marker = match[3] ?? "";
+    const token = match[4] ?? "";
+    if (lineNumber && marker) {
+      add(`line_marker:${lineNumber}:${marker}`, `line_${lineNumber}_marker=${marker}`);
+    }
+    if (lineNumber && token) {
+      add(`line_token:${lineNumber}:${token}`, `line_${lineNumber}_token=${token}`);
+    }
+  }
+
+  for (const match of text.matchAll(/\b([a-f0-9]{64})\b/gi)) {
+    const digest = (match[1] ?? "").toLowerCase();
+    if (digest) {
+      add(`sha256:${digest}`, `sha256=${digest}`);
+    }
+  }
+
+  return [...records.values()];
 }
 
 const EXPLICIT_CARRY_FORWARD_PATTERNS = [
