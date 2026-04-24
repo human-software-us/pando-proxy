@@ -18,6 +18,24 @@ export const CODEX_ALIAS_COMMAND = "npx -y pando-proxy";
 export const WRAPPER_PREFERENCES_RELATIVE_PATH = ".pando-proxy/wrapper-preferences.json";
 export const WRAPPER_LAST_THREAD_RELATIVE_PATH = "wrapper-last-thread.json";
 const SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS = 1_500;
+const INTERACTIVE_CODEX_HOME_DIRNAME = "codex-home";
+const SHARED_CODEX_HOME_ENTRIES = [
+  "config.toml",
+  "auth.json",
+  ".credentials.json",
+  "skills",
+  "vendor_imports",
+  "installation_id",
+] as const;
+const PRIVATE_CODEX_HOME_DIRS = [
+  "sessions",
+  "shell_snapshots",
+  "log",
+  "tmp",
+  ".tmp",
+  "cache",
+  "memories",
+] as const;
 
 export type WrapperOptions = CliOptions & {
   portStart?: number;
@@ -374,6 +392,64 @@ async function saveLatestWrapperThreadId(stateDir: string, threadId: string | nu
 
 function wrapperLastThreadPath(stateDir: string): string {
   return expandHome(`${stateDir}/${WRAPPER_LAST_THREAD_RELATIVE_PATH}`);
+}
+
+async function prepareInteractiveCodexHome(
+  stateDir: string,
+  logger: ReturnType<typeof createLogger>,
+): Promise<string> {
+  const privateHome = expandHome(`${stateDir}/${INTERACTIVE_CODEX_HOME_DIRNAME}`);
+  const sourceHome = sourceCodexHomePath();
+
+  await Deno.mkdir(privateHome, { recursive: true });
+  for (const directory of PRIVATE_CODEX_HOME_DIRS) {
+    await Deno.mkdir(`${privateHome}/${directory}`, { recursive: true });
+  }
+  for (const entry of SHARED_CODEX_HOME_ENTRIES) {
+    await ensureSymlinkedCodexHomeEntry(`${sourceHome}/${entry}`, `${privateHome}/${entry}`);
+  }
+
+  await logger.log("interactive_codex_home_prepared", {
+    sourceCodexHome: sourceHome,
+    privateCodexHome: privateHome,
+    privateSessionsDir: `${privateHome}/sessions`,
+    sharedEntries: [...SHARED_CODEX_HOME_ENTRIES],
+  });
+  return privateHome;
+}
+
+function sourceCodexHomePath(): string {
+  const configured = Deno.env.get("CODEX_HOME");
+  return expandHome(configured && configured.trim() ? configured : "~/.codex");
+}
+
+async function ensureSymlinkedCodexHomeEntry(sourcePath: string, targetPath: string): Promise<void> {
+  let sourceInfo: Deno.FileInfo;
+  try {
+    sourceInfo = await Deno.lstat(sourcePath);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return;
+    }
+    throw error;
+  }
+
+  try {
+    const existing = await Deno.lstat(targetPath);
+    if (existing.isSymlink) {
+      const linkedPath = await Deno.readLink(targetPath);
+      if (linkedPath === sourcePath) {
+        return;
+      }
+    }
+    await Deno.remove(targetPath, { recursive: true });
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+
+  await Deno.symlink(sourcePath, targetPath, { type: sourceInfo.isDirectory ? "dir" : "file" });
 }
 
 export async function maybeOfferCodexAlias(
@@ -799,10 +875,12 @@ async function runCodexInteractiveDirect(
   observer: CodexEventObserver,
 ): Promise<number> {
   const args = buildCodexArgs(codexArgs, config);
+  const codexHome = await prepareInteractiveCodexHome(config.stateDir, logger);
   const tailer = await startInteractiveRolloutTailer({
     cwd: Deno.cwd(),
     observer,
     logger,
+    sessionsDir: `${codexHome}/sessions`,
   }).catch(async (error) => {
     await logger.log("interactive_rollout_tail_start_failed", {
       message: messageFor(error),
@@ -821,6 +899,10 @@ async function runCodexInteractiveDirect(
       stdin: "inherit",
       stdout: "inherit",
       stderr: "inherit",
+      env: {
+        ...Deno.env.toObject(),
+        CODEX_HOME: codexHome,
+      },
     });
     const child = command.spawn();
     const status = await child.status;

@@ -124,7 +124,9 @@ For any failure:
 There are two wrapper paths:
 
 - `exec` mode injects a temporary Responses provider that points at the local HTTP proxy
-- interactive mode runs `codex` directly with the same provider overrides
+- interactive mode runs `codex` directly with the same provider overrides and a private
+  wrapper-owned `CODEX_HOME`; config/auth are symlinked from the real Codex home while
+  `sessions/` stays private so the rollout tailer cannot attach to the wrong session
 
 For memory validation of the real proxy request/response loop, prefer `exec` mode unless you are
 specifically testing the interactive TUI path.

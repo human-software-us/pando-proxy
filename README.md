@@ -38,10 +38,17 @@ while Pando stays bounded by the compact working set.
 Artifacts from these runs live under `tmp/replay-real/` as `*_stats.json`, `*_turns.jsonl`,
 `*_series.csv`, and `*_manager-usage.jsonl`.
 
-A larger cheap stub-only corpus run is also documented in [`BENCHMARKS.md`](./BENCHMARKS.md): all
-`345` currently exposed trajectories from the public
-`pankajmathur/devstral-24b-swebench-verified-traj` dataset were fetched, converted, and replayed
-with the default `drop-tools` policy.
+Public benchmark expansions are also documented in [`BENCHMARKS.md`](./BENCHMARKS.md). The current
+public results include:
+
+- a cheap full-corpus stub pass over all `345` currently exposed trajectories from the public
+  `pankajmathur/devstral-24b-swebench-verified-traj` dataset
+- a slower real-LLM sample over `20` trajectories from that same dataset, selected as top `10` by
+  round count plus top `10` additional by raw transcript size
+
+On that public top-20 sample, pinning the maintenance path to full `gpt-5.4` reduced average
+prompt size from `43,924` to `5,714` tokens and average max prompt size from `142,623` to `65,005`
+tokens.
 
 ## Why this exists
 
@@ -145,7 +152,10 @@ The wrapper auto-detects how to run Codex and picks one of three modes:
 - `exec` / `e` → **exec-json**: adds `--json` and points Codex at the local HTTP proxy via Responses
   provider overrides; observes stdout JSONL for turn boundaries.
 - `resume` / `fork` (or no command) → **interactive-direct**: runs `codex` directly with the same
-  local provider overrides.
+  local provider overrides, but under a wrapper-owned private `CODEX_HOME`. The wrapper symlinks
+  shared inputs (`config.toml`, `auth.json`, `.credentials.json`, `skills/`, `vendor_imports/`,
+  `installation_id`) from the real Codex home and keeps `sessions/` private so rollout attachment
+  is exact.
 - any other top-level command (`login`, `mcp`, `help`, `app-server`, etc.) → **passthrough**: Codex
   runs with the provider overrides but nothing is intercepted.
 
