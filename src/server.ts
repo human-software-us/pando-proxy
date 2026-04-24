@@ -159,6 +159,7 @@ export function createHandler(
                   fetches: loop.fetches,
                   authHeader,
                   observedRoundSourcesForSession,
+                  saveWithinExistingLock: false,
                 }),
             );
           } else {
@@ -176,6 +177,7 @@ export function createHandler(
               assistantSources: loop.assistantSources,
               fetches: loop.fetches,
               authHeader,
+              saveWithinExistingLock: true,
             });
             finalMemory = completion.memory;
             memoryUpdateError = completion.memoryUpdateError;
@@ -258,6 +260,7 @@ type FinalizeRoundOptions = {
   fetches: LocalContextFetch[];
   authHeader: string | null;
   observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>;
+  saveWithinExistingLock?: boolean;
 };
 
 type FinalizeRoundResult = {
@@ -281,6 +284,7 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     fetches,
     authHeader,
     observedRoundSourcesForSession,
+    saveWithinExistingLock = false,
   } = options;
 
   let finalMemory = previousMemory;
@@ -339,9 +343,14 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     );
     finalMemory = memoryUpdate.memory;
     if (memoryUpdate.changed) {
-      await store.withLock(sessionKey, async () => {
+      const persist = async () => {
         await store.save(sessionKey, { memory: memoryUpdate.memory });
-      });
+      };
+      if (saveWithinExistingLock) {
+        await persist();
+      } else {
+        await store.withLock(sessionKey, persist);
+      }
       await logger.log("memory_state_saved", {
         requestId,
         sessionKey,

@@ -1,5 +1,7 @@
 # pando-proxy
 
+> **By [pando](https://getpando.ai).** Free for personal & noncommercial use under **[PolyForm Noncommercial 1.0.0](./LICENSE)**. **Commercial use requires a license** — contact **<camellia@human.software>**.
+
 `pando-proxy` is a thin local wrapper around [Codex](https://github.com/openai/codex) that inserts an OpenAI Responses-compatible proxy between Codex and the upstream model. The proxy maintains a small, mechanical working memory so multi-round Codex sessions stay within context without replaying the whole history.
 
 ## Why this exists

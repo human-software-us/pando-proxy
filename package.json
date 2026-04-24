@@ -1,7 +1,7 @@
 {
   "name": "pando-proxy",
-  "version": "0.1.6",
-  "description": "Run Codex through a local OpenAI Responses-compatible memory proxy with one npx command. Maintains a compact working memory (one live objective + exact retained chunks) across rounds, aggressively prunes at end of turn, and exposes an optional local memory(offset, limit) fallback tool. Wraps `codex` transparently: all Codex subcommands and flags (exec, resume, fork, login, mcp, app-server, --sandbox, --model, -c, ...) are passed through unchanged; proxy-specific options are prefixed with --proxy-*.",
+  "version": "0.1.7",
+  "description": "By pando (https://getpando.ai) — free for personal/noncommercial use under PolyForm Noncommercial 1.0.0; commercial use requires a license, contact camellia@human.software. Run Codex through a local OpenAI Responses-compatible memory proxy with one npx command. Maintains a compact working memory (one live objective + exact retained chunks) across rounds, aggressively prunes at end of turn, and exposes an optional local memory(offset, limit) fallback tool. Wraps `codex` transparently: all Codex subcommands and flags (exec, resume, fork, login, mcp, app-server, --sandbox, --model, -c, ...) are passed through unchanged; proxy-specific options are prefixed with --proxy-*.",
   "scripts": {
     "prepack": "deno bundle src/main.ts -o dist/main.js",
     "pack:check": "npm pack --dry-run"
@@ -14,6 +14,7 @@
     "dist",
     "src",
     "deno.json",
+    "LICENSE",
     "README.md",
     "DESIGN_PRINCIPLES.md",
     "REFERENCE.md",
@@ -41,7 +42,7 @@
     "url": "https://github.com/human-software-us/pando-proxy/issues"
   },
   "homepage": "https://github.com/human-software-us/pando-proxy#readme",
-  "license": "UNLICENSED",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "publishConfig": {
     "access": "public"
   }
