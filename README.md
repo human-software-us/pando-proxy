@@ -8,6 +8,10 @@
 
 Real replay runs are summarized in [`QUICK_BENCHMARKS.md`](./QUICK_BENCHMARKS.md) and documented in full in [`BENCHMARKS.md`](./BENCHMARKS.md). These numbers come from `bin/replay.ts --real-llm --auth-from-codex`, so the replay path used the real structured chunking and working-memory-update calls instead of the deterministic stub policy.
 
+`bin/replay.ts` replays a saved rollout turn by turn and compares two prompt shapes: the naive baseline (`without proxy`), which keeps sending the accumulated conversation history each round, and the Pando rewrite (`with proxy`), which sends the compact working-memory prompt instead.
+
+Without `--real-llm`, replay uses a deterministic stand-in for retention decisions, which is useful for fast local checks but not for headline numbers. With `--real-llm`, replay makes the actual chunking and working-memory-update model calls, so the benchmark reflects the real proxy path rather than a simplified approximation.
+
 | Case | Avg reduction | Max reduction | Baseline avg approx tokens | Pando avg approx tokens | Baseline max approx tokens | Pando max approx tokens | Rounds |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Local `exec` stress log | 32.3% | 41.1% | 7,674 | 5,195 | 13,231 | 7,788 | 8 |

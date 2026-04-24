@@ -1,6 +1,6 @@
 {
   "name": "pando-proxy",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "By pando (https://getpando.ai) — free for personal/noncommercial use under PolyForm Noncommercial 1.0.0; commercial use requires a license, contact camellia@human.software. Run Codex through a local OpenAI Responses-compatible memory proxy with one npx command. Maintains a compact working memory (one live objective + exact retained chunks) across rounds, aggressively prunes at end of turn, and exposes an optional local memory(offset, limit) fallback tool. Measured replay benchmarks in the repo show the biggest gains on longer multi-round sessions, including a 68.8% average prompt reduction on one local interactive stress log and a 46.4% reduction across 69 converted SWE-PolyBench traces. Wraps `codex` transparently: all Codex subcommands and flags (exec, resume, fork, login, mcp, app-server, --sandbox, --model, -c, ...) are passed through unchanged; proxy-specific options are prefixed with --proxy-*.",
   "scripts": {
     "prepack": "deno bundle src/main.ts -o dist/main.js",
