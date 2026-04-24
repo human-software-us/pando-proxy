@@ -4,10 +4,20 @@ import type { RoundSource } from "./tool_results.ts";
 
 export type AppServerDirection = "client_to_server" | "server_to_client";
 
+type ObservedExecTurnState = {
+  sources: RoundSource[];
+  eventTypeCounts: Record<string, number>;
+  rolloutEnvelopeTypeCounts: Record<string, number>;
+  responseItemTypeCounts: Record<string, number>;
+  responseMessageRoleCounts: Record<string, number>;
+  eventMsgTypeCounts: Record<string, number>;
+  observedToolNames: Set<string>;
+};
+
 export class CodexEventObserver {
   #logger: ProxyLogger;
   #latestExecThreadId: string | null = null;
-  #currentExecTurnSourcesByThread = new Map<string, RoundSource[]>();
+  #currentExecTurnStateByThread = new Map<string, ObservedExecTurnState>();
   #completedExecTurnsByThread = new Map<string, RoundSource[][]>();
   #waitersByThread = new Map<string, Array<(sources: RoundSource[]) => void>>();
 
@@ -21,23 +31,30 @@ export class CodexEventObserver {
       return;
     }
 
-    const payload = normalizeObserverPayload(parseJson(trimmed));
+    const parsed = parseJson(trimmed);
+    const payload = normalizeObserverPayload(parsed);
     const threadId = extractExecThreadId(payload);
     if (threadId) {
       this.#latestExecThreadId = threadId;
     }
-    this.#observeExecTurnBoundary(payload, this.#latestExecThreadId);
+    const activeThreadId = threadId ?? this.#latestExecThreadId;
+    if (activeThreadId && isRecord(payload) && payload.type === "turn.started") {
+      this.#currentExecTurnStateByThread.set(activeThreadId, emptyObservedExecTurnState());
+    }
+    await this.#observeExecTurnArtifacts(parsed, payload, activeThreadId);
     const toolSource = extractExecToolSource(payload);
-    if (toolSource && this.#latestExecThreadId) {
-      const existing = this.#currentExecTurnSourcesByThread.get(this.#latestExecThreadId) ?? [];
-      existing.push(toolSource);
-      this.#currentExecTurnSourcesByThread.set(this.#latestExecThreadId, existing);
+    if (toolSource && activeThreadId) {
+      const state = this.#currentExecTurnStateByThread.get(activeThreadId);
+      if (state) {
+        state.sources.push(toolSource);
+      }
     }
     await this.#logger.log("codex_exec_event", {
       source: "codex_exec_json",
       ...summaryFor(payload),
       payload,
     });
+    await this.#observeExecTurnBoundary(payload, activeThreadId);
   }
 
   async observeAppServerFrame(direction: AppServerDirection, frame: unknown): Promise<void> {
@@ -89,18 +106,48 @@ export class CodexEventObserver {
     });
   }
 
-  #observeExecTurnBoundary(payload: unknown, threadId: string | null): void {
+  async #observeExecTurnArtifacts(
+    rawPayload: unknown,
+    payload: unknown,
+    threadId: string | null,
+  ): Promise<void> {
+    if (!threadId) {
+      return;
+    }
+    const state = this.#currentExecTurnStateByThread.get(threadId);
+    if (!state) {
+      return;
+    }
+    recordPayloadCounts(state, rawPayload, payload);
+  }
+
+  async #observeExecTurnBoundary(payload: unknown, threadId: string | null): Promise<void> {
     if (!threadId || !isRecord(payload) || typeof payload.type !== "string") {
       return;
     }
-    if (payload.type === "turn.started") {
-      this.#currentExecTurnSourcesByThread.set(threadId, []);
-      return;
-    }
     if (payload.type === "turn.completed") {
-      const sources = this.#currentExecTurnSourcesByThread.get(threadId) ?? [];
-      this.#currentExecTurnSourcesByThread.delete(threadId);
-      this.#enqueueCompletedExecTurn(threadId, sources);
+      const state = this.#currentExecTurnStateByThread.get(threadId) ?? emptyObservedExecTurnState();
+      this.#currentExecTurnStateByThread.delete(threadId);
+      await this.#logger.log("codex_exec_turn_summary", {
+        threadId,
+        sourceCount: state.sources.length,
+        sourceIds: state.sources.map((source) => source.sourceId),
+        sourceKindCounts: countBySourceKind(state.sources),
+        eventTypeCounts: state.eventTypeCounts,
+        rolloutEnvelopeTypeCounts: state.rolloutEnvelopeTypeCounts,
+        responseItemTypeCounts: state.responseItemTypeCounts,
+        responseMessageRoleCounts: state.responseMessageRoleCounts,
+        eventMsgTypeCounts: state.eventMsgTypeCounts,
+        observedToolNames: [...state.observedToolNames].sort(),
+        toolCallCount: state.responseItemTypeCounts.function_call ?? 0,
+        toolResultCount: observedToolResultCount(state),
+        reasoningCount: state.responseItemTypeCounts.reasoning ?? 0,
+        assistantMessageCount: (state.responseMessageRoleCounts.assistant ?? 0) +
+          (state.eventMsgTypeCounts.agent_message ?? 0),
+        userMessageCount: (state.responseMessageRoleCounts.user ?? 0) +
+          (state.eventMsgTypeCounts.user_message ?? 0),
+      });
+      this.#enqueueCompletedExecTurn(threadId, state.sources);
     }
   }
 
@@ -121,6 +168,18 @@ export class CodexEventObserver {
     completed.push(sources);
     this.#completedExecTurnsByThread.set(threadId, completed);
   }
+}
+
+function emptyObservedExecTurnState(): ObservedExecTurnState {
+  return {
+    sources: [],
+    eventTypeCounts: {},
+    rolloutEnvelopeTypeCounts: {},
+    responseItemTypeCounts: {},
+    responseMessageRoleCounts: {},
+    eventMsgTypeCounts: {},
+    observedToolNames: new Set<string>(),
+  };
 }
 
 async function payloadForFrame(frame: unknown): Promise<unknown> {
@@ -253,6 +312,53 @@ function extractExecToolSource(payload: unknown): RoundSource | null {
   };
 }
 
+function recordPayloadCounts(
+  state: ObservedExecTurnState,
+  rawPayload: unknown,
+  payload: unknown,
+): void {
+  if (isRecord(rawPayload) && typeof rawPayload.type === "string") {
+    incrementCount(state.rolloutEnvelopeTypeCounts, rawPayload.type);
+  }
+
+  if (!isRecord(payload) || typeof payload.type !== "string") {
+    return;
+  }
+  incrementCount(state.eventTypeCounts, payload.type);
+
+  if (payload.type === "item.completed") {
+    const item = isRecord(payload.item) ? payload.item : null;
+    if (item && item.type === "command_execution") {
+      state.observedToolNames.add("exec_command");
+    }
+    return;
+  }
+
+  if (payload.type === "response_item") {
+    const item = isRecord(payload.payload) ? payload.payload : null;
+    if (!item || typeof item.type !== "string") {
+      return;
+    }
+    incrementCount(state.responseItemTypeCounts, item.type);
+    if (item.type === "message" && typeof item.role === "string") {
+      incrementCount(state.responseMessageRoleCounts, item.role);
+    }
+    const toolName = toolNameForObservedItem(item);
+    if (toolName) {
+      state.observedToolNames.add(toolName);
+    }
+    return;
+  }
+
+  if (payload.type === "event_msg") {
+    const message = isRecord(payload.payload) ? payload.payload : null;
+    if (!message || typeof message.type !== "string") {
+      return;
+    }
+    incrementCount(state.eventMsgTypeCounts, message.type);
+  }
+}
+
 function summaryFor(payload: unknown): Record<string, unknown> {
   if (!isRecord(payload)) {
     return { parsed: false };
@@ -279,6 +385,46 @@ function summaryFor(payload: unknown): Record<string, unknown> {
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function incrementCount(counts: Record<string, number>, key: string): void {
+  counts[key] = (counts[key] ?? 0) + 1;
+}
+
+function countBySourceKind(sources: RoundSource[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const source of sources) {
+    incrementCount(counts, source.sourceKind);
+  }
+  return counts;
+}
+
+function observedToolResultCount(state: ObservedExecTurnState): number {
+  let count = state.eventTypeCounts["item.completed"] ?? 0;
+  for (const [itemType, itemCount] of Object.entries(state.responseItemTypeCounts)) {
+    if (isToolResultItemType(itemType)) {
+      count += itemCount;
+    }
+  }
+  return count;
+}
+
+function toolNameForObservedItem(item: Record<string, unknown>): string | null {
+  const directName = stringField(item, "name");
+  if (directName) {
+    return directName;
+  }
+  if (item.type === "function_call" || isToolResultItemType(stringField(item, "type") ?? "")) {
+    return "unknown_tool";
+  }
+  return null;
+}
+
+function isToolResultItemType(type: string): boolean {
+  return type === "function_call_output" ||
+    type.endsWith("_tool_call_output") ||
+    type === "custom_tool_call_output" ||
+    type === "mcp_tool_call_output";
 }
 
 function base64(buffer: ArrayBuffer): string {
