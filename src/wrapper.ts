@@ -1,20 +1,16 @@
 import { CodexEventObserver } from "./codex_events.ts";
 import {
-  buildRemoteCodexArgs,
   classifyCodexRunMode,
+  type CodexRunMode,
   ensureExecJsonArg,
   findCodexCommand,
-  hasCodexRemoteArg,
 } from "./codex_modes.ts";
 import { CliOptions, expandHome, loadConfig, ProxyConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
+import { startInteractiveRolloutTailer } from "./rollout_tailer.ts";
 import type { ContextWindowComparisonStats, ContextWindowStats } from "./server.ts";
 import { startServer } from "./server.ts";
 import type { RoundSource } from "./tool_results.ts";
-import {
-  startWebSocketRelayOnAvailablePort,
-  type WebSocketRelayEvent,
-} from "./websocket_relay.ts";
 
 export const DEFAULT_WRAPPER_PORT_START = 40123;
 export const PANDO_PROVIDER_ID = "pando-proxy";
@@ -22,8 +18,6 @@ export const CODEX_ALIAS_COMMAND = "npx -y pando-proxy";
 export const WRAPPER_PREFERENCES_RELATIVE_PATH = ".pando-proxy/wrapper-preferences.json";
 export const WRAPPER_LAST_THREAD_RELATIVE_PATH = "wrapper-last-thread.json";
 const SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS = 1_500;
-const INTERACTIVE_RESTART_LIMIT = 1;
-const APP_SERVER_OUTPUT_TAIL_CHARS = 12_000;
 
 export type WrapperOptions = CliOptions & {
   portStart?: number;
@@ -46,34 +40,6 @@ export type StartedProxy = {
     latest: () => ContextWindowComparisonStats | null;
     forSession: (sessionKey: string) => ContextWindowComparisonStats | null;
   };
-};
-
-type StartedCodexAppServer = {
-  child: Deno.ChildProcess;
-  status: Promise<Deno.CommandStatus>;
-  url: string;
-  port: number;
-  isExited: () => boolean;
-  stdoutTail: () => string;
-  stderrTail: () => string;
-  outputDone: Promise<void>;
-};
-
-type InteractiveAttemptDiagnostics = {
-  relayEvents: WebSocketRelayEvent[];
-  upstreamOpened: boolean;
-  appServerExit: Deno.CommandStatus | null;
-  appServerExitUnexpected: boolean;
-  appServerStdoutTail: string;
-  appServerStderrTail: string;
-};
-
-type InteractiveAttemptResult = {
-  exitCode: number;
-  status: Deno.CommandStatus;
-  diagnostics: InteractiveAttemptDiagnostics;
-  shouldRestart: boolean;
-  restartReason: string | null;
 };
 
 export type WrapperPreferences = {
@@ -212,7 +178,12 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   await maybeOfferCodexAlias();
 
   const baseConfig = loadConfig(parsed.options);
-  const effectiveCodexArgs = await rewriteResumeLastArgs(parsed.codexArgs, baseConfig.stateDir);
+  const requestedMode = classifyCodexRunMode(parsed.codexArgs);
+  const effectiveCodexArgs = await rewriteResumeLastArgs(
+    parsed.codexArgs,
+    baseConfig.stateDir,
+    requestedMode,
+  );
   const mode = classifyCodexRunMode(effectiveCodexArgs);
   const logFile = await resolveWrapperLogFile(parsed.options, baseConfig.stateDir);
   const logger = createLogger(logFile);
@@ -222,7 +193,9 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     { ...baseConfig, logFile },
     portStart,
     () => observer.latestExecThreadId(),
-    mode === "exec-json" ? (sessionKey, timeoutMs) => observer.waitForExecTurn(sessionKey, timeoutMs) : undefined,
+    mode !== "passthrough"
+      ? (sessionKey, timeoutMs) => observer.waitForExecTurn(sessionKey, timeoutMs)
+      : undefined,
   );
   const cleanup = installProxyCleanup(started.server, logger);
 
@@ -244,13 +217,12 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     let exitCode: number;
     if (mode === "exec-json") {
       exitCode = await runCodexExecJson(effectiveCodexArgs, started.config, logger, observer);
-    } else if (mode === "interactive-remote") {
-      exitCode = await runCodexInteractiveRemote(
+    } else if (mode === "interactive-direct") {
+      exitCode = await runCodexInteractiveDirect(
         effectiveCodexArgs,
         started.config,
         logger,
         observer,
-        portStart,
       );
     } else {
       exitCode = await runCodexPassthrough(effectiveCodexArgs, started.config, logger);
@@ -259,7 +231,9 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     await saveLatestWrapperThreadId(baseConfig.stateDir, threadId);
     printContextWindowSummary(
       threadId,
-      threadId ? started.contextStats.forSession(threadId) ?? started.contextStats.latest() : started.contextStats.latest(),
+      threadId
+        ? started.contextStats.forSession(threadId) ?? started.contextStats.latest()
+        : started.contextStats.latest(),
     );
     return exitCode;
   } catch (error) {
@@ -304,7 +278,14 @@ const EXEC_ONLY_FLAGS_WITHOUT_VALUE = new Set([
   "--oss",
 ]);
 
-async function rewriteResumeLastArgs(codexArgs: string[], stateDir: string): Promise<string[]> {
+export async function rewriteResumeLastArgs(
+  codexArgs: string[],
+  stateDir: string,
+  mode: CodexRunMode,
+): Promise<string[]> {
+  if (mode !== "exec-json") {
+    return [...codexArgs];
+  }
   const savedThreadId = await loadLatestWrapperThreadId(stateDir);
   const rewritten = [...codexArgs];
 
@@ -648,7 +629,9 @@ async function runCodexAliasUninstall(): Promise<number> {
       console.error(`pando-proxy: no pando-proxy codex alias found in ${result.path}.`);
       return 0;
     }
-    console.error(`pando-proxy: failed to remove codex alias: ${result.message ?? "unknown error"}`);
+    console.error(
+      `pando-proxy: failed to remove codex alias: ${result.message ?? "unknown error"}`,
+    );
     return 1;
   } catch (error) {
     console.error(`pando-proxy: failed to remove codex alias: ${messageFor(error)}`);
@@ -809,218 +792,48 @@ async function runCodexExecJson(
   }
 }
 
-async function runCodexInteractiveRemote(
+async function runCodexInteractiveDirect(
   codexArgs: string[],
   config: ProxyConfig,
   logger: ReturnType<typeof createLogger>,
   observer: CodexEventObserver,
-  portStart: number,
 ): Promise<number> {
-  if (hasCodexRemoteArg(codexArgs)) {
-    throw new Error("pando-proxy: --remote is managed by pando-proxy in interactive mode");
-  }
-
-  let restartCount = 0;
-  let nextCodexArgs = [...codexArgs];
-
-  while (true) {
-    const result = await runCodexInteractiveRemoteAttempt(
-      nextCodexArgs,
-      config,
-      logger,
-      observer,
-      portStart,
-    );
-    if (!result.shouldRestart || restartCount >= INTERACTIVE_RESTART_LIMIT) {
-      if (result.restartReason !== null) {
-        printInteractiveFailureDetails(result.diagnostics, observer.latestExecThreadId(), result.restartReason, false);
-      }
-      return result.exitCode;
-    }
-
-    restartCount += 1;
-    const threadId = observer.latestExecThreadId();
-    printInteractiveFailureDetails(result.diagnostics, threadId, result.restartReason ?? "interactive session failed", true);
-    nextCodexArgs = buildInteractiveRestartArgs(codexArgs, threadId);
-    await logger.log("wrapper_interactive_restart", {
-      attempt: restartCount,
-      reason: result.restartReason,
-      resumeThreadId: threadId,
-      restartCodexArgs: nextCodexArgs,
-    });
-    const restartMessage = threadId
-      ? `pando-proxy: restarting Codex with resume ${threadId}`
-      : "pando-proxy: restarting Codex with a fresh interactive session";
-    console.error(restartMessage);
-  }
-}
-
-async function runCodexInteractiveRemoteAttempt(
-  codexArgs: string[],
-  config: ProxyConfig,
-  logger: ReturnType<typeof createLogger>,
-  observer: CodexEventObserver,
-  portStart: number,
-): Promise<InteractiveAttemptResult> {
-  const appServer = await startCodexAppServerOnAvailablePort({
-    config,
+  const args = buildCodexArgs(codexArgs, config);
+  const tailer = await startInteractiveRolloutTailer({
+    cwd: Deno.cwd(),
+    observer,
     logger,
-    portStart: Math.max(config.port + 1, portStart),
-  });
-  let relay: Deno.HttpServer | null = null;
-  let appServerShutdownIntentional = false;
-  let appServerExit: Deno.CommandStatus | null = null;
-  let appServerExitUnexpected = false;
-  const relayEvents: WebSocketRelayEvent[] = [];
-  let upstreamOpened = false;
-
-  const appServerStatusWatcher = appServer.status.then(async (status) => {
-    appServerExit = status;
-    if (!appServerShutdownIntentional) {
-      appServerExitUnexpected = true;
-    }
-    await logger.log("wrapper_app_server_exit", {
-      success: status.success,
-      code: status.code,
-      signal: status.signal,
-      intentional: appServerShutdownIntentional,
-      stdoutTail: appServer.stdoutTail(),
-      stderrTail: appServer.stderrTail(),
-    });
   }).catch(async (error) => {
-    appServerExitUnexpected = !appServerShutdownIntentional;
-    await logger.log("wrapper_app_server_exit_error", {
-      intentional: appServerShutdownIntentional,
+    await logger.log("interactive_rollout_tail_start_failed", {
       message: messageFor(error),
-      stdoutTail: appServer.stdoutTail(),
-      stderrTail: appServer.stderrTail(),
     });
+    return null;
   });
 
   try {
-    const startedRelay = startWebSocketRelayOnAvailablePort({
-      host: config.host,
-      portStart: appServer.port + 1,
-      upstreamUrl: appServer.url,
-      observer,
-      onEvent: (event) => {
-        relayEvents.push(event);
-        if (event.type === "upstream_open") {
-          upstreamOpened = true;
-        }
-        void logger.log("wrapper_relay_event", event).catch(() => {});
-      },
-    });
-    relay = startedRelay.server;
-
-    const remoteArgs = buildRemoteCodexArgs(codexArgs, startedRelay.url);
-    await logger.log("wrapper_relay_start", {
-      relayUrl: startedRelay.url,
-      appServerUrl: appServer.url,
-    });
-
-    const status = await runCodexForegroundDetailed({
-      args: remoteArgs,
-      mode: "interactive-remote",
-      logger,
-    });
-    appServerShutdownIntentional = true;
-
-    const diagnostics = {
-      relayEvents: [...relayEvents],
-      upstreamOpened,
-      appServerExit,
-      appServerExitUnexpected,
-      appServerStdoutTail: appServer.stdoutTail(),
-      appServerStderrTail: appServer.stderrTail(),
-    };
-    const restartReason = interactiveRestartReason(status, diagnostics);
-    return {
-      exitCode: status.code,
-      status,
-      diagnostics,
-      shouldRestart: restartReason !== null,
-      restartReason,
-    };
-  } finally {
-    if (relay) {
-      await relay.shutdown();
-    }
-    appServerShutdownIntentional = true;
-    await stopChild(appServer.child, appServer.status, appServer.isExited);
-    await Promise.allSettled([appServer.outputDone, appServerStatusWatcher]);
-  }
-}
-
-async function startCodexAppServerOnAvailablePort(options: {
-  config: ProxyConfig;
-  logger: ReturnType<typeof createLogger>;
-  portStart: number;
-}): Promise<StartedCodexAppServer> {
-  let nextPort = options.portStart;
-  let lastError: unknown = null;
-
-  for (let attempt = 1; attempt <= 20 && nextPort <= 65_535; attempt += 1) {
-    const port = findAvailablePort(options.config.host, nextPort);
-    nextPort = port + 1;
-    const url = `ws://${options.config.host}:${port}`;
-    const args = buildCodexArgs(["app-server", "--listen", url], options.config);
-
-    await options.logger.log("wrapper_app_server_start", {
-      appServerUrl: url,
+    await logger.log("wrapper_codex_start", {
+      mode: "interactive-direct",
       codexArgs: args,
-      attempt,
     });
 
-    const child = new Deno.Command("codex", {
+    const command = new Deno.Command("codex", {
       args,
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
-    const stdoutTail = createTailCapture(APP_SERVER_OUTPUT_TAIL_CHARS);
-    const stderrTail = createTailCapture(APP_SERVER_OUTPUT_TAIL_CHARS);
-    const outputDone = Promise.all([
-      mirrorChildOutput(child.stdout, Deno.stdout, stdoutTail.push),
-      mirrorChildOutput(child.stderr, Deno.stderr, stderrTail.push),
-    ]).then(() => {});
-    let exited = false;
-    const status = child.status.finally(() => {
-      exited = true;
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
     });
-
-    try {
-      await waitForTcpOrExit(options.config.host, port, status, 5_000);
-      return {
-        child,
-        status,
-        url,
-        port,
-        isExited: () => exited,
-        stdoutTail: stdoutTail.read,
-        stderrTail: stderrTail.read,
-        outputDone,
-      };
-    } catch (error) {
-      lastError = error;
-      await options.logger.log("wrapper_app_server_start_failed", {
-        appServerUrl: url,
-        attempt,
-        message: messageFor(error),
-        stdoutTail: stdoutTail.read(),
-        stderrTail: stderrTail.read(),
-        retry: isRetryableAppServerStartError(error),
-      });
-      await stopChild(child, status, () => exited);
-      await Promise.allSettled([outputDone]);
-
-      if (!isRetryableAppServerStartError(error)) {
-        throw error;
-      }
-    }
+    const child = command.spawn();
+    const status = await child.status;
+    await logger.log("wrapper_exit", {
+      mode: "interactive-direct",
+      success: status.success,
+      code: status.code,
+      signal: status.signal,
+    });
+    return status.code;
+  } finally {
+    await tailer?.stop();
   }
-
-  throw new Error(`codex app-server failed to start: ${messageFor(lastError)}`);
 }
 
 async function runCodexForeground(options: {
@@ -1102,12 +915,19 @@ export function startProxyOnAvailablePort(
   baseConfig: ProxyConfig,
   portStart = DEFAULT_WRAPPER_PORT_START,
   fallbackSessionKeyForRequest?: () => string | null | undefined,
-  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>,
+  observedRoundSourcesForSession?: (
+    sessionKey: string,
+    timeoutMs: number,
+  ) => Promise<RoundSource[]>,
 ): StartedProxy {
   for (let port = portStart; port <= 65_535; port += 1) {
     const config = { ...baseConfig, port };
     try {
-      const started = startServer(config, fallbackSessionKeyForRequest, observedRoundSourcesForSession);
+      const started = startServer(
+        config,
+        fallbackSessionKeyForRequest,
+        observedRoundSourcesForSession,
+      );
       return {
         config,
         server: started.server,
@@ -1124,7 +944,10 @@ export function startProxyOnAvailablePort(
   throw new Error(`No available port found at or above ${portStart}`);
 }
 
-function printContextWindowSummary(threadId: string | null, stats: ContextWindowComparisonStats | null): void {
+function printContextWindowSummary(
+  threadId: string | null,
+  stats: ContextWindowComparisonStats | null,
+): void {
   if (!stats) {
     return;
   }
@@ -1143,180 +966,13 @@ function formatContextWindowSeries(stats: ContextWindowStats | null): string | n
   if (!stats) {
     return null;
   }
-  return `min ${formatCount(stats.minBytes)}, avg ${formatCount(stats.avgBytes)}, max ${formatCount(stats.maxBytes)}`;
-}
-
-function printInteractiveFailureDetails(
-  diagnostics: InteractiveAttemptDiagnostics,
-  threadId: string | null,
-  reason: string,
-  willRestart: boolean,
-): void {
-  console.error(
-    `pando-proxy: interactive Codex session failed: ${reason}${willRestart ? " (will restart once)" : ""}`,
-  );
-  if (threadId) {
-    console.error(`pando-proxy: last Codex session id: ${threadId}`);
-    console.error(`pando-proxy: resume with: codex resume ${threadId}`);
-  }
-  if (diagnostics.appServerExitUnexpected && diagnostics.appServerExit) {
-    console.error(`pando-proxy: codex app-server exited ${formatCommandStatus(diagnostics.appServerExit)}`);
-  }
-  if (diagnostics.relayEvents.length > 0) {
-    for (const line of summarizeRelayEvents(diagnostics.relayEvents)) {
-      console.error(`pando-proxy: ${line}`);
-    }
-  }
-  if (diagnostics.appServerStderrTail) {
-    console.error("pando-proxy: recent codex app-server stderr:");
-    console.error(diagnostics.appServerStderrTail.trimEnd());
-  }
-  if (diagnostics.appServerStdoutTail) {
-    console.error("pando-proxy: recent codex app-server stdout:");
-    console.error(diagnostics.appServerStdoutTail.trimEnd());
-  }
-}
-
-function interactiveRestartReason(
-  status: Deno.CommandStatus,
-  diagnostics: InteractiveAttemptDiagnostics,
-): string | null {
-  if (isUserInterruptStatus(status) || status.success) {
-    if (diagnostics.appServerExitUnexpected) {
-      return "the codex app-server died unexpectedly";
-    }
-    const firstTerminal = firstTerminalRelayEvent(diagnostics.relayEvents);
-    if (firstTerminal?.type === "upstream_error") {
-      return "the upstream app-server websocket hit an error";
-    }
-    if (firstTerminal?.type === "upstream_close") {
-      return `the upstream app-server websocket closed (${formatCloseSummary(firstTerminal)})`;
-    }
-    return null;
-  }
-
-  if (diagnostics.appServerExitUnexpected) {
-    return "the codex app-server died unexpectedly";
-  }
-  const firstTerminal = firstTerminalRelayEvent(diagnostics.relayEvents);
-  if (firstTerminal?.type === "upstream_error") {
-    return "the upstream app-server websocket hit an error";
-  }
-  if (firstTerminal?.type === "upstream_close") {
-    return `the upstream app-server websocket closed (${formatCloseSummary(firstTerminal)})`;
-  }
-  if (firstTerminal?.type === "client_error") {
-    return "the local Codex TUI websocket client hit an error";
-  }
-  return `Codex exited ${formatCommandStatus(status)}`;
-}
-
-function buildInteractiveRestartArgs(originalArgs: string[], threadId: string | null): string[] {
-  if (!threadId) {
-    return [...originalArgs];
-  }
-  const command = findCodexCommand(originalArgs);
-  if (!command) {
-    return [...originalArgs, "resume", threadId];
-  }
-  return [...originalArgs.slice(0, command.index), "resume", threadId];
-}
-
-function summarizeRelayEvents(events: WebSocketRelayEvent[]): string[] {
-  return events.filter((event) => event.type !== "upstream_open").map((event) => {
-    if (event.type === "client_error" || event.type === "upstream_error") {
-      return `${event.type.replaceAll("_", " ")}${event.hadOpened ? " after open" : " before open"}`;
-    }
-    if (event.type === "client_close" || event.type === "upstream_close") {
-      return `${event.type.replaceAll("_", " ")}: ${formatCloseSummary(event)}`;
-    }
-    return event.type;
-  });
-}
-
-function firstTerminalRelayEvent(events: WebSocketRelayEvent[]): WebSocketRelayEvent | null {
-  for (const event of events) {
-    if (event.type !== "upstream_open") {
-      return event;
-    }
-  }
-  return null;
-}
-
-function formatCommandStatus(status: Deno.CommandStatus): string {
-  const signalText = status.signal ? `, signal ${status.signal}` : "";
-  return `with code ${status.code}${signalText}${status.success ? "" : ", success false"}`;
-}
-
-function formatCloseSummary(event: Extract<WebSocketRelayEvent, { type: "client_close" | "upstream_close" }>): string {
-  const reason = event.reason ? `, reason "${event.reason}"` : "";
-  return `code ${event.code}, clean ${event.wasClean}, opened ${event.hadOpened}${reason}`;
-}
-
-function isUserInterruptStatus(status: Deno.CommandStatus): boolean {
-  return status.signal === "SIGINT" || status.code === 130;
-}
-
-function createTailCapture(maxChars: number): { push: (chunk: string) => void; read: () => string } {
-  let value = "";
-  return {
-    push: (chunk: string) => {
-      value += chunk;
-      if (value.length > maxChars) {
-        value = value.slice(-maxChars);
-      }
-    },
-    read: () => value,
-  };
-}
-
-async function mirrorChildOutput(
-  stream: ReadableStream<Uint8Array> | null,
-  writer: { write(chunk: Uint8Array): Promise<number> },
-  onText: (chunk: string) => void,
-): Promise<void> {
-  if (!stream) {
-    return;
-  }
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      await writer.write(value);
-      onText(decoder.decode(value, { stream: true }));
-    }
-    const tail = decoder.decode();
-    if (tail) {
-      onText(tail);
-    }
-  } finally {
-    reader.releaseLock();
-  }
+  return `min ${formatCount(stats.minBytes)}, avg ${formatCount(stats.avgBytes)}, max ${
+    formatCount(stats.maxBytes)
+  }`;
 }
 
 function formatCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
-}
-
-export function findAvailablePort(host: string, portStart: number): number {
-  for (let port = portStart; port <= 65_535; port += 1) {
-    try {
-      const listener = Deno.listen({ hostname: host, port });
-      listener.close();
-      return port;
-    } catch (error) {
-      if (isAddressInUse(error)) {
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  throw new Error(`No available port found at or above ${portStart}`);
 }
 
 export async function resolveWrapperLogFile(
@@ -1412,8 +1068,8 @@ Usage:
 Default mode starts a per-instance proxy, then runs codex with provider overrides
 pointing at that proxy. The first non-proxy argument starts Codex passthrough,
 so commands like exec, resume, help, and app-server are passed to codex.
-Exec mode is observed through Codex JSONL. Interactive mode is observed through
-a local Codex app-server and websocket relay.
+Exec mode is observed through Codex JSONL. Interactive mode runs Codex directly
+with the same provider overrides.
 
 Proxy wrapper options:
   --proxy-host <host>                      Default: 127.0.0.1
@@ -1463,80 +1119,8 @@ function isAddressInUse(error: unknown): boolean {
     (error instanceof Error && /address already in use|addrinuse/i.test(error.message));
 }
 
-function isRetryableAppServerStartError(error: unknown): boolean {
-  return error instanceof Error &&
-    /app-server exited before listening|app-server did not start listening|address already in use|addrinuse/i
-      .test(error.message);
-}
-
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function waitForTcpOrExit(
-  host: string,
-  port: number,
-  status: Promise<Deno.CommandStatus>,
-  timeoutMs: number,
-): Promise<void> {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const exited = await withTimeout(
-      status.then((commandStatus) => ({ exited: true as const, status: commandStatus })),
-      50,
-      { exited: false as const },
-    );
-    if (exited.exited) {
-      throw new Error(`codex app-server exited before listening with code ${exited.status.code}`);
-    }
-
-    try {
-      const connection = await Deno.connect({ hostname: host, port });
-      connection.close();
-      return;
-    } catch (error) {
-      if (!isConnectionRefused(error)) {
-        throw error;
-      }
-    }
-  }
-
-  throw new Error(`codex app-server did not start listening on ${host}:${port}`);
-}
-
-async function stopChild(
-  child: Deno.ChildProcess,
-  status: Promise<Deno.CommandStatus>,
-  isExited: () => boolean,
-): Promise<void> {
-  if (!isExited()) {
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // Process may have exited between the state check and signal.
-    }
-  }
-
-  await withTimeout(status.catch(() => undefined), 1_000, undefined);
-
-  if (!isExited()) {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // Process may have exited after the grace period.
-    }
-    await status.catch(() => undefined);
-  }
-}
-
-function isConnectionRefused(error: unknown): boolean {
-  return error instanceof Deno.errors.ConnectionRefused ||
-    error instanceof Deno.errors.ConnectionReset ||
-    error instanceof Deno.errors.NotConnected ||
-    (error instanceof Error && /connection refused|connection reset|not connected/i.test(
-      error.message,
-    ));
 }
 
 function withTimeout<T, F>(promise: Promise<T>, ms: number, fallback: F): Promise<T | F> {

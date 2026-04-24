@@ -21,7 +21,7 @@ export class CodexEventObserver {
       return;
     }
 
-    const payload = parseJson(trimmed);
+    const payload = normalizeObserverPayload(parseJson(trimmed));
     const threadId = extractExecThreadId(payload);
     if (threadId) {
       this.#latestExecThreadId = threadId;
@@ -143,6 +143,69 @@ function parseJson(value: string): unknown {
   } catch {
     return value;
   }
+}
+
+function normalizeObserverPayload(value: unknown): unknown {
+  const rolloutPayload = rolloutEnvelopeToExecPayload(value);
+  return rolloutPayload ?? value;
+}
+
+function rolloutEnvelopeToExecPayload(value: unknown): unknown | null {
+  if (!isRecord(value) || typeof value.type !== "string") {
+    return null;
+  }
+  if (!isRecord(value.payload)) {
+    return null;
+  }
+
+  const payload = value.payload;
+  if (value.type === "session_meta" && typeof payload.id === "string") {
+    return { type: "thread.started", thread_id: payload.id };
+  }
+
+  if (value.type !== "event_msg" || typeof payload.type !== "string") {
+    return null;
+  }
+
+  if (payload.type === "task_started") {
+    return {
+      type: "turn.started",
+      params: {
+        turnId: stringField(payload, "turn_id"),
+      },
+    };
+  }
+
+  if (payload.type === "task_complete") {
+    return {
+      type: "turn.completed",
+      params: {
+        turnId: stringField(payload, "turn_id"),
+      },
+    };
+  }
+
+  if (payload.type === "exec_command_end") {
+    const output = typeof payload.aggregated_output === "string" ? payload.aggregated_output : "";
+    if (!output) {
+      return null;
+    }
+    return {
+      type: "item.completed",
+      item: {
+        type: "command_execution",
+        status: "completed",
+        aggregated_output: output,
+        id: stringField(payload, "call_id") ?? stringField(payload, "process_id") ??
+          stringField(payload, "turn_id"),
+        command: Array.isArray(payload.command)
+          ? payload.command.filter((part) => typeof part === "string").join(" ")
+          : stringField(payload, "command"),
+      },
+    };
+  }
+
+  return null;
 }
 
 function extractExecThreadId(payload: unknown): string | null {

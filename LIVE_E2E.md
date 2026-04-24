@@ -1,6 +1,7 @@
 # Live E2E Test
 
-This verifies stock Codex can talk to a real upstream model through `pando-proxy` and that the current working-memory design behaves correctly under live multi-round use.
+This verifies stock Codex can talk to a real upstream model through `pando-proxy` and that the
+current working-memory design behaves correctly under live multi-round use.
 
 ## Current Memory Design To Validate
 
@@ -9,23 +10,30 @@ The live design is:
 - one compact `objective`
 - exact retained chunks only
 - aggressive end-of-turn pruning of useless chunks
-- optional local `memory(offset, limit)` fallback for exact retained chunks not already in the prompt
+- optional local `memory(offset, limit)` fallback for exact retained chunks not already in the
+  prompt
 - final empty-memory behavior when the work is explicitly over
 
-The main thing to validate is not raw recall volume. It is whether the proxy keeps the right exact evidence and drops the rest.
+The main thing to validate is not raw recall volume. It is whether the proxy keeps the right exact
+evidence and drops the rest.
 
 ## Prerequisites
 
 - `codex` is installed and logged in
 - Deno is installed
 
-**Important:** if `pando-proxy` or an aliased `codex` looks frozen before the proxy ever receives a request, Codex may be blocked on its own update-selection prompt. In that case run raw Codex with `npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct`, make the update choice directly in Codex, then rerun the proxy test.
+**Important:** if `pando-proxy` or an aliased `codex` looks frozen before the proxy ever receives a
+request, Codex may be blocked on its own update-selection prompt. In that case run raw Codex with
+`npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct`, make the update
+choice directly in Codex, then rerun the proxy test.
 
-No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex provider overrides for that process only, then runs `codex`.
+No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex
+provider overrides for that process only, then runs `codex`.
 
 ## Recommended Local Loop
 
-For fast local iteration against the latest code, prefer the Deno wrapper path instead of `npm pack` or `npx`.
+For fast local iteration against the latest code, prefer the Deno wrapper path instead of `npm pack`
+or `npx`.
 
 Use one fixed `--proxy-log-file` and one fixed `--proxy-state-dir` per test session. That gives you:
 
@@ -59,9 +67,14 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   "your next prompt"
 ```
 
-The wrapper rewrites `resume --last` to the concrete session id saved in `<state-dir>/wrapper-last-thread.json`, and it hoists any `exec`-global flags written after `resume` (such as `--sandbox`, `-C`, `--add-dir`, `--oss`, `-p`/`--profile`, `--output-schema`, `--color`) to before `resume`, so Codex's `exec resume` subcommand parser accepts them. You can write the flags in either order; the wrapper normalizes.
+The wrapper rewrites `resume --last` to the concrete session id saved in
+`<state-dir>/wrapper-last-thread.json`, and it hoists any `exec`-global flags written after `resume`
+(such as `--sandbox`, `-C`, `--add-dir`, `--oss`, `-p`/`--profile`, `--output-schema`, `--color`) to
+before `resume`, so Codex's `exec resume` subcommand parser accepts them. You can write the flags in
+either order; the wrapper normalizes.
 
-For a multi-round test, repeat `exec resume --last` with the same log/state paths. For an independent new test, switch to a new log path and new state dir.
+For a multi-round test, repeat `exec resume --last` with the same log/state paths. For an
+independent new test, switch to a new log path and new state dir.
 
 ## What To Inspect After Each Round
 
@@ -84,6 +97,7 @@ Confirm:
 
 - the current `objective`
 - retained chunk ids and count
+- any `forcedKeep*` fields when deterministic constraint pinning overrode a model drop
 - total stored chunk bytes
 - processed source count
 - whether irrelevant chunks were dropped
@@ -107,14 +121,17 @@ For any failure:
 
 ## Transport Notes
 
-There are two wrapper paths and they are intentionally different:
+There are two wrapper paths:
 
 - `exec` mode injects a temporary Responses provider that points at the local HTTP proxy
-- interactive mode starts a local Codex app-server plus websocket relay
+- interactive mode runs `codex` directly with the same provider overrides
 
-For memory validation of the real proxy request/response loop, prefer `exec` mode unless you are specifically testing the interactive relay.
+For memory validation of the real proxy request/response loop, prefer `exec` mode unless you are
+specifically testing the interactive TUI path.
 
-When inspecting a run, do not treat a log that currently shows only wrapper lifecycle events as proof that the request bypassed the proxy. There can be a delay before the first `incoming_request`. Judge the run only after one of:
+When inspecting a run, do not treat a log that currently shows only wrapper lifecycle events as
+proof that the request bypassed the proxy. There can be a delay before the first `incoming_request`.
+Judge the run only after one of:
 
 - `incoming_request` appears
 - `wrapper_exit` appears

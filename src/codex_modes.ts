@@ -1,4 +1,4 @@
-export type CodexRunMode = "exec-json" | "interactive-remote" | "passthrough";
+export type CodexRunMode = "exec-json" | "interactive-direct" | "passthrough";
 
 export type CodexCommand = {
   name: string;
@@ -62,20 +62,20 @@ export function classifyCodexRunMode(args: string[]): CodexRunMode {
 
   const command = findCodexCommand(args);
   if (!command) {
-    return "interactive-remote";
+    return "interactive-direct";
   }
 
   if (EXEC_COMMANDS.has(command.name)) {
     return "exec-json";
   }
   if (INTERACTIVE_COMMANDS.has(command.name)) {
-    return "interactive-remote";
+    return "interactive-direct";
   }
   if (CODEX_TOP_LEVEL_COMMANDS.has(command.name)) {
     return "passthrough";
   }
 
-  return "interactive-remote";
+  return "interactive-direct";
 }
 
 export function ensureExecJsonArg(args: string[]): string[] {
@@ -89,14 +89,6 @@ export function ensureExecJsonArg(args: string[]): string[] {
     "--json",
     ...args.slice(command.index + 1),
   ];
-}
-
-export function buildRemoteCodexArgs(args: string[], relayUrl: string): string[] {
-  return ["--remote", relayUrl, ...args];
-}
-
-export function hasCodexRemoteArg(args: string[]): boolean {
-  return args.some((arg) => arg === "--remote" || arg.startsWith("--remote="));
 }
 
 export function findCodexCommand(args: string[]): CodexCommand | null {
