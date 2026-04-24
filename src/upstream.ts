@@ -5,6 +5,7 @@ import type { ProxyLogger } from "./logger.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
 import { chronologicalChunks, type ChunkRecord, type MemoryState } from "./memory_state.ts";
 import { isRecord } from "./memory_state.ts";
+import { buildDerivedPrompt, makeWorkingMemoryItem } from "./prompt_view.ts";
 import type { RoundSource } from "./tool_results.ts";
 import { extractAssistantSourcesFromResponse } from "./tool_results.ts";
 
@@ -28,6 +29,7 @@ export type UpstreamOptions = {
 export type LocalContextFetch = {
   offset: number;
   limit: number;
+  requestedChunkIds?: string[];
   returnedChunkIds: string[];
 };
 
@@ -99,9 +101,11 @@ export async function runResponsesLoop(
   let requestBody: Record<string, unknown> = { ...options.body, stream: true, store: false };
   const fetches: LocalContextFetch[] = [];
   const assistantSources: RoundSource[] = [];
-  const availableChunks = buildAvailableMemoryChunks(memory, inlineChunkIds);
+  const visibleChunkIds = new Set(inlineChunkIds);
+  const loopOutputs: Record<string, unknown>[] = [];
 
   for (let iteration = 0; iteration <= config.maxLocalContextToolCalls; iteration += 1) {
+    requestBody = await rebuildLoopRequestBody(options.body, memory, visibleChunkIds, loopOutputs);
     const upstream = await postResponsesJson(config, options.authHeader, requestBody, options.logger);
     if (!upstream.ok) {
       return { ok: false, response: upstream.response, fetches };
@@ -125,18 +129,22 @@ export async function runResponsesLoop(
 
     const outputs: Array<Record<string, unknown>> = [];
     for (const call of localCalls) {
-      const items = availableChunks
-        .slice(call.offset, call.offset + call.limit)
+      const items = resolveMemoryCallItems(memory, visibleChunkIds, call)
         .map((chunk) => ({ id: chunk.id, content: chunk.payload }));
+      for (const item of items) {
+        visibleChunkIds.add(item.id);
+      }
       fetches.push({
         offset: call.offset,
         limit: call.limit,
+        ...(call.chunkIds.length > 0 ? { requestedChunkIds: call.chunkIds } : {}),
         returnedChunkIds: items.map((item) => item.id),
       });
       await options.logger?.log("memory_fetch", {
         sessionKey,
         offset: call.offset,
         limit: call.limit,
+        ...(call.chunkIds.length > 0 ? { requestedChunkIds: call.chunkIds } : {}),
         returnedChunkIds: items.map((item) => item.id),
       });
       outputs.push(call.item);
@@ -148,13 +156,7 @@ export async function runResponsesLoop(
         }),
       });
     }
-
-    requestBody = {
-      ...baseLoopRequestBody(options.body),
-      input: [...inputItems(requestBody.input), ...outputs],
-      stream: true,
-      store: false,
-    };
+    loopOutputs.push(...outputs);
   }
 
   throw new Error("Unreachable local tool loop state");
@@ -224,9 +226,9 @@ async function postResponsesJson(
 
 function parseMemoryCalls(
   responseBody: Record<string, unknown>,
-): Array<{ callId: string; offset: number; limit: number; item: Record<string, unknown> }> {
+): Array<{ callId: string; offset: number; limit: number; chunkIds: string[]; item: Record<string, unknown> }> {
   const output = Array.isArray(responseBody.output) ? responseBody.output : [];
-  const out: Array<{ callId: string; offset: number; limit: number; item: Record<string, unknown> }> = [];
+  const out: Array<{ callId: string; offset: number; limit: number; chunkIds: string[]; item: Record<string, unknown> }> = [];
   for (const item of output) {
     if (!isRecord(item)) {
       continue;
@@ -241,26 +243,30 @@ function parseMemoryCalls(
       callId: item.call_id,
       offset: parsed.offset,
       limit: parsed.limit,
+      chunkIds: parsed.chunkIds,
       item,
     });
   }
   return out;
 }
 
-function parseMemoryArguments(argumentsValue: unknown): { offset: number; limit: number } {
+function parseMemoryArguments(argumentsValue: unknown): { offset: number; limit: number; chunkIds: string[] } {
   let parsed: unknown = argumentsValue;
   if (typeof argumentsValue === "string") {
     parsed = JSON.parse(argumentsValue);
   }
   if (!isRecord(parsed)) {
-    return { offset: 0, limit: 10 };
+    return { offset: 0, limit: 10, chunkIds: [] };
   }
+  const chunkIds = Array.isArray(parsed.chunkIds)
+    ? parsed.chunkIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
   const offset = typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0
     ? parsed.offset
     : 0;
   const rawLimit = typeof parsed.limit === "number" && Number.isInteger(parsed.limit) ? parsed.limit : 10;
   const limit = Math.max(1, Math.min(50, rawLimit));
-  return { offset, limit };
+  return { offset, limit, chunkIds };
 }
 
 function responseForClient(body: Record<string, unknown>, stream: boolean): Response {
@@ -387,4 +393,41 @@ function sseEvent(event: string, payload: unknown): string {
 function buildAvailableMemoryChunks(memory: MemoryState, inlineChunkIds: string[]): ChunkRecord[] {
   const inlineIds = new Set(inlineChunkIds);
   return chronologicalChunks(memory.chunks).filter((chunk) => !inlineIds.has(chunk.id));
+}
+
+function resolveMemoryCallItems(
+  memory: MemoryState,
+  visibleChunkIds: Set<string>,
+  call: { offset: number; limit: number; chunkIds: string[] },
+): ChunkRecord[] {
+  const availableChunks = chronologicalChunks(memory.chunks)
+    .filter((chunk) => !visibleChunkIds.has(chunk.id));
+  if (call.chunkIds.length > 0) {
+    const byId = new Map(availableChunks.map((chunk) => [chunk.id, chunk] as const));
+    return call.chunkIds
+      .map((chunkId) => byId.get(chunkId))
+      .filter((chunk): chunk is ChunkRecord => Boolean(chunk));
+  }
+  return availableChunks.slice(call.offset, call.offset + call.limit);
+}
+
+async function rebuildLoopRequestBody(
+  originalBody: Record<string, unknown>,
+  memory: MemoryState,
+  visibleChunkIds: Set<string>,
+  loopOutputs: Record<string, unknown>[],
+): Promise<Record<string, unknown>> {
+  const ordered = chronologicalChunks(memory.chunks);
+  const inlineChunks = ordered.filter((chunk) => visibleChunkIds.has(chunk.id));
+  const memoryItem = makeWorkingMemoryItem(memory, inlineChunks);
+  const derived = await buildDerivedPrompt(
+    [...inputItems(originalBody.input), ...loopOutputs],
+    memoryItem,
+  );
+  return {
+    ...baseLoopRequestBody(originalBody),
+    input: derived.input,
+    stream: true,
+    store: false,
+  };
 }

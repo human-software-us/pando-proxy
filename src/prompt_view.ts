@@ -109,7 +109,10 @@ export function makeWorkingMemoryItem(
   };
 }
 
-export function buildWorkingMemoryText(memory: MemoryState, inlineChunks: ChunkRecord[]): string {
+export function buildWorkingMemoryText(
+  memory: MemoryState,
+  inlineChunks: ChunkRecord[],
+): string {
   const lines = ["<pando_working_memory>"];
   if (memory.objective) {
     lines.push("<objective>", memory.objective, "</objective>");
@@ -122,11 +125,13 @@ export function buildWorkingMemoryText(memory: MemoryState, inlineChunks: ChunkR
   }
   lines.push("</exact_chunks>");
   lines.push("<memory_fallback>");
-  lines.push("If the attached exact chunks are insufficient, call memory(offset, limit).");
-  lines.push("This returns additional exact retained chunks not already included above.");
+  lines.push("If the attached exact chunks are insufficient, call memory({chunkIds:[...]}) to fetch exact retained chunks by id when you already know those ids from visible context or earlier memory() results.");
+  lines.push("Use memory({offset, limit}) to paginate additional exact retained chunks from the hidden retained set.");
+  lines.push("memory() skips any chunks already visible in this prompt or already returned by earlier memory() calls in this turn.");
+  lines.push("If you do not know the needed chunk ids, browse with memory({offset, limit}) until you find the exact chunk, then request specific ids if helpful.");
   lines.push("Prefer attached chunks over running new tools when they already contain the needed exact fact.");
-  lines.push("Do not claim prior captured data is unavailable until you have used memory(offset, limit) when the visible chunks are insufficient.");
-  lines.push("When asked to restate or recall exact prior captured content, use memory(offset, limit) before answering from absence.");
+  lines.push("Do not claim prior captured data is unavailable until you have used memory() when the visible chunks are insufficient.");
+  lines.push("When asked to restate or recall exact prior captured content, use memory({chunkIds:[...]}) or memory({offset, limit}) before answering from absence.");
   lines.push("</memory_fallback>");
   lines.push("</pando_working_memory>");
   return lines.join("\n");
@@ -209,22 +214,26 @@ function injectMemoryTool(tools: unknown, omittedChunks: ChunkRecord[]): unknown
   existing.push({
     type: "function",
     name: "memory",
-    description: "Fetch additional exact retained chunks in chronological order.",
+    description: "Fetch additional exact retained chunks by id or in chronological order.",
     parameters: {
       type: "object",
       additionalProperties: false,
-      required: ["offset", "limit"],
       properties: {
+        chunkIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Exact retained chunk ids to fetch. Chunks already visible in the prompt are skipped.",
+        },
         offset: {
           type: "integer",
           minimum: 0,
-          description: "How many additional retained chunks to skip.",
+          description: "How many additional retained chunks to skip when browsing omitted chunks.",
         },
         limit: {
           type: "integer",
           minimum: 1,
           maximum: 50,
-          description: "How many additional retained chunks to return.",
+          description: "How many additional retained chunks to return when browsing omitted chunks.",
         },
       },
     },

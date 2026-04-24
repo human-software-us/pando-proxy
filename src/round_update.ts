@@ -205,19 +205,31 @@ export function validateRoundUpdate(
   const keptFactRecords = keptChunks.flatMap((chunk) => extractConcreteFactRecords(textFromPayload(chunk.payload)));
   const keptFacts = new Set(keptFactRecords.map((fact) => fact.fact));
   const keptFactKeys = new Set(keptFactRecords.map((fact) => fact.key));
+  const keptNonAssistantFactRecords = keptChunks
+    .filter((chunk) => chunk.sourceKind !== "assistant")
+    .flatMap((chunk) => extractConcreteFactRecords(textFromPayload(chunk.payload)));
+  const keptNonAssistantFacts = new Set(keptNonAssistantFactRecords.map((fact) => fact.fact));
+  const keptNonAssistantFactKeys = new Set(keptNonAssistantFactRecords.map((fact) => fact.key));
 
   for (const chunk of previous.chunks) {
     if (response.keepOldChunkIds.includes(chunk.id)) {
       validateRetainedChunk(chunk, errors);
     } else if (objectiveAfter) {
-      validateDroppedKeptFactChunk(chunk, keptFacts, keptFactKeys, errors);
+      validateDroppedKeptFactChunk(
+        chunk,
+        keptFacts,
+        keptFactKeys,
+        keptNonAssistantFacts,
+        keptNonAssistantFactKeys,
+        errors,
+      );
     }
   }
   for (const chunk of newChunks) {
     if (response.keepNewChunkIds.includes(chunk.id)) {
       validateRetainedChunk(chunk, errors);
     } else if (objectiveAfter) {
-      validateDroppedUserFactChunk(chunk, keptFacts, errors);
+      validateDroppedUserFactChunk(chunk, keptFacts, keptNonAssistantFacts, errors);
     }
   }
 
@@ -304,20 +316,14 @@ function validateObjectiveAbstraction(objective: string | null, errors: string[]
   if (!objective) {
     return;
   }
-  if (objective.length > 160) {
+  if (objective.length > 320) {
     errors.push("objectiveAfter must stay compact");
   }
   if (objective.includes("\n")) {
     errors.push("objectiveAfter must be a single line");
   }
-  if (/[`'"]/.test(objective)) {
-    errors.push("objectiveAfter must not quote exact content");
-  }
-  if (/\b[A-Za-z_][A-Za-z0-9_]*=/.test(objective)) {
-    errors.push("objectiveAfter must not embed exact key/value content");
-  }
-  if (/\b(?:printf|echo|cat|grep|rg|ls|find|curl|deno|node|python|bash|zsh|exec_command)\b/i.test(objective)) {
-    errors.push("objectiveAfter must not restate tool commands");
+  if (/\S{161,}/.test(objective)) {
+    errors.push("objectiveAfter must not contain oversized unbroken blobs");
   }
 }
 
@@ -340,6 +346,7 @@ function validateRetainedChunk(
 function validateDroppedUserFactChunk(
   chunk: { sourceKind: "user" | "assistant" | "tool"; payload: unknown },
   keptFacts: Set<string>,
+  keptNonAssistantFacts: Set<string>,
   errors: string[],
 ): void {
   if (chunk.sourceKind !== "user") {
@@ -351,6 +358,10 @@ function validateDroppedUserFactChunk(
   }
   if (facts.some((fact) => !keptFacts.has(fact))) {
     errors.push("Dropping a user fact chunk would lose exact facts not preserved elsewhere");
+    return;
+  }
+  if (facts.some((fact) => !keptNonAssistantFacts.has(fact))) {
+    errors.push("Dropping a user fact chunk cannot rely only on assistant restatements");
   }
 }
 
@@ -358,6 +369,8 @@ function validateDroppedKeptFactChunk(
   chunk: { sourceKind: "user" | "assistant" | "tool"; payload: unknown },
   keptFacts: Set<string>,
   keptFactKeys: Set<string>,
+  keptNonAssistantFacts: Set<string>,
+  keptNonAssistantFactKeys: Set<string>,
   errors: string[],
 ): void {
   const facts = extractConcreteFactRecords(textFromPayload(chunk.payload));
@@ -366,17 +379,24 @@ function validateDroppedKeptFactChunk(
   }
   if (facts.some((fact) => !keptFacts.has(fact.fact) && !keptFactKeys.has(fact.key))) {
     errors.push("Dropping a retained fact chunk would lose exact facts without preservation or replacement");
+    return;
+  }
+  if (
+    chunk.sourceKind !== "assistant" &&
+    facts.some((fact) => !keptNonAssistantFacts.has(fact.fact) && !keptNonAssistantFactKeys.has(fact.key))
+  ) {
+    errors.push("Dropping original user/tool fact chunks cannot rely only on assistant restatements");
   }
 }
 
 function pruneRedundantUserChunks(chunks: ChunkRecord[]): ChunkRecord[] {
-  const factsFromNonUserChunks = new Set(
+  const factsFromAuthoritativeChunks = new Set(
     chunks
-      .filter((chunk) => chunk.sourceKind !== "user")
+      .filter((chunk) => chunk.sourceKind === "tool")
       .flatMap((chunk) => extractConcreteFactRecords(textFromPayload(chunk.payload)))
       .map((fact) => fact.fact),
   );
-  const keptFacts = new Set(factsFromNonUserChunks);
+  const keptFacts = new Set(factsFromAuthoritativeChunks);
   const kept: ChunkRecord[] = [];
 
   for (const chunk of chunks) {

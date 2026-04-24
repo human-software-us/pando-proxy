@@ -428,23 +428,25 @@ Return JSON matching the supplied schema.
 
 Rules:
 - You are given the current objective, the currently kept exact chunks, and the exact new chunks from the latest completed round.
-- objectiveAfter must be a compact abstract description of the live work that still matters after this round, or null if the work is finished and no memory should remain.
-- objectiveAfter is intent only, not evidence. Do not copy exact values, lines, commands, quoted strings, or tool output into it.
+- objectiveAfter must be a compact description of the live work that still matters after this round, or null if the work is finished and no memory should remain.
+- objectiveAfter may include compact literal anchors such as exact identifiers, key/value pairs, quoted phrases, or short command names when that improves exact later reconstruction.
+- Keep objectiveAfter compact. Do not duplicate large blobs, long logs, or full tool outputs there when exact chunks can carry that evidence instead.
 - Existing objective stays live by default. Do not clear it unless the user clearly ended, abandoned, or replaced that work.
 - keepOldChunkIds must be the exact ids from the current kept set that should survive.
 - keepNewChunkIds must be the exact ids from the new chunk set that should survive.
 - Keep the working set minimal.
 - Prefer dropping chunks unless there is a clear reason they will matter later.
 - If many search results or exploratory outputs were observed and only one exact chunk mattered, keep only that one.
-- Keep enough exact evidence so a future memory(offset, limit) fallback is unlikely to be needed.
+- Keep enough exact evidence so a future memory({chunkIds:[...]}) or memory({offset, limit}) fallback is unlikely to be needed.
 - If the user clearly says exact values or content will be needed later, keep the exact supporting chunks.
 - If an older exact chunk still supports the live objective, keep it unless it is clearly obsolete.
+- Retained exact chunks can later be fetched again by chunk id, and pagination skips chunks already visible in prompt memory.
 - Do not replace original tool or user evidence with an assistant restatement when the original exact chunk is still available.
 - Do not keep user instruction text that only says to remember or recall something when the actual exact supporting chunk is already kept.
 - Do not keep assistant acknowledgements, chatter, or confirmations when the underlying exact evidence is already kept.
 - Prefer original tool outputs over user instructions and assistant restatements whenever both carry the same fact.
 - In a tool-driven recall flow, the ideal retained set is usually just the original exact tool chunk and nothing else.
-- If a retained exact chunk explicitly tells the model to call memory(offset, limit), and the user says that exact instruction will matter in a later turn, keep that instruction chunk together with the underlying exact evidence it is meant to retrieve.
+- If a retained exact chunk explicitly tells the model to call memory({chunkIds:[...]}) or memory({offset, limit}), and the user says that exact instruction will matter in a later turn, keep that instruction chunk together with the underlying exact evidence it is meant to retrieve.
 - In that special case, keep both the visible instruction chunk and the hidden exact evidence chunk so fallback can actually be exercised later.
 - If a user message is operational scaffolding such as "run this", "remember this", "reply exactly", or "without running any tool", drop it once the exact evidence it referred to is retained elsewhere.
 - Never keep a plain user question or request phrasing as retained memory unless that user chunk itself carries a durable exact fact that is not preserved elsewhere.
