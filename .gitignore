@@ -1,3 +1,4 @@
 dist/
 pando-proxy-*.tgz
 .env
+tmp/
