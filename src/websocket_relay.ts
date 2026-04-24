@@ -6,11 +6,28 @@ export type StartedWebSocketRelay = {
   port: number;
 };
 
+export type WebSocketRelayEvent =
+  | {
+    type: "upstream_open";
+  }
+  | {
+    type: "client_close" | "upstream_close";
+    code: number;
+    reason: string;
+    wasClean: boolean;
+    hadOpened: boolean;
+  }
+  | {
+    type: "client_error" | "upstream_error";
+    hadOpened: boolean;
+  };
+
 export function startWebSocketRelayOnAvailablePort(options: {
   host: string;
   portStart: number;
   upstreamUrl: string;
   observer: CodexEventObserver;
+  onEvent?: (event: WebSocketRelayEvent) => void;
 }): StartedWebSocketRelay {
   for (let port = options.portStart; port <= 65_535; port += 1) {
     try {
@@ -36,6 +53,7 @@ function startWebSocketRelay(options: {
   port: number;
   upstreamUrl: string;
   observer: CodexEventObserver;
+  onEvent?: (event: WebSocketRelayEvent) => void;
 }): Deno.HttpServer {
   return Deno.serve({
     hostname: options.host,
@@ -47,7 +65,7 @@ function startWebSocketRelay(options: {
     }
 
     const { socket: client, response } = Deno.upgradeWebSocket(request);
-    connectRelay(client, options.upstreamUrl, options.observer);
+    connectRelay(client, options.upstreamUrl, options.observer, options.onEvent);
     return response;
   });
 }
@@ -56,6 +74,7 @@ function connectRelay(
   client: WebSocket,
   upstreamUrl: string,
   observer: CodexEventObserver,
+  onEvent?: (event: WebSocketRelayEvent) => void,
 ): void {
   const upstream = new WebSocket(upstreamUrl);
   const pendingClientFrames: unknown[] = [];
@@ -63,6 +82,7 @@ function connectRelay(
 
   upstream.onopen = () => {
     upstreamOpen = true;
+    onEvent?.({ type: "upstream_open" });
     for (const frame of pendingClientFrames.splice(0)) {
       sendFrame(upstream, frame);
     }
@@ -82,11 +102,41 @@ function connectRelay(
     sendFrame(client, event.data);
   };
 
-  client.onclose = () => closeSocket(upstream);
-  upstream.onclose = () => closeSocket(client);
+  client.onclose = (event) => {
+    onEvent?.({
+      type: "client_close",
+      code: event.code,
+      reason: event.reason,
+      wasClean: event.wasClean,
+      hadOpened: true,
+    });
+    closeSocket(upstream);
+  };
+  upstream.onclose = (event) => {
+    onEvent?.({
+      type: "upstream_close",
+      code: event.code,
+      reason: event.reason,
+      wasClean: event.wasClean,
+      hadOpened: upstreamOpen,
+    });
+    closeSocket(client);
+  };
 
-  client.onerror = () => closeSocket(upstream);
-  upstream.onerror = () => closeSocket(client);
+  client.onerror = () => {
+    onEvent?.({
+      type: "client_error",
+      hadOpened: true,
+    });
+    closeSocket(upstream);
+  };
+  upstream.onerror = () => {
+    onEvent?.({
+      type: "upstream_error",
+      hadOpened: upstreamOpen,
+    });
+    closeSocket(client);
+  };
 }
 
 function sendFrame(socket: WebSocket, frame: unknown): void {
