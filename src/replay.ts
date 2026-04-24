@@ -5,12 +5,14 @@
 //   baseline: approxInputTokens on the raw accumulated body
 //   pando:    approxInputTokens after rewriteRequestWithMemory
 //
-// The memory manager's LLM calls are stubbed with a deterministic policy so the
-// replay never talks to a real model. The assistant messages and tool outputs
-// used to drive updateMemoryForCompletedRound come from the rollout itself.
+// By default the memory manager's LLM calls are stubbed with a deterministic
+// policy so replay never talks to a real model. When opts.realLlm is provided,
+// replay uses the real structured-model path for source chunking and working
+// memory updates while still sourcing assistant/tool outputs from the rollout.
 
 import { chunkRoundSources } from "./chunking.ts";
 import { loadConfig, type ProxyConfig } from "./config.ts";
+import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
 import { estimateTokensForValue, requestContextMetrics } from "./metrics.ts";
 import {
   type ChunkDraft,
@@ -30,7 +32,13 @@ import type {
   WorkingMemoryUpdateRequest,
   WorkingMemoryUpdateResponse,
 } from "./round_update.ts";
-import type { SourceChunkRequest, SourceChunkResponse, StructuredClients } from "./structured_model.ts";
+import {
+  createStructuredClients,
+  type SourceChunkRequest,
+  type SourceChunkResponse,
+  type StructuredClients,
+  type StructuredModelUsage,
+} from "./structured_model.ts";
 
 type RolloutEvent = {
   timestamp?: string;
@@ -335,16 +343,37 @@ function firstLineOfNewUserText(request: WorkingMemoryUpdateRequest): string | n
   return null;
 }
 
+export type RealLlmOpts = {
+  authHeader: string;
+  requestModel?: string;
+  onProgress?: (turn: ReplayTurnResult) => void | Promise<void>;
+  onManagerUsage?: (usage: StructuredModelUsage) => void | Promise<void>;
+};
+
 export async function replayRollout(
   path: string,
-  opts: { policy?: StubPolicy; maxRounds?: number; config?: ProxyConfig } = {},
+  opts: {
+    policy?: StubPolicy;
+    maxRounds?: number;
+    config?: ProxyConfig;
+    realLlm?: RealLlmOpts;
+  } = {},
 ): Promise<{ stats: ReplayStats; turns: ReplayTurnResult[] }> {
   const policy: StubPolicy = opts.policy ?? "drop-tools";
+  const effectivePolicy = opts.realLlm ? "real-llm" : policy;
   const text = await Deno.readTextFile(path);
   const events = parseRollout(text);
   const { prefixItems, rounds } = segmentRounds(events);
   const config = opts.config ?? loadConfig({ memoryEnabled: true });
-  const clients = buildStubClients(policy);
+  const clients: StructuredClients = opts.realLlm
+    ? createStructuredClients(
+      config,
+      opts.realLlm.requestModel ?? "gpt-5.4",
+      opts.realLlm.authHeader,
+      undefined,
+      opts.realLlm.onManagerUsage,
+    )
+    : buildStubClients(policy);
 
   // Accumulated response_items Codex would carry turn-to-turn (baseline path).
   // This includes: prefix items, then for each round the user item + all
@@ -397,19 +426,32 @@ export async function replayRollout(
     };
 
     try {
-      memory = await directMemoryUpdate(
-        baselineBody,
-        memory,
-        fakeResponse,
-        clients,
-        config,
-        policy,
-      );
+      if (opts.realLlm) {
+        const updated = await updateMemoryForCompletedRound(
+          baselineBody,
+          memory,
+          fakeResponse,
+          [],
+          clients,
+          config,
+          { sessionKey: `replay_${round.index}`, requestId: `replay_${round.index}` },
+        );
+        memory = updated.memory;
+      } else {
+        memory = await directMemoryUpdate(
+          baselineBody,
+          memory,
+          fakeResponse,
+          clients,
+          config,
+          policy,
+        );
+      }
     } catch (err) {
       console.error(`round ${round.index} memory update failed:`, err);
     }
 
-    turns.push({
+    const turnResult: ReplayTurnResult = {
       turn: round.index,
       userPreview: round.userText.split("\n")[0].slice(0, 80),
       compactionBefore: Boolean(round.compactionReplacement),
@@ -425,7 +467,11 @@ export async function replayRollout(
       recordedInputTokens: round.recordedInputTokens,
       recordedOutputTokens: round.recordedOutputTokens,
       recordedCachedInputTokens: round.recordedCachedInputTokens,
-    });
+    };
+    turns.push(turnResult);
+    if (opts.realLlm?.onProgress) {
+      await opts.realLlm.onProgress(turnResult);
+    }
 
     // After the round, add assistant items to accumulated so the next round sees
     // the same conversation state Codex would have seen.
@@ -463,7 +509,7 @@ export async function replayRollout(
     },
     savingsAvgTokens: avgOf(baselineSeries) - avgOf(pandoSeries),
     savingsMaxTokens: maxOf(baselineSeries) - maxOf(pandoSeries),
-    policy,
+    policy: effectivePolicy,
   };
 
   return { stats, turns };
