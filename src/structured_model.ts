@@ -450,6 +450,8 @@ Rules:
 - In that special case, keep both the visible instruction chunk and the hidden exact evidence chunk so fallback can actually be exercised later.
 - If a user message is operational scaffolding such as "run this", "remember this", "reply exactly", or "without running any tool", drop it once the exact evidence it referred to is retained elsewhere.
 - Never keep a plain user question or request phrasing as retained memory unless that user chunk itself carries a durable exact fact that is not preserved elsewhere.
+- A user chunk carries a durable exact fact when it contains a literal token, identifier, quoted phrase, key/value pair, or other exact value that the user said must be recalled later. In that case keep the user chunk unless the exact same literal is stored verbatim in another kept chunk.
+- "Remember this exact string: X", "Preserve token X", or similar instructions that introduce a new literal X count as durable: keep the chunk that contains X unless X is preserved elsewhere.
 - If an assistant message only says "stored", "closed", repeats a value already present in a kept exact chunk, or wraps exact content in formatting, drop it.
 - Keep user-message chunks only when they contain durable facts that are not preserved in a kept exact tool or assistant chunk.
 - If the user clearly ends the work or says the memory is no longer needed, set objectiveAfter to null and keep no chunks.

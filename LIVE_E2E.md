@@ -54,9 +54,12 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   --proxy-log-file /tmp/pando-test-1.jsonl \
   --proxy-state-dir /tmp/pando-test-1-state \
   exec resume --last \
+  --sandbox read-only \
   -o /tmp/pando-test-1-r2.txt \
   "your next prompt"
 ```
+
+The wrapper rewrites `resume --last` to the concrete session id saved in `<state-dir>/wrapper-last-thread.json`, and it hoists any `exec`-global flags written after `resume` (such as `--sandbox`, `-C`, `--add-dir`, `--oss`, `-p`/`--profile`, `--output-schema`, `--color`) to before `resume`, so Codex's `exec resume` subcommand parser accepts them. You can write the flags in either order; the wrapper normalizes.
 
 For a multi-round test, repeat `exec resume --last` with the same log/state paths. For an independent new test, switch to a new log path and new state dir.
 

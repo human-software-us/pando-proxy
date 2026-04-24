@@ -245,21 +245,89 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   }
 }
 
+// Flags accepted by `codex exec` but NOT by `codex exec resume`. If a user
+// writes `exec resume --last --sandbox read-only -C /repo "prompt"`, Codex
+// rejects the trailing flags because the resume subcommand parser doesn't
+// know them. We hoist them to before `resume` so the user doesn't have to
+// remember the distinction.
+//
+// Kept intentionally narrow to known-divergent flags; anything shared
+// between `exec` and `exec resume` is left in place.
+const EXEC_ONLY_FLAGS_WITH_VALUE = new Set([
+  "-s",
+  "--sandbox",
+  "-C",
+  "--cd",
+  "--add-dir",
+  "--local-provider",
+  "-p",
+  "--profile",
+  "--output-schema",
+  "--color",
+]);
+const EXEC_ONLY_FLAGS_WITHOUT_VALUE = new Set([
+  "--oss",
+]);
+
 async function rewriteResumeLastArgs(codexArgs: string[], stateDir: string): Promise<string[]> {
   const savedThreadId = await loadLatestWrapperThreadId(stateDir);
-  if (!savedThreadId) {
-    return [...codexArgs];
-  }
-
   const rewritten = [...codexArgs];
-  for (let index = 0; index < rewritten.length - 1; index += 1) {
-    if (rewritten[index] !== "resume" || rewritten[index + 1] !== "--last") {
+
+  for (let index = 0; index < rewritten.length; index += 1) {
+    if (rewritten[index] !== "resume") {
       continue;
     }
-    rewritten.splice(index + 1, 1, savedThreadId);
-    break;
+    // Substitute --last with the saved session id when available. If the user
+    // passed a concrete id already, leave it alone.
+    if (savedThreadId && rewritten[index + 1] === "--last") {
+      rewritten.splice(index + 1, 1, savedThreadId);
+    }
+    const tailStart = rewritten[index + 1] !== undefined && !rewritten[index + 1].startsWith("-")
+      ? index + 2
+      : index + 1;
+    const { hoisted, remaining } = splitExecOnlyFlags(rewritten.slice(tailStart));
+    if (hoisted.length === 0) {
+      return rewritten;
+    }
+    return [
+      ...rewritten.slice(0, index),
+      ...hoisted,
+      ...rewritten.slice(index, tailStart),
+      ...remaining,
+    ];
   }
+
   return rewritten;
+}
+
+function splitExecOnlyFlags(
+  tail: string[],
+): { hoisted: string[]; remaining: string[] } {
+  const hoisted: string[] = [];
+  const remaining: string[] = [];
+  for (let i = 0; i < tail.length; i += 1) {
+    const arg = tail[i];
+    if (arg === "--") {
+      remaining.push(...tail.slice(i));
+      break;
+    }
+    const [name] = arg.split("=", 2);
+    const hasInlineValue = arg.includes("=");
+    if (EXEC_ONLY_FLAGS_WITH_VALUE.has(name)) {
+      hoisted.push(arg);
+      if (!hasInlineValue && i + 1 < tail.length) {
+        i += 1;
+        hoisted.push(tail[i]);
+      }
+      continue;
+    }
+    if (EXEC_ONLY_FLAGS_WITHOUT_VALUE.has(name)) {
+      hoisted.push(arg);
+      continue;
+    }
+    remaining.push(arg);
+  }
+  return { hoisted, remaining };
 }
 
 async function loadLatestWrapperThreadId(stateDir: string): Promise<string | null> {

@@ -120,8 +120,11 @@ npx -y pando-proxy --proxy-log exec --sandbox read-only -o out.txt "prompt"
 # Same thing, explicit separator:
 npx -y pando-proxy --proxy-log -- exec --sandbox read-only -o out.txt "prompt"
 
-# Resume last session (wrapper rewrites `resume --last` to the saved thread id):
+# Resume last session (wrapper rewrites `resume --last` to the saved session id):
 npx -y pando-proxy exec resume --last "next prompt"
+
+# Resume with exec-global flags after resume (wrapper hoists them automatically):
+npx -y pando-proxy exec resume --last --sandbox read-only -o out.txt "next prompt"
 
 # Pure Codex passthrough (still runs through the proxy transport, no interception):
 npx -y pando-proxy login
@@ -130,6 +133,13 @@ npx -y pando-proxy help exec
 ```
 
 Because the first non-proxy argument becomes the start of the Codex args, `exec`, `resume`, `app-server`, `help`, etc., all work as if you typed them into `codex` directly. Any Codex flag is supported — the proxy never filters Codex's argument surface.
+
+### Resume handling
+
+The wrapper does two things to `exec resume --last` so it behaves the way you'd expect:
+
+1. **`--last` is replaced with the saved session id** (from `<state-dir>/wrapper-last-thread.json`) before handing off to Codex. Codex also accepts `--last` natively, but substituting the concrete id keeps the session pinned across restarts of the wrapper and makes logs more useful.
+2. **Exec-global flags written after `resume` are hoisted to before `resume`.** Codex's `exec resume` subcommand doesn't accept every flag that `codex exec` accepts — `--sandbox`, `-C`/`--cd`, `--add-dir`, `--oss`, `--local-provider`, `-p`/`--profile`, `--output-schema`, and `--color` are `exec`-only. Writing them after `resume` would make Codex reject the command. The wrapper detects these and moves them into the right slot automatically, so `exec resume --last --sandbox read-only "prompt"` and `exec --sandbox read-only resume --last "prompt"` both work.
 
 ## Subcommands
 
