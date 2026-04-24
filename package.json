@@ -1,7 +1,7 @@
 {
   "name": "pando-proxy",
-  "version": "0.1.3",
-  "description": "Run Codex through a local memory proxy with one npx command.",
+  "version": "0.1.5",
+  "description": "Run Codex through a local OpenAI Responses-compatible memory proxy with one npx command. Maintains a compact working memory (one live objective + exact retained chunks) across rounds, aggressively prunes at end of turn, and exposes an optional local memory(offset, limit) fallback tool. Wraps `codex` transparently: all Codex subcommands and flags (exec, resume, fork, login, mcp, app-server, --sandbox, --model, -c, ...) are passed through unchanged; proxy-specific options are prefixed with --proxy-*.",
   "scripts": {
     "prepack": "deno bundle src/main.ts -o dist/main.js",
     "pack:check": "npm pack --dry-run"
@@ -24,8 +24,14 @@
   "keywords": [
     "codex",
     "openai",
+    "responses-api",
     "proxy",
-    "memory"
+    "memory",
+    "working-memory",
+    "context-window",
+    "llm",
+    "deno",
+    "cli"
   ],
   "repository": {
     "type": "git",
