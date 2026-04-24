@@ -4,6 +4,18 @@
 
 `pando-proxy` is a thin local wrapper around [Codex](https://github.com/openai/codex) that inserts an OpenAI Responses-compatible proxy between Codex and the upstream model. The proxy maintains a small, mechanical working memory so multi-round Codex sessions stay within context without replaying the whole history.
 
+## Measured replay benchmarks
+
+Real replay runs are summarized in [`QUICK_BENCHMARKS.md`](./QUICK_BENCHMARKS.md) and documented in full in [`BENCHMARKS.md`](./BENCHMARKS.md). These numbers come from `bin/replay.ts --real-llm --auth-from-codex`, so the replay path used the real structured chunking and working-memory-update calls instead of the deterministic stub policy.
+
+| Case | Rounds | Baseline avg approx tokens | Pando avg approx tokens | Avg reduction | Baseline max approx tokens | Pando max approx tokens | Max reduction |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Local `exec` stress log | 8 | 7,674 | 5,195 | 32.3% | 13,231 | 7,788 | 41.1% |
+| Local `cli` interactive log | 9 | 193,840 | 60,407 | 68.8% | 286,898 | 87,877 | 69.4% |
+| Public open log (GitHub Gist) | 2 | 1,292 | 885 | 31.5% | 1,502 | 1,084 | 27.8% |
+
+Artifacts from these runs live under `tmp/replay-real/` as `*_stats.json`, `*_turns.jsonl`, `*_series.csv`, and `*_manager-usage.jsonl`.
+
 ## Why this exists
 
 Long Codex sessions blow up the prompt with raw tool output and prior rounds. `pando-proxy` replaces that approach with:
