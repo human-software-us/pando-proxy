@@ -19,6 +19,8 @@ The main thing to validate is not raw recall volume. It is whether the proxy kee
 - `codex` is installed and logged in
 - Deno is installed
 
+**Important:** if `pando-proxy` or an aliased `codex` looks frozen before the proxy ever receives a request, Codex may be blocked on its own update-selection prompt. In that case run raw Codex with `npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct`, make the update choice directly in Codex, then rerun the proxy test.
+
 No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex provider overrides for that process only, then runs `codex`.
 
 ## Recommended Local Loop

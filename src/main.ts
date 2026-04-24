@@ -51,7 +51,7 @@ Serve/doctor options:
   --small-structured-model <model>   Default: cheap structured model
   --overflow-structured-model <model> Default: smallest larger-window model
   --state-dir <path>                 Default: ~/.pando-proxy
-  --codex-auto-compact-token-limit <n> Default: 200000
+  --codex-auto-compact-token-limit <n> Default: 280000
   --no-memory                        Bypass task/piece memory rewrite
   --log-file <path>                  Write redacted proxy events as JSONL
 `);

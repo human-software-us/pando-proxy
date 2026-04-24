@@ -105,8 +105,11 @@ Tool schema:
   "name": "memory",
   "parameters": {
     "type": "object",
-    "required": ["offset", "limit"],
     "properties": {
+      "chunkIds": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
       "offset": { "type": "integer", "minimum": 0 },
       "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
     }
@@ -114,7 +117,22 @@ Tool schema:
 }
 ```
 
-The response contains exact stored payloads for the chronological retained-memory slice selected by `offset` and `limit`, excluding chunks already included in the rewritten prompt.
+`memory` supports two retrieval modes:
+
+- `chunkIds`: fetch exact retained chunks by id
+- `offset` + `limit`: page through hidden retained chunks in deterministic chronological order
+
+The response contains exact stored payloads only. It skips chunks already included in the rewritten prompt and chunks already returned by earlier `memory(...)` calls in the same round.
+
+## Wrapper Notes
+
+**Important:** if `pando-proxy` or an aliased `codex` appears frozen before the proxy receives any request, Codex may be waiting on its own update chooser. Run `npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct` to launch raw Codex directly and make the choice there.
+
+Default native Codex compaction threshold injected by the wrapper:
+
+- `--proxy-codex-auto-compact-token-limit 280000`
+
+That default is about 70% of GPT-5's documented `400000` token context window.
 
 ## Logging
 

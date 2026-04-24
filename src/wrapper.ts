@@ -27,6 +27,7 @@ export type WrapperOptions = CliOptions & {
 export type ParsedWrapperArgs = {
   codexArgs: string[];
   options: WrapperOptions;
+  directCodex: boolean;
   help: boolean;
 };
 
@@ -80,6 +81,7 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
   const options: WrapperOptions = {};
   const codexArgs: string[] = [];
   let help = false;
+  let directCodex = false;
   let passthrough = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -95,6 +97,11 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
     }
     if (arg === "--proxy-help" || arg === "--help" || arg === "-h") {
       help = true;
+      continue;
+    }
+    if (arg === "--proxy-run-codex-direct") {
+      directCodex = true;
+      passthrough = true;
       continue;
     }
     if (arg === "--proxy-host") {
@@ -143,7 +150,7 @@ export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
     codexArgs.push(arg);
   }
 
-  return { codexArgs, options, help };
+  return { codexArgs, options, directCodex, help };
 }
 
 export async function runCodexWrapper(args: string[]): Promise<number> {
@@ -151,6 +158,9 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   if (parsed.help) {
     printWrapperHelp();
     return 0;
+  }
+  if (parsed.directCodex) {
+    return await runCodexDirect(parsed.codexArgs);
   }
 
   await maybeOfferCodexAlias();
@@ -565,6 +575,17 @@ async function runCodexPassthrough(
   });
 }
 
+async function runCodexDirect(codexArgs: string[]): Promise<number> {
+  const child = new Deno.Command("codex", {
+    args: codexArgs,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).spawn();
+  const status = await child.status;
+  return status.code;
+}
+
 async function runCodexExecJson(
   codexArgs: string[],
   config: ProxyConfig,
@@ -912,15 +933,18 @@ Proxy wrapper options:
   --proxy-small-structured-model <model>   Default: cheap structured model
   --proxy-overflow-structured-model <model> Default: smallest larger-window model
   --proxy-state-dir <path>                 Default: ~/.pando-proxy
-  --proxy-codex-auto-compact-token-limit <n> Default: 200000
+  --proxy-codex-auto-compact-token-limit <n> Default: 280000
   --proxy-no-memory                        Bypass task/piece memory rewrite
   --proxy-log                              Enable full JSONL logging to ~/.pando-proxy/logs
   --proxy-log-file <path>                  Enable full JSONL logging to this file
+  --proxy-run-codex-direct                 Run codex directly with no proxy/wrapper
   --proxy-help, --help, -h                 Show this help
 
 Examples:
   pando-proxy exec "Help me with this repo"
   pando-proxy resume --last
+  pando-proxy --proxy-run-codex-direct
+  pando-proxy --proxy-run-codex-direct --help
   pando-proxy help exec
 
 Everything after -- is passed to codex unchanged.

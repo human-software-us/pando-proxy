@@ -1,5 +1,13 @@
 # Memory Operations
 
+## Wrapper Notes
+
+**Important:** if `npx -y pando-proxy` or an aliased `codex` appears to freeze before the proxy sees any request, Codex may actually be waiting on its own update chooser. Run `npx -y pando-proxy --proxy-run-codex-direct` or `codex --proxy-run-codex-direct` to launch raw Codex with full stdio, make the choice directly in Codex, then rerun the proxied command. Put `--proxy-run-codex-direct` before any Codex args; everything after it is passed straight to raw `codex`.
+
+Wrapper default: `--proxy-codex-auto-compact-token-limit 280000`.
+
+That default is intentionally more generous than the older `50000` / `200000` testing thresholds. `280000` is about 70% of GPT-5's documented `400000` token context window, so Pando gets room to keep normal long sessions below native Codex compaction while still leaving compaction available as a late fallback.
+
 ## Round Lifecycle
 
 ### 1. Load State

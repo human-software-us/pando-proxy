@@ -45,7 +45,7 @@ export const DEFAULT_INLINE_PIECE_BYTE_LIMIT = 16_384;
 export const DEFAULT_PIECE_PREVIEW_CHAR_LIMIT = 96;
 export const DEFAULT_MAX_INDEXED_PIECES_PER_TASK = 12;
 export const DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS = 4;
-export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 200_000;
+export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 280_000;
 
 export function loadConfig(options: CliOptions = {}): ProxyConfig {
   return {
