@@ -8,12 +8,12 @@
 
 Real replay runs are summarized in [`QUICK_BENCHMARKS.md`](./QUICK_BENCHMARKS.md) and documented in full in [`BENCHMARKS.md`](./BENCHMARKS.md). These numbers come from `bin/replay.ts --real-llm --auth-from-codex`, so the replay path used the real structured chunking and working-memory-update calls instead of the deterministic stub policy.
 
-| Case | Rounds | Baseline avg approx tokens | Pando avg approx tokens | Avg reduction | Baseline max approx tokens | Pando max approx tokens | Max reduction |
+| Case | Avg reduction | Max reduction | Baseline avg approx tokens | Pando avg approx tokens | Baseline max approx tokens | Pando max approx tokens | Rounds |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Local `exec` stress log | 8 | 7,674 | 5,195 | 32.3% | 13,231 | 7,788 | 41.1% |
-| Local `cli` interactive log | 9 | 193,840 | 60,407 | 68.8% | 286,898 | 87,877 | 69.4% |
-| Public open log (GitHub Gist) | 2 | 1,292 | 885 | 31.5% | 1,502 | 1,084 | 27.8% |
-| SWE-PolyBench `iswe_agent` editing | 69 | 8,331 | 4,464 | 46.4% | 10,046 | 7,385 | 26.5% |
+| Local `exec` stress log | 32.3% | 41.1% | 7,674 | 5,195 | 13,231 | 7,788 | 8 |
+| Local `cli` interactive log | 68.8% | 69.4% | 193,840 | 60,407 | 286,898 | 87,877 | 9 |
+| Public open log (GitHub Gist) | 31.5% | 27.8% | 1,292 | 885 | 1,502 | 1,084 | 2 |
+| SWE-PolyBench `iswe_agent` editing | 46.4% | 26.5% | 8,331 | 4,464 | 10,046 | 7,385 | 69 |
 
 The proxy helps most once a session has real history to carry forward. On short 1-2 turn runs the win can be small or mixed, but on long interactive sessions the baseline keeps replaying old context while Pando stays bounded by the compact working set.
 

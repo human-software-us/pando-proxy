@@ -17,11 +17,11 @@ It did not use the deterministic stub retention policies.
 
 ## One-off benchmark set
 
-| Set | Source | Rollout | Rounds | Baseline avg approx tokens | Pando avg approx tokens | Avg reduction | Baseline max approx tokens | Pando max approx tokens | Max reduction |
+| Set | Source | Rollout | Avg reduction | Max reduction | Baseline avg approx tokens | Pando avg approx tokens | Baseline max approx tokens | Pando max approx tokens | Rounds |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Local `exec` | local Codex session | `rollout-2026-04-22T18-14-05-019db7e6-bde6-70f1-b7c1-c21a6069e8d3.jsonl` | 8 | 7,674 | 5,195 | 2,479 (32.3%) | 13,231 | 7,788 | 5,443 (41.1%) |
-| Local `cli` interactive | local Codex session | `rollout-2026-04-21T22-06-28-019db2f0-55d1-7a21-86d4-53dfbc695f99.jsonl` | 9 | 193,840 | 60,407 | 133,433 (68.8%) | 286,898 | 87,877 | 199,021 (69.4%) |
-| Public open log | GitHub Gist | `cirosantilli-rollout-2026-02-11.jsonl` | 2 | 1,292 | 885 | 407 (31.5%) | 1,502 | 1,084 | 418 (27.8%) |
+| Local `exec` | local Codex session | `rollout-2026-04-22T18-14-05-019db7e6-bde6-70f1-b7c1-c21a6069e8d3.jsonl` | 2,479 (32.3%) | 5,443 (41.1%) | 7,674 | 5,195 | 13,231 | 7,788 | 8 |
+| Local `cli` interactive | local Codex session | `rollout-2026-04-21T22-06-28-019db2f0-55d1-7a21-86d4-53dfbc695f99.jsonl` | 133,433 (68.8%) | 199,021 (69.4%) | 193,840 | 60,407 | 286,898 | 87,877 | 9 |
+| Public open log | GitHub Gist | `cirosantilli-rollout-2026-02-11.jsonl` | 407 (31.5%) | 418 (27.8%) | 1,292 | 885 | 1,502 | 1,084 | 2 |
 
 ## SWE-PolyBench submission replay batch
 

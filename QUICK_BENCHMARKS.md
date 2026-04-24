@@ -13,12 +13,12 @@ deno run --allow-read --allow-write --allow-env --allow-net \
 
 `without proxy` below means replay baseline. `with proxy` means the rewritten Pando prompt.
 
-| Case | Samples | Avg without proxy | Avg with proxy | Max without proxy | Max with proxy |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Local `exec` one-off | 1 | 7,674 | 5,195 | 13,231 | 7,788 |
-| Local `cli` one-off | 1 | 193,840 | 60,407 | 286,898 | 87,877 |
-| Public open log one-off | 1 | 1,292 | 885 | 1,502 | 1,084 |
-| SWE-PolyBench `iswe_agent` editing | 69 | 8,331 | 4,464 | 10,046 | 7,385 |
+| Case | Avg reduction | Max reduction | Avg without proxy | Avg with proxy | Max without proxy | Max with proxy | Rounds |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Local `exec` one-off | 32.3% | 41.1% | 7,674 | 5,195 | 13,231 | 7,788 | 8 |
+| Local `cli` one-off | 68.8% | 69.4% | 193,840 | 60,407 | 286,898 | 87,877 | 9 |
+| Public open log one-off | 31.5% | 27.8% | 1,292 | 885 | 1,502 | 1,084 | 2 |
+| SWE-PolyBench `iswe_agent` editing | 46.4% | 26.5% | 8,331 | 4,464 | 10,046 | 7,385 | 69 |
 
 ## Public sources used
 
