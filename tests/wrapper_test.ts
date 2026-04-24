@@ -2,9 +2,12 @@ import { assert, assertEquals } from "jsr:@std/assert";
 
 import { classifyCodexRunMode } from "../src/codex_modes.ts";
 import {
+  createInteractiveStateSyncer,
   installCodexAlias,
   parseWrapperArgs,
+  resolveInteractiveSessionKeyHint,
   rewriteResumeLastArgs,
+  syncInteractiveSessionsToSourceHome,
   uninstallCodexAlias,
   WRAPPER_LAST_THREAD_RELATIVE_PATH,
 } from "../src/wrapper.ts";
@@ -59,6 +62,119 @@ Deno.test("rewriteResumeLastArgs only rewrites exec resume --last", async () => 
     );
   } finally {
     await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("syncInteractiveSessionsToSourceHome copies private sessions into the source home", async () => {
+  const sourceHome = await Deno.makeTempDir();
+  const privateHome = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${privateHome}/sessions/2026/04/24`, { recursive: true });
+    await Deno.writeTextFile(
+      `${privateHome}/sessions/2026/04/24/session.jsonl`,
+      '{"type":"session_meta","payload":{"id":"thread_123"}}\n',
+    );
+
+    await syncInteractiveSessionsToSourceHome(privateHome, sourceHome, { log: async () => {} });
+
+    assertEquals(
+      await Deno.readTextFile(`${sourceHome}/sessions/2026/04/24/session.jsonl`),
+      '{"type":"session_meta","payload":{"id":"thread_123"}}\n',
+    );
+  } finally {
+    await Deno.remove(sourceHome, { recursive: true });
+    await Deno.remove(privateHome, { recursive: true });
+  }
+});
+
+Deno.test("syncInteractiveSessionsToSourceHome updates older source files and preserves newer ones", async () => {
+  const sourceHome = await Deno.makeTempDir();
+  const privateHome = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${sourceHome}/sessions/nested`, { recursive: true });
+    await Deno.mkdir(`${privateHome}/sessions/nested`, { recursive: true });
+
+    const sharedTarget = `${sourceHome}/sessions/nested/shared.jsonl`;
+    const sharedSource = `${privateHome}/sessions/nested/shared.jsonl`;
+    const newerTarget = `${sourceHome}/sessions/nested/newer.jsonl`;
+    const olderSource = `${privateHome}/sessions/nested/newer.jsonl`;
+
+    await Deno.writeTextFile(sharedTarget, "old\n");
+    await Deno.writeTextFile(sharedSource, "new\n");
+    await Deno.writeTextFile(newerTarget, "keep\n");
+    await Deno.writeTextFile(olderSource, "stale\n");
+
+    const past = new Date(Date.now() - 60_000);
+    const future = new Date(Date.now() + 60_000);
+    await Deno.utime(sharedTarget, past, past);
+    await Deno.utime(sharedSource, future, future);
+    await Deno.utime(newerTarget, future, future);
+    await Deno.utime(olderSource, past, past);
+
+    await syncInteractiveSessionsToSourceHome(privateHome, sourceHome, { log: async () => {} });
+
+    assertEquals(await Deno.readTextFile(sharedTarget), "new\n");
+    assertEquals(await Deno.readTextFile(newerTarget), "keep\n");
+  } finally {
+    await Deno.remove(sourceHome, { recursive: true });
+    await Deno.remove(privateHome, { recursive: true });
+  }
+});
+
+Deno.test("resolveInteractiveSessionKeyHint uses the newest private CODEX_HOME session file", async () => {
+  const stateDir = await Deno.makeTempDir();
+  const privateHome = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${privateHome}/sessions/2026/04/24`, { recursive: true });
+    await Deno.writeTextFile(
+      `${privateHome}/sessions/2026/04/24/session.jsonl`,
+      '{"type":"session_meta","payload":{"id":"thread_private"}}\n',
+    );
+
+    const sessionId = await resolveInteractiveSessionKeyHint(
+      ["resume", "--last"],
+      stateDir,
+      privateHome,
+      { log: async () => {} },
+    );
+
+    assertEquals(sessionId, "thread_private");
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+    await Deno.remove(privateHome, { recursive: true });
+  }
+});
+
+Deno.test("createInteractiveStateSyncer skips repeated sync after success", async () => {
+  const sourceHome = await Deno.makeTempDir();
+  const privateHome = await Deno.makeTempDir();
+  const events: Array<{ event: string; payload: unknown }> = [];
+  try {
+    await Deno.mkdir(`${privateHome}/sessions/2026/04/24`, { recursive: true });
+    await Deno.writeTextFile(
+      `${privateHome}/sessions/2026/04/24/session.jsonl`,
+      '{"type":"session_meta","payload":{"id":"thread_123"}}\n',
+    );
+
+    const sync = createInteractiveStateSyncer(
+      { privateCodexHome: privateHome, sourceCodexHome: sourceHome },
+      {
+        log: async (event: string, payload: unknown) => {
+          events.push({ event, payload });
+        },
+      } as { log: (event: string, payload: unknown) => Promise<void> },
+    );
+
+    await sync("interactive_child_exit");
+    await sync("proxy_shutdown:wrapper_exit");
+
+    assertEquals(
+      events.filter(({ event }) => event === "interactive_sessions_synced_to_source_home").length,
+      1,
+    );
+  } finally {
+    await Deno.remove(sourceHome, { recursive: true });
+    await Deno.remove(privateHome, { recursive: true });
   }
 });
 

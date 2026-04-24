@@ -153,8 +153,9 @@ The wrapper auto-detects how to run Codex and picks one of three modes:
 - `resume` / `fork` (or no command) → **interactive-direct**: runs `codex` directly with the same
   local provider overrides, but under a wrapper-owned private `CODEX_HOME`. The wrapper symlinks
   shared inputs (`config.toml`, `auth.json`, `.credentials.json`, `version.json`, `skills/`,
-  `vendor_imports/`, `installation_id`) from the real Codex home and keeps `sessions/` private so
-  rollout attachment is exact.
+  `vendor_imports/`, `installation_id`) from the real Codex home and keeps `sessions/` private
+  during the run so rollout attachment is exact. After Codex exits, the wrapper mirrors updated
+  session files back into the real `CODEX_HOME/sessions`.
 - any other top-level command (`login`, `mcp`, `help`, `app-server`, etc.) → **passthrough**: Codex
   runs with the provider overrides but nothing is intercepted.
 
@@ -210,8 +211,9 @@ The wrapper does two things to `exec resume --last` so it behaves the way you'd 
 Interactive `resume --last` and `fork --last` are also normalized to a concrete session id before
 Codex is launched. The wrapper resolves that id from the explicit argument when present, otherwise
 from `<state-dir>/wrapper-last-thread.json`, and finally from the private rollout file under the
-wrapper-owned `CODEX_HOME` if needed. On normal exit and on interrupt, the wrapper prints the last
-observed Codex session id plus a `codex resume <id>` hint.
+wrapper-owned `CODEX_HOME` if needed. After an interactive run exits, the wrapper syncs updated
+session files back to the source `CODEX_HOME/sessions`, then on normal exit and on interrupt it
+prints the last observed Codex session id plus a `codex resume <id>` hint.
 
 ## Subcommands
 

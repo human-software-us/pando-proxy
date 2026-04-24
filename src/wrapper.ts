@@ -100,6 +100,13 @@ export type CodexAliasPromptOptions = {
   now?: () => Date;
 };
 
+type InteractiveCodexHomeSync = {
+  privateCodexHome: string;
+  sourceCodexHome: string;
+};
+
+type InteractiveStateSyncer = (trigger: string) => Promise<void>;
+
 export function parseWrapperArgs(args: string[]): ParsedWrapperArgs {
   const options: WrapperOptions = {};
   const codexArgs: string[] = [];
@@ -208,9 +215,17 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
   const logger = createLogger(logFile);
   const observer = new CodexEventObserver(logger);
   let interactiveCodexHome: string | null = null;
+  let syncInteractiveStateOnce: InteractiveStateSyncer | null = null;
   let interactiveSessionKeyHint: string | null = null;
   if (mode === "interactive-direct") {
     interactiveCodexHome = await prepareInteractiveCodexHome(baseConfig.stateDir, logger);
+    syncInteractiveStateOnce = createInteractiveStateSyncer(
+      {
+        privateCodexHome: interactiveCodexHome,
+        sourceCodexHome: sourceCodexHomePath(),
+      },
+      logger,
+    );
     interactiveSessionKeyHint = await resolveInteractiveSessionKeyHint(
       effectiveCodexArgs,
       baseConfig.stateDir,
@@ -249,7 +264,12 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     );
     sessionSummaryPrinted = true;
   };
-  const cleanup = installProxyCleanup(started.server, logger, flushAndPrintSessionSummary);
+  const cleanup = installProxyCleanup(started.server, logger, {
+    onSignalExit: async (signal) => {
+      await flushAndPrintSessionSummary();
+      await syncInteractiveStateOnce?.(`signal:${signal}`);
+    },
+  });
 
   if (logFile) {
     console.error(`Pando Proxy log: ${logFile}`);
@@ -276,6 +296,7 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
         logger,
         observer,
         interactiveCodexHome,
+        syncInteractiveStateOnce,
       );
     } else {
       exitCode = await runCodexPassthrough(effectiveCodexArgs, started.config, logger);
@@ -467,10 +488,80 @@ async function prepareInteractiveCodexHome(
   return privateHome;
 }
 
-async function resolveInteractiveSessionKeyHint(
+export async function syncInteractiveSessionsToSourceHome(
+  privateCodexHome: string,
+  sourceCodexHome: string,
+  logger: ReturnType<typeof createLogger>,
+): Promise<void> {
+  const sourceSessionsDir = `${sourceCodexHome}/sessions`;
+  const privateSessionsDir = `${privateCodexHome}/sessions`;
+  if (sourceSessionsDir === privateSessionsDir) {
+    return;
+  }
+
+  const copied = await copyUpdatedDirectoryTree(privateSessionsDir, sourceSessionsDir);
+  await logger.log("interactive_sessions_synced_to_source_home", {
+    privateSessionsDir,
+    sourceSessionsDir,
+    copiedFiles: copied.files,
+  });
+}
+
+async function syncInteractiveStateToSourceHomeBestEffort(
+  paths: InteractiveCodexHomeSync | null,
+  logger: ReturnType<typeof createLogger>,
+  trigger: string,
+): Promise<boolean> {
+  if (!paths) {
+    return false;
+  }
+  try {
+    await syncInteractiveSessionsToSourceHome(
+      paths.privateCodexHome,
+      paths.sourceCodexHome,
+      logger,
+    );
+    return true;
+  } catch (error) {
+    await logger.log("interactive_sessions_sync_failed", {
+      privateCodexHome: paths.privateCodexHome,
+      sourceCodexHome: paths.sourceCodexHome,
+      trigger,
+      message: messageFor(error),
+    });
+    return false;
+  }
+}
+
+export function createInteractiveStateSyncer(
+  paths: InteractiveCodexHomeSync | null,
+  logger: ReturnType<typeof createLogger>,
+): InteractiveStateSyncer {
+  let completed = false;
+  let inFlight: Promise<void> | null = null;
+  return async (trigger: string): Promise<void> => {
+    if (!paths || completed) {
+      return;
+    }
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    inFlight = (async () => {
+      try {
+        completed = await syncInteractiveStateToSourceHomeBestEffort(paths, logger, trigger);
+      } finally {
+        inFlight = null;
+      }
+    })();
+    await inFlight;
+  };
+}
+
+export async function resolveInteractiveSessionKeyHint(
   codexArgs: string[],
   stateDir: string,
-  codexHome: string,
+  privateCodexHome: string,
   logger: ReturnType<typeof createLogger>,
 ): Promise<string | null> {
   const explicitSessionId = explicitInteractiveSessionId(codexArgs);
@@ -495,13 +586,15 @@ async function resolveInteractiveSessionKeyHint(
     return savedThreadId;
   }
 
-  const rolloutSessionId = await latestInteractiveRolloutSessionId(`${codexHome}/sessions`);
-  if (rolloutSessionId) {
+  const privateRolloutSessionId = await latestInteractiveRolloutSessionId(
+    `${privateCodexHome}/sessions`,
+  );
+  if (privateRolloutSessionId) {
     await logger.log("interactive_session_key_hint_resolved", {
       source: "latest_rollout_file",
-      sessionId: rolloutSessionId,
+      sessionId: privateRolloutSessionId,
     });
-    return rolloutSessionId;
+    return privateRolloutSessionId;
   }
 
   await logger.log("interactive_session_key_hint_unresolved", {
@@ -642,6 +735,72 @@ async function ensureSymlinkedCodexHomeEntry(
   }
 
   await Deno.symlink(sourcePath, targetPath, { type: sourceInfo.isDirectory ? "dir" : "file" });
+}
+
+async function copyUpdatedDirectoryTree(
+  sourceDir: string,
+  targetDir: string,
+): Promise<{ files: number }> {
+  let sourceInfo: Deno.FileInfo;
+  try {
+    sourceInfo = await Deno.stat(sourceDir);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { files: 0 };
+    }
+    throw error;
+  }
+
+  if (!sourceInfo.isDirectory) {
+    throw new Error(`Expected directory: ${sourceDir}`);
+  }
+
+  await Deno.mkdir(targetDir, { recursive: true });
+  let copiedFiles = 0;
+
+  for await (const entry of Deno.readDir(sourceDir)) {
+    const sourcePath = `${sourceDir}/${entry.name}`;
+    const targetPath = `${targetDir}/${entry.name}`;
+    if (entry.isDirectory) {
+      const nested = await copyUpdatedDirectoryTree(sourcePath, targetPath);
+      copiedFiles += nested.files;
+      continue;
+    }
+    if (!entry.isFile) {
+      continue;
+    }
+    if (await shouldCopyUpdatedFile(sourcePath, targetPath)) {
+      await Deno.mkdir(dirname(targetPath), { recursive: true });
+      await Deno.copyFile(sourcePath, targetPath);
+      const copiedInfo = await Deno.stat(sourcePath);
+      await Deno.utime(
+        targetPath,
+        copiedInfo.atime ?? copiedInfo.mtime ?? new Date(),
+        copiedInfo.mtime ?? copiedInfo.atime ?? new Date(),
+      );
+      copiedFiles += 1;
+    }
+  }
+
+  return { files: copiedFiles };
+}
+
+async function shouldCopyUpdatedFile(sourcePath: string, targetPath: string): Promise<boolean> {
+  const sourceInfo = await Deno.stat(sourcePath);
+  try {
+    const targetInfo = await Deno.stat(targetPath);
+    const sourceMtime = sourceInfo.mtime?.getTime() ?? 0;
+    const targetMtime = targetInfo.mtime?.getTime() ?? 0;
+    if (sourceMtime !== targetMtime) {
+      return sourceMtime > targetMtime;
+    }
+    return targetInfo.size !== sourceInfo.size;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return true;
+    }
+    throw error;
+  }
 }
 
 export async function maybeOfferCodexAlias(
@@ -925,7 +1084,9 @@ function isInteractiveTerminal(): boolean {
 function installProxyCleanup(
   server: Deno.HttpServer,
   logger: ReturnType<typeof createLogger>,
-  onSignalExit?: () => Promise<void>,
+  hooks: {
+    onSignalExit?: (signal: Deno.Signal) => Promise<void>;
+  } = {},
 ): {
   shutdown: (reason: string, timeoutMs?: number) => Promise<void>;
   dispose: () => void;
@@ -947,8 +1108,8 @@ function installProxyCleanup(
       signalExitStarted = true;
       void (async () => {
         await logger.log("wrapper_signal", { signal }).catch(() => {});
-        await onSignalExit?.().catch(async (error) => {
-          await logger.log("wrapper_signal_summary_failed", {
+        await hooks.onSignalExit?.(signal).catch(async (error) => {
+          await logger.log("wrapper_signal_cleanup_failed", {
             signal,
             message: messageFor(error),
           }).catch(() => {});
@@ -1073,6 +1234,7 @@ async function runCodexInteractiveDirect(
   logger: ReturnType<typeof createLogger>,
   observer: CodexEventObserver,
   preparedCodexHome?: string | null,
+  syncInteractiveState?: InteractiveStateSyncer | null,
 ): Promise<number> {
   const args = buildCodexArgs(codexArgs, config);
   const codexHome = preparedCodexHome ?? await prepareInteractiveCodexHome(config.stateDir, logger);
@@ -1106,6 +1268,7 @@ async function runCodexInteractiveDirect(
     });
     const child = command.spawn();
     const status = await child.status;
+    await syncInteractiveState?.("interactive_child_exit");
     await logger.log("wrapper_exit", {
       mode: "interactive-direct",
       success: status.success,
