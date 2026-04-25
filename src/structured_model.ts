@@ -591,19 +591,17 @@ Rules:
 - You are given the current groups, retained exact anchor previews for those groups, and the new user pieces from the latest round.
 - groupsAfter must be the full post-round group list.
 - Keep groupsAfter small and concrete.
-- Continue a group when the user is still working on the same thing.
-- If the user is asking a follow-up question about facts, tokens, notes, or markers already established in the same ongoing thread, continue the existing group instead of replacing it.
-- If the user updates or replaces an exact value inside the same ongoing thread (for example "forget token B, remember token C instead"), keep the same group id and update that group's summary rather than retiring the group and creating a fresh one.
-- Use replacedGroupIds only when the broader thread itself is being abandoned in favor of a distinct new thread, not for ordinary within-thread value updates.
 - Preserve active groups by default when their retained anchor facts may still matter later, even if the current round also asks for new inspection work.
 - Do not discard an active group just because the user asks another repo-inspection question in the same broader thread.
+- Continue an existing group when the user is still working on the same thread, including follow-up questions about facts, tokens, notes, or markers already established there.
+- If the user updates or replaces an exact value inside the same ongoing thread (for example "forget token B, remember token C instead"), keep the same group id and update that group's summary rather than retiring the group and creating a fresh one.
+- Use replacedGroupIds only when the broader thread itself is being abandoned in favor of a distinct new thread, not for ordinary within-thread value updates.
 - Replace or close obsolete groups when the user moves on.
 - closedGroupIds and replacedGroupIds retire prior groups and those ids must not appear in groupsAfter.
 - routingLabel should be short and operational.
 - summary should say what durable exact evidence matters in that group.
-- summary must not include one-turn reply instructions, stale formatting requirements, or obsolete answer text commands such as "reply STEP-4 only".
-- summary should describe durable task state, not the transient wording of the most recent answer instruction.
-- summary must not include transient current-turn response-shape requests such as "return exact JSON only", requested key names, formatting wrappers, or output-slot templates when they do not add durable facts.
+- summary should describe durable task state, not transient answer wording.
+- summary must not include one-turn reply instructions, stale formatting requirements, obsolete answer text commands such as "reply STEP-4 only", or transient current-turn response-shape requests such as "return exact JSON only", requested key names, formatting wrappers, or output-slot templates when they do not add durable facts.
 - Do not invent vague meta-groups.
 - Return JSON only.
 `.trim();
@@ -620,6 +618,8 @@ Rules:
   - whole
   - text_spans using exact character offsets into the provided contentText
 - Each text_spans selector may contain multiple ordered non-overlapping spans for one conceptual piece.
+- Keep spans in original order.
+- Do not invent or rewrite missing text. Select exact spans only.
 - Prefer a few meaningful exact pieces over many tiny fragments.
 - When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, select the payload block itself instead of the wrapper instructions.
 - For user messages that say things like "remember this exact block" or "use this exact snippet", prefer text_spans covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
@@ -628,8 +628,6 @@ Rules:
 - When a clearly delimited block or stanza sequence is selected, include the full intended block boundaries. Do not truncate mid-line, mid-stanza, or mid-block.
 - For structured JSON data, prefer whole objects or boundary-safe spans that keep complete fields/entries together.
 - For binary-like, base64-like, hex-dump-like, byte-array-like, image-metadata-like, or file-payload-like content, prefer whole unless there is an obvious safe boundary. Never split mid-token or mid-byte-sequence.
-- Keep spans in original order.
-- Do not invent or rewrite missing text. Select exact spans only.
 - If splitting would be lossy or ambiguous, use whole.
 - Return JSON only.
 `.trim();
@@ -644,13 +642,14 @@ Rules:
 - Return a decision for every new piece id under decisionsByPieceId.
 - Keep only exact pieces that materially matter later.
 - Prefer original user literals and original tool results over assistant restatements.
+- Keep original raw sources when they may matter later for verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction.
+- Do not treat a group summary as a replacement for a canonical raw source when exact reproduction of the original text may matter later.
 - Do not retain transient one-turn response-formatting instructions such as "reply X only", "answer UNKNOWN only", or "do not reveal it this round" unless they also contain durable facts that will matter later.
 - Do not retain current-turn answer-shape requests that only specify how to format this response, such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" instructions, when the underlying durable evidence already exists elsewhere.
-- Example of keep=false: a piece whose only purpose is "Return exact JSON only: {\"a\":\"<...>\",\"c\":\"<...>\"}" or similar current-turn output-shape instructions.
 - Queries, questions, and answer-shape prompts with placeholders such as "...", "<...>", "<full ...>", or requested key names are not durable evidence and must keep=false unless they also introduce brand-new exact source material to remember.
+- Example of keep=false: a piece whose only purpose is "Return exact JSON only: {\"a\":\"<...>\",\"c\":\"<...>\"}" or similar current-turn output-shape instructions.
+- Also keep=false for a current-turn output template that embeds concrete values but is still only asking for this round's answer shape, for example "Return exact JSON only: {\"alpha_token\":\"ALPHA-7741\",\"beta_port\":9443}". That is not a new remembered source unless the user explicitly says to remember/store it.
 - When a round contains both durable exact evidence and transient answer-formatting instructions, keep the durable evidence and drop the transient control chatter.
-- If a piece is the canonical raw source for future verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction, keep that original raw piece.
-- Do not treat a group summary as a replacement for the canonical raw source when exact reproduction of the original text may matter later.
 - groupId must be an active group when keep=true.
 - When keep=false, set groupId to null and supersedesPieceIds to [].
 - supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
@@ -693,7 +692,7 @@ function normalizePieceRetentionBatchResponse(
 }
 
 const retainedPiecePruneSystemPrompt = `
-You prune previously kept old exact pieces that are no longer worth sending next round.
+You prune kept exact pieces that are no longer worth sending next round.
 
 Return JSON matching the supplied schema.
 
@@ -702,9 +701,10 @@ Rules:
 - dropPieceIds must be a subset of the ids from retainedOldPieces plus keptNewPieces.
 - Drop only pieces that are clearly obsolete now.
 - Prefer to keep earlier original user literals, tokens, constraints, and exact values when later rounds may still depend on them.
-- Prefer to drop transient response-formatting or acknowledgment pieces before dropping earlier durable exact evidence.
+- Prefer to drop transient response-formatting, acknowledgment, or answer-shape pieces before dropping earlier durable exact evidence.
 - Drop current-turn answer-shape requests such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" prompts before dropping durable exact evidence.
 - Drop queries/questions whose only purpose is to ask for already-known values in a specific shape, especially when they contain placeholders like "...", "<...>", or "<full ...>".
+- Drop current-turn output templates even when they embed concrete values, unless the user explicitly framed that template itself as new exact source material to remember later.
 - Do not drop the only remaining canonical raw source for material that may need verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction later.
 - For formatting-sensitive blocks or snippets, prefer to keep the original raw source piece rather than relying on the group summary alone.
 - If unsure, keep the old piece.

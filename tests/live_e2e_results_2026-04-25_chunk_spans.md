@@ -81,3 +81,45 @@ Fixes made during this batch:
     - `iPhone15,2`
 - Notes:
   - this exercised photo/image-style metadata plus base64-like thumbnail data
+
+## Follow-Up: Prompt Cleanup + Selector Dedupe
+
+Changes validated in this follow-up batch:
+- rewrote the manager prompts and developer memory prompt for the same policy content with less repetition and better ordering
+- added within-source selector dedupe by canonical selector identity
+- tightened transient output-shape handling again after live inspection of JSON-shaped follow-up requests
+
+### Follow-Up Test A: Realistic JSON Configs
+- Rounds: `7`
+- Session: `live-testA2-json-configs-postprompt`
+- Final answer:
+  - `{"alpha_token":"ALPHA-7741","beta_port":9443,"beta_flag_1":"sync"}`
+- Checks:
+  - `memoryUpdateError = null` on every round
+  - `archiveRecallCount = 0` on every round
+  - local exact checker passed for `alpha_token` and `beta_flag_1`
+- Bug found and fixed:
+  - a current-turn output template containing concrete values was still being retained as durable memory
+  - fixed by tightening retention/prune guidance so output templates remain transient unless explicitly framed as new remembered source material
+
+### Follow-Up Test B: Binary-Like Executable Manifest
+- Rounds: `5`
+- Session: `live-testB-binary-manifest-postprompt`
+- Final answers:
+  - round 3: `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
+  - round 5: `TVqQAAMAAAAEAAAA//8A`
+- Checks:
+  - `memoryUpdateError = null` on every round
+  - `archiveRecallCount = 0` on every round
+  - local exact checker passed for `sha256`, `entry_hex`, and `base64Prefix`
+
+### Follow-Up Test C: Photo Metadata
+- Rounds: `4`
+- Session: `live-testC-photo-meta-postprompt`
+- Final answers:
+  - round 3: `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
+  - round 4: `iPhone15,2`
+- Checks:
+  - `memoryUpdateError = null` on every round
+  - round 3 used `archiveRecallCount = 1`
+  - local exact checker passed for `file`, `mime`, `ocr`, `thumbBase64`, and `exifModel`

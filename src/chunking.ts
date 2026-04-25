@@ -80,8 +80,9 @@ export function materializeSourceSelectors(
   source: RoundSource,
   selectors: ChunkSelector[],
 ): PieceDraft[] {
+  const normalizedSelectors = normalizeSelectors(selectors);
   const out: PieceDraft[] = [];
-  for (const [index, selector] of selectors.entries()) {
+  for (const [index, selector] of normalizedSelectors.entries()) {
     const materialized = materializeSelector(source, selector);
     if (!materialized) {
       continue;
@@ -103,6 +104,43 @@ export function materializeSourceSelectors(
     }
   }
   return out;
+}
+
+function normalizeSelectors(selectors: ChunkSelector[]): ChunkSelector[] {
+  const seen = new Set<string>();
+  const out: ChunkSelector[] = [];
+  for (const selector of selectors) {
+    const normalized = normalizeSelector(selector);
+    const key = JSON.stringify(normalized);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function normalizeSelector(selector: ChunkSelector): ChunkSelector {
+  if (selector.kind !== "text_spans") {
+    return selector;
+  }
+  const spans = [...selector.spans]
+    .filter((span) =>
+      Number.isInteger(span.start) && Number.isInteger(span.end) && span.end > span.start
+    )
+    .map((span) => ({ start: span.start, end: span.end }))
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: typeof spans = [];
+  for (const span of spans) {
+    const last = merged.at(-1);
+    if (!last || span.start > last.end) {
+      merged.push(span);
+      continue;
+    }
+    last.end = Math.max(last.end, span.end);
+  }
+  return merged.length === 0 ? { kind: "whole" } : { kind: "text_spans", spans: merged };
 }
 
 export function materializeSelector(

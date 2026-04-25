@@ -123,7 +123,7 @@ export function buildPromptMemoryText(
       );
     }
     lines.push(
-      "Group summaries are summaries only. For verbatim or formatting-sensitive output, use visible exact pieces or recall; do not reconstruct byte-exact text from a summary.",
+      "Group summaries are summaries only. For verbatim or formatting-sensitive output, use visible exact pieces or recall. Do not reconstruct byte-exact text from a summary.",
     );
     lines.push(
       "If the user asks for an exact original block, snippet, template, or raw text and that full raw text is not visibly present in <exact_pieces>, you must use recall before answering.",
@@ -147,7 +147,7 @@ export function buildPromptMemoryText(
       "If you truly need older exact material that is not shown above, you may call recall({offset,limit}) up to 3 times in this round.",
     );
     lines.push(
-      "Use it only as an emergency recovery path for earlier exact sources from the per-session archive, not from active memory.",
+      "Use recall only as an emergency recovery path for earlier exact sources from the per-session archive, not from active memory.",
     );
     lines.push(
       "Prefer answering from active memory first. If you do use recall, request enough chronological coverage to satisfy the task and err on asking for more archived pieces rather than fewer.",
