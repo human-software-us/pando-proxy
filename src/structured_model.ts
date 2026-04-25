@@ -652,7 +652,7 @@ Rules:
 - When a round contains both durable exact evidence and transient answer-formatting instructions, keep the durable evidence and drop the transient control chatter.
 - groupId must be an active group when keep=true.
 - When keep=false, set groupId to null and supersedesPieceIds to [].
-- supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
+- supersedesPieceIds should only list older retained pieces or earlier same-round new pieces made obsolete by the new piece.
 - Never supersede older retained pieces with a query, question, or answer-shape request. Only supersede when the new piece itself contains replacement exact evidence that should now be remembered instead.
 - Return JSON only.
 `.trim();

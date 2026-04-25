@@ -222,6 +222,7 @@ export async function applyGroupUpdate(
   );
   const keptNewPieces: MemoryPiece[] = newPieces
     .filter((piece) => decisionsByPieceId.get(piece.id)?.keep)
+    .filter((piece) => !supersededPieceIds.has(piece.id))
     .map((piece) => {
       const decision = decisionsByPieceId.get(piece.id)!;
       return {
@@ -402,6 +403,7 @@ function validatePieceRetentionBatch(
   const errors: string[] = [];
   const newPieceIds = new Set(newPieces.map((piece) => piece.id));
   const retainedPieceIds = new Set(retainedPieces.map((piece) => piece.id));
+  const supersedablePieceIds = new Set([...retainedPieceIds, ...newPieceIds]);
   const activeGroupIds = new Set(activeGroups(groupsAfter).map((group) => group.id));
   const seenDecisionIds = new Set<string>();
 
@@ -418,7 +420,9 @@ function validatePieceRetentionBatch(
       errors.push(`kept piece ${decision.pieceId} must reference an active group`);
     }
     for (const supersededId of decision.supersedesPieceIds) {
-      if (!retainedPieceIds.has(supersededId)) {
+      if (supersededId === decision.pieceId) {
+        errors.push(`piece ${decision.pieceId} must not supersede itself`);
+      } else if (!supersedablePieceIds.has(supersededId)) {
         errors.push(`piece ${decision.pieceId} supersedes unknown piece ${supersededId}`);
       }
     }
