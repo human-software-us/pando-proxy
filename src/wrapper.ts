@@ -1237,14 +1237,18 @@ async function runCodexExecJson(
         return;
       }
       idleLogCount += 1;
-      void logger.log("wrapper_exec_json_idle", {
-        pid: child.pid,
-        idleLogCount,
-        stdoutIdleMs,
-        jsonLineIdleMs,
-        stdoutBytes,
-        lastJsonLinePreview,
-      }).catch(() => {
+      void (async () => {
+        const descendantProcesses = await collectDescendantProcesses(child.pid);
+        await logger.log("wrapper_exec_json_idle", {
+          pid: child.pid,
+          idleLogCount,
+          stdoutIdleMs,
+          jsonLineIdleMs,
+          stdoutBytes,
+          lastJsonLinePreview,
+          descendantProcesses,
+        });
+      })().catch(() => {
         // Avoid surfacing observability failures as wrapper failures.
       });
     }, 30_000);
@@ -1365,6 +1369,91 @@ async function runCodexForegroundDetailed(options: {
     signal: status.signal,
   });
   return status;
+}
+
+async function collectDescendantProcesses(
+  rootPid: number,
+  limit = 20,
+): Promise<Array<{ pid: number; ppid: number; stat: string; etime: string; command: string }>> {
+  const descendants: number[] = [];
+  const seen = new Set<number>([rootPid]);
+  let frontier = [rootPid];
+  while (frontier.length > 0 && descendants.length < limit) {
+    const next: number[] = [];
+    for (const pid of frontier) {
+      const children = await childPids(pid);
+      for (const child of children) {
+        if (seen.has(child)) {
+          continue;
+        }
+        seen.add(child);
+        descendants.push(child);
+        next.push(child);
+        if (descendants.length >= limit) {
+          break;
+        }
+      }
+      if (descendants.length >= limit) {
+        break;
+      }
+    }
+    frontier = next;
+  }
+  if (descendants.length === 0) {
+    return [];
+  }
+
+  const ps = await new Deno.Command("ps", {
+    args: ["-o", "pid=,ppid=,stat=,etime=,command=", "-p", descendants.join(",")],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  if (!ps.success) {
+    return descendants.map((pid) => ({
+      pid,
+      ppid: rootPid,
+      stat: "unknown",
+      etime: "unknown",
+      command: "",
+    }));
+  }
+  const text = new TextDecoder().decode(ps.stdout);
+  return text.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+([\s\S]*)$/);
+      if (!match) {
+        return null;
+      }
+      return {
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        stat: match[3],
+        etime: match[4],
+        command: match[5],
+      };
+    })
+    .filter((
+      entry,
+    ): entry is { pid: number; ppid: number; stat: string; etime: string; command: string } =>
+      entry !== null
+    );
+}
+
+async function childPids(pid: number): Promise<number[]> {
+  const output = await new Deno.Command("pgrep", {
+    args: ["-P", String(pid)],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  if (!output.success) {
+    return [];
+  }
+  const text = new TextDecoder().decode(output.stdout);
+  return text.split(/\s+/)
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0);
 }
 
 async function pipeAndObserveExecStdout(

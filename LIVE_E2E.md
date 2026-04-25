@@ -63,6 +63,32 @@ After each round, inspect:
 
 Also inspect the persisted state under the chosen `--proxy-state-dir`.
 
+## Isolating External Codex Config
+
+If a live run stalls after a tool command, first check whether the proxy received a follow-up
+request with that tool output. If it did not, the stall is outside active memory. Inspect:
+
+- `wrapper_exec_json_idle`
+- `wrapper_exec_json_idle.descendantProcesses`
+- `codex_exec_event`
+- `round_complete`
+
+When diagnosing memory behavior, it is valid to remove unrelated Codex user config while keeping
+auth:
+
+```sh
+deno run -A src/main.ts \
+  --proxy-log-file /tmp/pando-live.jsonl \
+  --proxy-state-dir /tmp/pando-live-state \
+  exec --ignore-user-config \
+  --sandbox read-only \
+  -o /tmp/round1.txt \
+  "round 1 prompt"
+```
+
+`--ignore-user-config` still uses `~/.codex/auth.json`, but avoids inherited MCP servers and other
+local Codex settings that can hang independently of the proxy.
+
 ## Main Questions
 
 1. Did active memory keep the right exact pieces?
