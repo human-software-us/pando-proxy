@@ -1,108 +1,35 @@
 # Memory Operations
 
-This document describes the target sieve-style memory flow.
+## Start of request
 
-## 1. Load State
+1. load session state
+2. materialize active piece payloads for prompt rendering
+3. inject `<pando_group_memory>`
+4. inject `recall` only if archived sources exist outside active memory
+5. forward upstream
 
-Load:
+## During response
 
-- active groups
-- kept exact pieces
-- processed source ids
+If the model calls `recall({offset,limit})`:
 
-## 2. Rewrite Request
+1. resolve archived source ids not currently active
+2. return exact archived payloads
+3. include `remainingArchivedSourceCount`
+4. cap at 3 recalls in that round
 
-Rewrite the request using only the currently kept exact pieces.
+## End of round
 
-Keep:
+1. extract new sources
+2. chunk them
+3. update groups
+4. retain or drop new pieces
+5. prune obsolete old pieces
+6. archive raw round sources
+7. persist the surviving active pieces
 
-- leading instructions
-- current round tail
-- the exact surviving memory block
+## Failure policy
 
-Do not:
-
-- replay full old history
-- inject hidden retained memory
-- inject a retrieval tool
-- locally rank a second inline subset
-
-## 3. Execute The Round
-
-Run upstream normally.
-
-There is no local exact-memory retrieval loop in the target design.
-
-## 4. Collect Round Sources
-
-Collect newly observed:
-
-- user messages
-- assistant messages
-- tool outputs
-
-Skip already-processed source ids.
-
-## 5. Run Manager Calls
-
-At end of round:
-
-1. run `source_chunk_batch` on all new sources
-2. materialize exact pieces
-3. run `group_intent`
-4. run `piece_retention_batch` on all new pieces
-5. run `retained_piece_prune` on previously kept pieces
-
-## 6. Apply Results Deterministically
-
-Local deterministic application should:
-
-- drop pieces in closed/replaced groups where appropriate
-- drop superseded pieces
-- drop explicitly pruned old pieces
-- keep exactly the new pieces marked `keep=true`
-- assign `groupId` exactly as returned
-- preserve original chronological order as much as possible
-
-No local semantic override belongs here.
-
-## 7. Persist
-
-Persist:
-
-- `groups`
-- surviving `pieces`
-- `processedSourceIds`
-
-Small exact payloads stay inline. Larger ones spill to `payloadRef`.
-
-## 8. Failure Policy
-
-For each manager call:
-
-1. parse
-2. validate
-3. retry once if invalid
-4. if invalid again, fail the memory update and keep prior memory unchanged
-
-The proxy must log which manager call failed and why.
-
-## 9. Logging
-
-Key events should include:
-
-- `rewritten_context`
-- `memory_round_sources`
-- `memory_round_chunked`
-- `memory_round_decision`
-- `memory_round_updated`
-- `memory_state_saved`
-- `round_complete`
-
-`memory_round_decision` should expose:
-
-- groups before and after
-- per-piece keep/drop decisions
-- group assignment
-- superseded piece ids
-- explicitly pruned old-piece ids
+- manager call invalid twice -> fail closed for that memory update
+- keep prior memory unchanged
+- log the failure
+- do not infer semantics locally

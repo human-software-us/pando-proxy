@@ -133,29 +133,11 @@ export type AppliedGroupUpdate = {
   droppedNewPieceIds: string[];
 };
 
-export async function applyGroupUpdate(
+export async function requestGroupIntent(
   state: MemoryState,
-  newPieces: PieceDraft[],
+  newUserPieces: GroupIntentRequest["newUserPieces"],
   clients: GroupMemoryClients,
-): Promise<AppliedGroupUpdate> {
-  if (newPieces.length === 0) {
-    return {
-      memory: state,
-      groupIntent: {
-        groupsAfter: state.groups,
-        closedGroupIds: [],
-        replacedGroupIds: [],
-      },
-      pieceRetention: { decisions: [] },
-      retainedPiecePrune: { dropPieceIds: [] },
-      keptOldPieceIds: state.pieces.map((piece) => piece.id),
-      droppedOldPieceIds: [],
-      keptNewPieceIds: [],
-      droppedNewPieceIds: [],
-    };
-  }
-
-  const nextSeq = state.roundSeq + 1;
+): Promise<GroupIntentResponse> {
   const groupIntent = await requestWithSingleRetry(
     () =>
       clients.groupIntent({
@@ -169,20 +151,38 @@ export async function applyGroupUpdate(
           previewText: anchor.previewText,
           createdSeq: anchor.createdSeq,
         })),
-        newUserPieces: newPieces
-          .filter((piece) => piece.sourceKind === "user")
-          .map((piece) => ({
-            id: piece.id,
-            sourceId: piece.sourceId,
-            content: piece.payloadInline,
-            previewText: piece.previewText,
-            ...(piece.pointer ? { pointer: piece.pointer } : {}),
-          })),
+        newUserPieces,
       }),
     parseAndValidateGroupIntent,
     "group_intent",
   );
-  const groupsAfter = dedupeGroups(groupIntent.groupsAfter);
+  return {
+    ...groupIntent,
+    groupsAfter: dedupeGroups(groupIntent.groupsAfter),
+  };
+}
+
+export async function applyGroupUpdate(
+  state: MemoryState,
+  newPieces: PieceDraft[],
+  groupIntent: GroupIntentResponse,
+  clients: GroupMemoryClients,
+): Promise<AppliedGroupUpdate> {
+  if (newPieces.length === 0) {
+    return {
+      memory: state,
+      groupIntent,
+      pieceRetention: { decisions: [] },
+      retainedPiecePrune: { dropPieceIds: [] },
+      keptOldPieceIds: state.pieces.map((piece) => piece.id),
+      droppedOldPieceIds: [],
+      keptNewPieceIds: [],
+      droppedNewPieceIds: [],
+    };
+  }
+
+  const nextSeq = state.roundSeq + 1;
+  const groupsAfter = groupIntent.groupsAfter;
   const activeGroupIds = new Set(activeGroups(groupsAfter).map((group) => group.id));
 
   const pieceRetention = await requestWithSingleRetry(

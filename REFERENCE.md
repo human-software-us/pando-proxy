@@ -1,22 +1,8 @@
 # Reference
 
-This document describes the current shipped runtime schema and maintenance contracts.
+This document describes the current shipped runtime contracts.
 
-## `MemoryGroup`
-
-```ts
-type MemoryGroup = {
-  id: string;
-  status: "active" | "closed";
-  routingLabel: string;
-  summary: string;
-  lastTouchedSeq: number;
-};
-```
-
-`summary` is compact routing metadata for the group. Exact retained evidence still lives in pieces.
-
-## `MemoryPiece`
+## Core State
 
 ```ts
 type ChunkSelector =
@@ -24,13 +10,20 @@ type ChunkSelector =
   | { kind: "line_range"; startLine: number; endLine: number }
   | { kind: "object_path"; path: Array<string | number> };
 
+type MemoryGroup = {
+  id: string;
+  status: "active" | "closed";
+  routingLabel: string;
+  summary: string;
+  lastTouchedSeq: number;
+};
+
 type MemoryPiece = {
   id: string;
   groupId: string;
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  visibility: "inline" | "omittable";
   payloadInline?: unknown;
   payloadRef?: string;
   previewText: string;
@@ -39,33 +32,39 @@ type MemoryPiece = {
   createdSeq: number;
   selector: ChunkSelector;
 };
-```
 
-Large piece payloads may be written to per-session payload files and referenced through
-`payloadRef`. Retrieval still returns the exact original payload.
-
-## Session State
-
-```ts
 type MemoryState = {
   roundSeq: number;
   groups: MemoryGroup[];
   pieces: MemoryPiece[];
   processedSourceIds: string[];
-  inlinePieceIds: string[];
 };
 ```
 
-`inlinePieceIds` is the prompt projection for the next round. Retained pieces not in that list stay
-durable and retrievable through `context_get`.
+Important invariant:
 
-## `group_intent`
+- the stored `pieces` set is the active prompt-memory set
+- there is no `inlinePieceIds`
+- there is no visibility split like `inline | omittable`
 
-Request:
+## Structured Manager Calls
+
+All semantic decisions come from strict-schema structured model calls.
+
+### `group_intent`
 
 ```ts
 type GroupIntentRequest = {
   groups: MemoryGroup[];
+  retainedGroupAnchors: Array<{
+    groupId: string;
+    pieceId: string;
+    sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
+    toolName?: string;
+    previewText: string;
+    createdSeq: number;
+  }>;
   newUserPieces: Array<{
     id: string;
     sourceId: string;
@@ -74,11 +73,7 @@ type GroupIntentRequest = {
     pointer?: Record<string, unknown>;
   }>;
 };
-```
 
-Response:
-
-```ts
 type GroupIntentResponse = {
   groupsAfter: MemoryGroup[];
   closedGroupIds: string[];
@@ -86,17 +81,7 @@ type GroupIntentResponse = {
 };
 ```
 
-Validation rules:
-
-- every `groupsAfter` entry must have `id`, `status`, `routingLabel`, `summary`, and
-  `lastTouchedSeq`
-- every group id must be unique and non-empty
-- retired ids in `closedGroupIds` and `replacedGroupIds` must be non-empty
-- retired ids must not also appear in `groupsAfter`
-
-## `piece_retention_batch`
-
-Request:
+### `piece_retention_batch`
 
 ```ts
 type PieceRetentionBatchRequest = {
@@ -120,17 +105,12 @@ type PieceRetentionBatchRequest = {
     pointer?: Record<string, unknown>;
   }>;
 };
-```
 
-Response:
-
-```ts
 type PieceRetentionDecision = {
   pieceId: string;
   keep: boolean;
-  groupId?: string;
+  groupId: string | null;
   supersedesPieceIds: string[];
-  visibility: "inline" | "omittable";
 };
 
 type PieceRetentionBatchResponse = {
@@ -138,156 +118,157 @@ type PieceRetentionBatchResponse = {
 };
 ```
 
-Validation rules:
-
-- every `newPieces` entry must have exactly one decision
-- every kept piece must reference an active group in `groups`
-- `visibility` must be either `inline` or `omittable`
-- every superseded piece id must reference an older retained piece
-
-## `prompt_projection`
-
-Request:
+### `retained_piece_prune`
 
 ```ts
-type PromptProjectionRequest = {
+type RetainedPiecePruneRequest = {
   groups: MemoryGroup[];
-  retainedPieces: Array<{
+  retainedOldPieces: Array<{
     id: string;
     groupId: string;
     sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
+    toolName?: string;
     previewText: string;
-    visibility: "inline" | "omittable";
     createdSeq: number;
   }>;
-  maxInlinePieces: number;
+  keptNewPieces: Array<{
+    id: string;
+    groupId: string;
+    sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
+    toolName?: string;
+    previewText: string;
+    createdSeq: number;
+  }>;
+};
+
+type RetainedPiecePruneResponse = {
+  dropPieceIds: string[];
 };
 ```
 
-Response:
-
-```ts
-type PromptProjectionResponse = {
-  inlinePieceIds: string[];
-};
-```
-
-Validation rules:
-
-- every `inlinePieceIds` entry must exist in `retainedPieces`
-- `inlinePieceIds.length` must not exceed `maxInlinePieces`
-
-## `source_chunk_batch`
-
-Request:
+### `source_chunk_batch`
 
 ```ts
 type SourceChunkBatchRequest = {
   sources: Array<{
     sourceId: string;
-    sourceKind: "assistant" | "tool";
+    sourceKind: "user" | "assistant" | "tool";
     toolName?: string;
     content: unknown;
     pointer?: Record<string, unknown>;
   }>;
 };
-```
 
-Response:
-
-```ts
 type SourceChunkBatchResponse = {
   results: Array<{
     sourceId: string;
-    selectors: Array<
-      | { kind: "whole" }
-      | { kind: "line_range"; startLine: number; endLine: number }
-      | { kind: "object_path"; path: Array<string | number> }
-    >;
+    selectors: ChunkSelector[];
   }>;
 };
 ```
 
-The proxy materializes exact pieces from the original source using these selectors. User messages
-are retained as whole pieces and do not go through `source_chunk_batch`.
+Notes:
 
-## `context_get`
+- user sources are chunked too
+- Pando tool outputs are still split deterministically
+- malformed/empty chunk responses fall back structurally to `whole`
 
-Tool schema:
+## Prompt Memory Block
+
+The proxy injects one synthetic developer message shaped like:
+
+```xml
+<pando_group_memory>
+<groups>
+- groupId=g1 status=active label=... summary=...
+</groups>
+<exact_pieces>
+<piece pieceId=... groupId=... sourceKind=...>
+...exact payload...
+</piece>
+</exact_pieces>
+<archive>
+archivedSourceCount=12
+If you truly need older exact material that is not shown above, you may call recall({offset,limit}) up to 3 times in this round.
+Use it only as an emergency recovery path for earlier exact sources from the per-session archive, not from active memory.
+Prefer answering from active memory first. If you do use recall, request enough chronological coverage to satisfy the task and err on asking for more archived pieces rather than fewer.
+</archive>
+</pando_group_memory>
+```
+
+## `recall`
+
+`recall` is the only local recovery tool in the active path.
+
+Schema:
 
 ```json
 {
-  "name": "context_get",
+  "type": "function",
+  "name": "recall",
   "parameters": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "pieceIds": {
-        "type": "array",
-        "items": { "type": "string" }
-      },
       "offset": { "type": "integer", "minimum": 0 },
-      "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
-    }
+      "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+    },
+    "required": ["offset", "limit"]
   }
 }
 ```
 
-`context_get` supports two retrieval modes:
+Behavior:
 
-- `pieceIds`: fetch exact retained pieces by id
-- `offset` + `limit`: page through hidden retained pieces in deterministic chronological order
+- archive-only, never active-memory browsing
+- max 3 calls per round
+- chronological selection over archived source ids not currently active
+- exact original archived source payloads only
 
-The response contains exact stored payloads only. It skips pieces already included in the rewritten
-prompt and pieces already returned by earlier `context_get(...)` calls in the same round.
+Tool result includes:
 
-## Prompt Memory Block
+- `source: "archive"`
+- `requestedOffset`
+- `requestedLimit`
+- `returnedCount`
+- `remainingArchivedSourceCount`
+- `note`
+- `items[]`
 
-The rewritten prompt injects one synthetic developer message shaped like:
+## Storage
 
-```xml
-<pando_memory>
-<exact_pieces>
-<piece pieceId=piece_17 sourceKind=tool>
-...
-</piece>
-</exact_pieces>
-<context_get>
-Use context_get({pieceIds:[...]}) when you know the needed piece ids.
-Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.
-Prefer attached exact pieces when they already contain the needed fact.
-</context_get>
-</pando_memory>
-```
+`src/store.ts` persists:
 
-Internal groups are not rendered in the forwarded prompt.
+- `state.json` for active memory
+- `payloads/*.json` for spilled active piece payloads
+- `archive/*.json` for raw archived original sources
+
+Important access paths:
+
+- `load(sessionKey)` — metadata/pruned active state only
+- `materializeMemory(sessionKey, memory)` — lazy active-payload hydration for prompt rendering
+- `archiveSources(sessionKey, sources)` — archive raw round sources
+- `getArchivedSources(sessionKey, sourceIds)` — archive retrieval for `recall`
 
 ## Logging
 
-Important log events:
+Important JSONL events:
 
 - `rewritten_context`
-- `structured_model_selected`
-- `structured_model_usage`
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `context_get_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
+- `archive_recall`
 - `round_complete`
 
-`memory_round_decision` includes:
+`round_complete` includes:
 
-- `groupsBefore`
-- `groupsAfter`
-- `closedGroupIds`
-- `replacedGroupIds`
-- `pieceRetention`
-- `inlinePieceIds`
-- kept/dropped old-piece ids
-- kept/dropped new-piece ids
-
-`round_complete` includes the current group ids/count, piece ids/count, total stored piece bytes,
-processed source count, inline piece ids/count, local fetch count, returned fetch ids, internal
-structured-model usage totals, aggregate usage totals, and any memory-update error.
+- `archiveRecallCount`
+- `archiveRecalls`
+- `returnedArchiveSourceIds`
+- active memory metrics
+- all-in token totals including manager calls

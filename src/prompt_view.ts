@@ -139,13 +139,18 @@ export function buildPromptMemoryText(memory: MemoryState, pieces: MemoryPiece[]
     lines.push("</piece>");
   }
   lines.push("</exact_pieces>");
-  if (hasArchivedSourceGap(memory)) {
+  const archivedCount = archivedSourceCount(memory);
+  if (archivedCount > 0) {
     lines.push("<archive>");
+    lines.push(`archivedSourceCount=${archivedCount}`);
     lines.push(
-      "If you truly need older exact material that is not shown above, you may call recall({offset,limit}) once.",
+      "If you truly need older exact material that is not shown above, you may call recall({offset,limit}) up to 3 times in this round.",
     );
     lines.push(
       "Use it only as an emergency recovery path for earlier exact sources from the per-session archive, not from active memory.",
+    );
+    lines.push(
+      "Prefer answering from active memory first. If you do use recall, request enough chronological coverage to satisfy the task and err on asking for more archived pieces rather than fewer.",
     );
     lines.push("</archive>");
   }
@@ -190,8 +195,12 @@ function containsRef(
 }
 
 function hasArchivedSourceGap(memory: MemoryState): boolean {
+  return archivedSourceCount(memory) > 0;
+}
+
+function archivedSourceCount(memory: MemoryState): number {
   const visibleSourceIds = new Set(memory.pieces.map((piece) => piece.sourceId));
-  return memory.processedSourceIds.some((sourceId) => !visibleSourceIds.has(sourceId));
+  return memory.processedSourceIds.filter((sourceId) => !visibleSourceIds.has(sourceId)).length;
 }
 
 function injectRecallTool(tools: unknown, shouldInject: boolean): unknown {
@@ -206,7 +215,7 @@ function injectRecallTool(tools: unknown, shouldInject: boolean): unknown {
     type: "function",
     name: "recall",
     description:
-      "Emergency one-shot recovery of older exact archived sources in chronological order.",
+      "Emergency recovery of older exact archived sources in chronological order. Use only when exact needed material is missing from active memory, request enough coverage to satisfy the task, err on asking for more rather than fewer, and use at most 3 times per round.",
     parameters: {
       type: "object",
       additionalProperties: false,

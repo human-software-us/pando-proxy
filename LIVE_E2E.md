@@ -1,144 +1,133 @@
-# Live E2E Test
+# Live E2E
 
-This document describes the live validation loop for the current group-and-piece memory system.
+This repository should be validated with live backend calls, not unit tests.
 
-## Memory Design To Validate
+## Auth
 
-The current design to validate is:
+Live auth resolves in this order:
 
-- active group metadata for incremental routing and cleanup
-- exact retained pieces only in the forwarded prompt
-- aggressive end-of-turn pruning through manager calls
-- optional local `context_get` retrieval for exact retained pieces not already in the prompt
-- empty-memory behavior when work is explicitly over or replaced
+1. `OPENAI_API_KEY`
+2. `~/.codex/auth.json` via `tokens.access_token`
 
-The main thing to validate is not raw recall volume. It is whether the proxy keeps the right exact
-evidence for the still-active internal groups without exposing group metadata upstream, and drops
-the rest.
+If Codex is already logged in, that is usually enough.
 
-## Prerequisites
+## Core Rules
 
-- `codex` is installed and logged in
-- Deno is installed
+- use real backend calls
+- use exact thread ids for every resumed round
+- do not trust unit tests
+- inspect logs and persisted state after each run
 
-Auth for the live harness resolves in this order:
-
-- `OPENAI_API_KEY`, if set
-- `~/.codex/auth.json` via `tokens.access_token`
-
-So if Codex is already logged in, live manager/backend calls should work without extra setup.
-
-**Important:** if `pando-proxy` or an aliased `codex` looks frozen before the proxy ever receives a
-request, Codex may be blocked on its own update-selection prompt. In that case run raw Codex with
-`npx -y pando-proxy --run-codex-direct` or `codex --run-codex-direct`, make the update choice
-directly in Codex, then rerun the proxy test.
-
-No Codex config install is required. The wrapper starts a proxy on a free port, injects Codex
-provider overrides for that process only, then runs `codex`.
-
-## Recommended Local Loop
-
-For fast local iteration against the latest code, prefer the Deno wrapper path instead of `npm pack`
-or `npx`.
-
-Use one fixed `--proxy-log-file` and one fixed `--proxy-state-dir` per test session. That gives you:
-
-- a fresh proxy process on every round
-- one durable memory state across rounds in the same test
-- deterministic logs and on-disk state for inspection after each round
+## Recommended Wrapper Loop
 
 Round 1:
 
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
-  --proxy-log-file /tmp/pando-test-1.jsonl \
-  --proxy-state-dir /tmp/pando-test-1-state \
+  --proxy-log-file /tmp/pando-live.jsonl \
+  --proxy-state-dir /tmp/pando-live-state \
   exec \
   --sandbox read-only \
-  -o /tmp/pando-test-1-r1.txt \
-  "your round 1 prompt"
+  -o /tmp/round1.txt \
+  "round 1 prompt"
 ```
 
-Later rounds in the same session:
+Resume the exact thread id printed by the wrapper:
 
 ```sh
 deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
-  --proxy-log-file /tmp/pando-test-1.jsonl \
-  --proxy-state-dir /tmp/pando-test-1-state \
+  --proxy-log-file /tmp/pando-live.jsonl \
+  --proxy-state-dir /tmp/pando-live-state \
   exec resume 019dc204-22fb-7c50-95ad-2f2508254945 \
   --sandbox read-only \
-  -o /tmp/pando-test-1-r2.txt \
-  "your next prompt"
+  -o /tmp/round2.txt \
+  "round 2 prompt"
 ```
 
-Prefer a concrete thread id for every resumed round. The wrapper prints the exact id after each run:
+Prefer exact thread ids almost always. Treat `--last` as fallback-only.
 
-```text
-pando-proxy: last Codex session id: 019dc204-22fb-7c50-95ad-2f2508254945
-```
+## What To Inspect
 
-Use that exact value in the next `exec resume <thread-id> ...` command. Do not rely on `--last`
-for serious live validation unless you have no ambiguity about which session was most recent.
+After each round, inspect:
 
-## What To Inspect After Each Round
-
-Check:
-
-- `incoming_request`
-- `rewritten_context`
-- `structured_model_selected`
-- `codex_exec_turn_summary` for interactive runs
-- `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `context_get_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
+- `archive_recall`
 - `round_complete`
 
-Then inspect the persisted state under the chosen `--proxy-state-dir`.
+Also inspect the persisted state under the chosen `--proxy-state-dir`.
 
-Confirm:
+## Main Questions
 
-- active group ids and their statuses
-- retained piece ids and count
-- `codex_exec_turn_summary` counts line up with the round: tool calls, tool results, reasoning,
-  assistant messages, user messages, and observed tool names
-- total stored piece bytes
-- processed source count
-- whether irrelevant pieces were dropped
-- whether closed or replaced groups were removed
+1. Did active memory keep the right exact pieces?
+2. Did obsolete pieces get dropped?
+3. Did the kept set plateau or stay bounded instead of drifting upward?
+4. If `recall` was used, was it because the model actually needed older exact material?
+5. Did `recall` stay within the hard cap of 3 calls for that round?
+6. Did any round hit `memory_update_failed`?
 
-## Main Live Scenarios
+## Suggested Probe Order
 
-1. Continue the same task across rounds
-2. Redirect the same task with "do it differently"
-3. Replace the old task with unrelated work
-4. Use tool results that later become superseded
-5. Explicitly close the session and clear all retained memory
+### 1. Focused 3-round probe
+
+Goal:
+
+- confirm the sieve works for a small task
+- confirm active memory can often answer without `recall`
+
+Pattern:
+
+1. inspect a couple of files and extract 2-4 exact facts
+2. inspect one more file
+3. ask for the earlier exact facts without rereading if possible
+
+Expected result:
+
+- often `archiveRecallCount = 0`
+
+### 2. Realistic 8-round probe
+
+Goal:
+
+- mix tool-heavy rounds with no-tool recall rounds
+- force the model to decide whether to keep, drop, or recover older facts
+
+Pattern:
+
+1. inspect file A
+2. inspect file B
+3. inspect file C
+4. ask for an earlier fact without rereading if possible
+5. inspect file D
+6. inspect file E
+7. add one explicit token or constraint to preserve
+8. ask for several older exact facts at once, allowing `recall`
+
+Expected result:
+
+- `archiveRecallCount` may be 0, 1, 2, or 3 depending on how broad the final ask is
+- if it reaches 3, inspect whether the final request truly demanded a broad chronological archive walk
+
+## Failure Loop
 
 For any failure:
 
-1. inspect log JSONL
+1. inspect the JSONL log
 2. inspect persisted state
-3. fix the product bug immediately
-4. run `deno check src/main.ts`
-5. rerun the same session from scratch
+3. fix the product bug
+4. run `deno check src/main.ts src/replay.ts bin/replay.ts`
+5. rerun the same live session from scratch
 
 ## Success Criteria
 
-A round is successful when:
+A session is good when:
 
-- `round_complete` is present
-- the persisted state matches the intended task/piece set
-- unnecessary pieces were dropped
-- required exact pieces survived
-- the user-facing answer still matches the prompt
-
-A session is successful when:
-
-- group routing remains stable across `exec resume <exact-thread-id>`
-- retrieval fallback, if used, returns exact chronological pieces not already in prompt
-- explicit completion or replacement clears obsolete retained memory
+- every `round_complete.memoryUpdateError` is `null`
+- active memory contains only the needed exact pieces
+- dropped material is actually obsolete
+- `recall` is archive-only and bounded
+- the user-facing answer is still correct

@@ -1,5 +1,6 @@
 import { chunkRoundSources } from "./chunking.ts";
-import { applyGroupUpdate } from "./group_manager.ts";
+import { applyGroupUpdate, requestGroupIntent } from "./group_manager.ts";
+import { stableJson } from "./json.ts";
 import type { ProxyLogger } from "./logger.ts";
 import { memoryStateMetrics } from "./metrics.ts";
 import type { MemoryState } from "./memory_state.ts";
@@ -69,7 +70,19 @@ export async function updateMemoryForCompletedRound(
   }
 
   const beforePieceIds = new Set(previous.pieces.map((piece) => piece.id));
-  const chunked = await chunkRoundSources(sources, clients);
+  const userPiecesForGroupIntent = sources
+    .filter((source) => source.sourceKind === "user")
+    .map((source) => ({
+      id: source.sourceId,
+      sourceId: source.sourceId,
+      content: source.payload,
+      previewText: previewForGroupIntent(source.payload),
+      ...(source.pointer ? { pointer: source.pointer } : {}),
+    }));
+  const [chunked, groupIntent] = await Promise.all([
+    chunkRoundSources(sources, clients),
+    requestGroupIntent(previous, userPiecesForGroupIntent, clients),
+  ]);
 
   await logContext.logger?.log("memory_round_chunked", {
     sessionKey: logContext.sessionKey,
@@ -89,6 +102,7 @@ export async function updateMemoryForCompletedRound(
   const applied = await applyGroupUpdate(
     previous,
     chunked,
+    groupIntent,
     clients,
   );
   const next = applied.memory;
@@ -134,4 +148,9 @@ export function filterPersistableRoundSources(
   processedSourceIds: Set<string>,
 ): RoundSource[] {
   return sources.filter((source) => !processedSourceIds.has(source.sourceId));
+}
+
+function previewForGroupIntent(value: unknown): string {
+  const text = typeof value === "string" ? value : stableJson(value);
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }

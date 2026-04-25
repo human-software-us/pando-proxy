@@ -20,6 +20,8 @@ const hopByHopHeaders = new Set([
   "upgrade",
 ]);
 
+const MAX_LOCAL_RECALLS_PER_ROUND = 3;
+
 export type UpstreamOptions = {
   authHeader: string | null;
   body: Record<string, unknown>;
@@ -102,9 +104,8 @@ export async function runResponsesLoop(
   const recalls: ArchiveRecall[] = [];
   const assistantSources: RoundSource[] = [];
   const loopOutputs: Record<string, unknown>[] = [];
-  let archiveRecoveryUsed = false;
 
-  for (let iteration = 0; iteration <= 1; iteration += 1) {
+  for (let iteration = 0; iteration <= MAX_LOCAL_RECALLS_PER_ROUND; iteration += 1) {
     const requestBody = await rebuildLoopRequestBody(
       options.body,
       memory,
@@ -132,17 +133,19 @@ export async function runResponsesLoop(
         recalls,
       };
     }
-    if (archiveRecoveryUsed || iteration === 1) {
-      throw new Error("Exceeded max local recall calls");
+    if (recalls.length + localCalls.length > MAX_LOCAL_RECALLS_PER_ROUND) {
+      throw new Error(
+        `Exceeded max local recall calls (${MAX_LOCAL_RECALLS_PER_ROUND})`,
+      );
     }
-    archiveRecoveryUsed = true;
 
     for (const call of localCalls) {
-      const archivedSources = await resolveSourcesForCall(
+      const recallResult = await resolveSourcesForCall(
         memory,
         call,
         resolveArchivedSources,
       );
+      const archivedSources = recallResult.items;
       recalls.push({
         offset: call.offset,
         limit: call.limit,
@@ -160,6 +163,10 @@ export async function runResponsesLoop(
         call_id: call.callId,
         output: stableJson({
           source: "archive",
+          remainingArchivedSourceCount: recallResult.remainingArchivedSourceCount,
+          requestedOffset: call.offset,
+          requestedLimit: call.limit,
+          returnedCount: archivedSources.length,
           note:
             "The following items are from the per-session archive, not active memory. They were dropped from working memory earlier and will not automatically persist in future prompts.",
           items: archivedSources.map((source) => ({
@@ -198,11 +205,14 @@ async function resolveSourcesForCall(
   memory: MemoryState,
   call: { offset: number; limit: number },
   resolveArchivedSources: ResolveArchivedSources,
-): Promise<ArchivedSource[]> {
+): Promise<{ remainingArchivedSourceCount: number; items: ArchivedSource[] }> {
   const activeSourceIds = new Set(memory.pieces.map((piece) => piece.sourceId));
   const availableSourceIds = memory.processedSourceIds.filter((sourceId) => !activeSourceIds.has(sourceId));
   const selectedIds = availableSourceIds.slice(call.offset, call.offset + call.limit);
-  return await resolveArchivedSources(selectedIds);
+  return {
+    remainingArchivedSourceCount: Math.max(0, availableSourceIds.length - (call.offset + selectedIds.length)),
+    items: await resolveArchivedSources(selectedIds),
+  };
 }
 
 function parseRecallCalls(
