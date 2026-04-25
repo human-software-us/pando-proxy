@@ -7,7 +7,7 @@ This document describes the current shipped runtime contracts.
 ```ts
 type ChunkSelector =
   | { kind: "whole" }
-  | { kind: "line_range"; startLine: number; endLine: number }
+  | { kind: "text_spans"; spans: Array<{ start: number; end: number }> }
   | { kind: "object_path"; path: Array<string | number> };
 
 type MemoryGroup = {
@@ -24,8 +24,6 @@ type MemoryPiece = {
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  payloadInline?: unknown;
-  payloadRef?: string;
   previewText: string;
   pointer?: Record<string, unknown>;
   byteSize: number;
@@ -44,6 +42,9 @@ type MemoryState = {
 Important invariant:
 
 - the stored `pieces` set is the active prompt-memory set
+- pieces reference exact original sources through selectors instead of storing rewritten payloads
+- non-Pando text-like pieces use exact `text_spans` into the archived original source
+- one conceptual piece may contain multiple ordered spans when separated source regions belong together
 - there is no `inlinePieceIds`
 - there is no visibility split like `inline | omittable`
 
@@ -68,9 +69,9 @@ type GroupIntentRequest = {
   newUserPieces: Array<{
     id: string;
     sourceId: string;
-    content: unknown;
     previewText: string;
     pointer?: Record<string, unknown>;
+    selector: ChunkSelector;
   }>;
 };
 
@@ -100,9 +101,9 @@ type PieceRetentionBatchRequest = {
     sourceKind: "user" | "assistant" | "tool";
     sourceId: string;
     toolName?: string;
-    content: unknown;
     previewText: string;
     pointer?: Record<string, unknown>;
+    selector: ChunkSelector;
   }>;
 };
 
@@ -156,7 +157,7 @@ type SourceChunkBatchRequest = {
     sourceId: string;
     sourceKind: "user" | "assistant" | "tool";
     toolName?: string;
-    content: unknown;
+    contentText: string;
     pointer?: Record<string, unknown>;
   }>;
 };
@@ -173,7 +174,10 @@ Notes:
 
 - user sources are chunked too
 - Pando tool outputs are still split deterministically
-- malformed/empty chunk responses fall back structurally to `whole`
+- model chunking returns selectors only; it never rewrites source content
+- `text_spans` offsets are exact character offsets into `contentText`
+- source order is preserved within each multi-span piece
+- duplicate selectors from the same source are deduped by canonical selector identity
 
 ## Prompt Memory Block
 
@@ -186,7 +190,7 @@ The proxy injects one synthetic developer message shaped like:
 </groups>
 <exact_pieces>
 <piece pieceId=... groupId=... sourceKind=...>
-...exact payload...
+...exact materialized source span(s)...
 </piece>
 </exact_pieces>
 <archive>
