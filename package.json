@@ -1,6 +1,6 @@
 {
   "name": "pando-proxy",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "description": "By pando (https://getpando.ai) under the MIT License. Run Codex through a local OpenAI Responses-compatible memory proxy with one npx command. The proxy enforces a one-tier exact-piece memory sieve across rounds and keeps a bounded archive-backed recall path for older exact sources when needed. Measured replay benchmarks in the repo show the biggest gains on longer multi-round sessions, including a 79.8% average prompt reduction across 345 public SWE-bench Verified trajectories and an 88.2% average reduction on a 20-trace high-round/high-byte public sample. Wraps `codex` transparently: all Codex subcommands and flags (exec, resume, fork, login, mcp, app-server, --sandbox, --model, -c, ...) are passed through unchanged; proxy-specific options are prefixed with --proxy-*.",
   "scripts": {
     "prepack": "deno bundle src/main.ts -o dist/main.js",
