@@ -9,12 +9,17 @@ import {
   memoryStateMetrics,
   requestContextMetrics,
   TokenUsageTracker,
+  type UsageTotals,
 } from "./metrics.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
-import { createStructuredClients } from "./structured_model.ts";
+import {
+  createStructuredClients,
+  type StructuredModelSkipped,
+  type StructuredModelUsage,
+} from "./structured_model.ts";
 import { SessionStore } from "./store.ts";
 import type { RoundSource } from "./tool_results.ts";
-import { forwardResponsesRequest, type ArchiveRecall, runResponsesLoop } from "./upstream.ts";
+import { type ArchiveRecall, forwardResponsesRequest, runResponsesLoop } from "./upstream.ts";
 
 const OBSERVED_TURN_SOURCES_TIMEOUT_MS = 3_000;
 const FINALIZATION_DRAIN_TIMEOUT_MS = 10_000;
@@ -25,6 +30,10 @@ export type StartedProxyServer = {
   contextStats: {
     latest: () => ContextWindowComparisonStats | null;
     forSession: (sessionKey: string) => ContextWindowComparisonStats | null;
+  };
+  tokenStats: {
+    latest: () => SessionTokenStats | null;
+    forSession: (sessionKey: string) => SessionTokenStats | null;
   };
 };
 
@@ -38,6 +47,31 @@ export type ContextWindowStats = {
 export type ContextWindowComparisonStats = {
   withoutProxy: ContextWindowStats | null;
   withProxy: ContextWindowStats | null;
+};
+
+type StructuredUsageClassifierTotals = {
+  attempts: number;
+  retryAttempts: number;
+  skipped: number;
+  estimatedInputTokens: number;
+  inputTokens: number;
+  inputTokenDelta: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  durationMs: number;
+};
+
+type StructuredUsageSessionTotals = {
+  totals: StructuredUsageClassifierTotals;
+  byClassifier: Partial<
+    Record<StructuredModelUsage["classifier"], StructuredUsageClassifierTotals>
+  >;
+};
+
+export type SessionTokenStats = {
+  mainModel: UsageTotals | null;
+  manager: StructuredUsageSessionTotals | null;
 };
 
 type MutableContextWindowStats = ContextWindowStats & {
@@ -98,6 +132,63 @@ class ContextWindowStatsTracker {
   }
 }
 
+class StructuredUsageTracker {
+  #latestSessionKey: string | null = null;
+  #bySession = new Map<string, StructuredUsageSessionTotals>();
+
+  add(sessionKey: string, usage: StructuredModelUsage): StructuredUsageSessionTotals {
+    const session = this.#ensureSession(sessionKey);
+    const classifierTotals = session.byClassifier[usage.classifier] ?? emptyStructuredUsageTotals();
+    classifierTotals.attempts += 1;
+    classifierTotals.retryAttempts += usage.attempt > 1 ? 1 : 0;
+    classifierTotals.estimatedInputTokens += usage.estimatedInputTokens;
+    classifierTotals.inputTokens += usage.inputTokens ?? 0;
+    classifierTotals.inputTokenDelta += usage.inputTokenDelta ?? 0;
+    classifierTotals.cachedInputTokens += usage.cachedInputTokens ?? 0;
+    classifierTotals.outputTokens += usage.outputTokens ?? 0;
+    classifierTotals.totalTokens += usage.totalTokens ??
+      ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0));
+    classifierTotals.durationMs += usage.durationMs;
+    session.byClassifier[usage.classifier] = classifierTotals;
+    session.totals = sumStructuredUsageTotals(Object.values(session.byClassifier));
+    this.#latestSessionKey = sessionKey;
+    return session;
+  }
+
+  addSkipped(sessionKey: string, skipped: StructuredModelSkipped): StructuredUsageSessionTotals {
+    const session = this.#ensureSession(sessionKey);
+    const classifierTotals = session.byClassifier[skipped.classifier] ??
+      emptyStructuredUsageTotals();
+    classifierTotals.skipped += 1;
+    classifierTotals.estimatedInputTokens += skipped.estimatedInputTokens;
+    session.byClassifier[skipped.classifier] = classifierTotals;
+    session.totals = sumStructuredUsageTotals(Object.values(session.byClassifier));
+    this.#latestSessionKey = sessionKey;
+    return session;
+  }
+
+  forSession(sessionKey: string): StructuredUsageSessionTotals | null {
+    return this.#bySession.get(sessionKey) ?? null;
+  }
+
+  latest(): StructuredUsageSessionTotals | null {
+    return this.#latestSessionKey ? this.forSession(this.#latestSessionKey) : null;
+  }
+
+  #ensureSession(sessionKey: string): StructuredUsageSessionTotals {
+    const existing = this.#bySession.get(sessionKey);
+    if (existing) {
+      return existing;
+    }
+    const created: StructuredUsageSessionTotals = {
+      totals: emptyStructuredUsageTotals(),
+      byClassifier: {},
+    };
+    this.#bySession.set(sessionKey, created);
+    return created;
+  }
+}
+
 export function createHandler(
   config: ProxyConfig,
   store = new SessionStore(config.stateDir, config.inlinePieceByteLimit),
@@ -109,6 +200,7 @@ export function createHandler(
 ) {
   const logger = createLogger(config.logFile);
   const usageTracker = new TokenUsageTracker();
+  const managerUsageTracker = new StructuredUsageTracker();
   const contextWindowStats = new ContextWindowStatsTracker();
   const fallbackSessionKey = `wrapper_${crypto.randomUUID()}`;
   const pendingFinalizations = new Map<string, Promise<void>>();
@@ -236,6 +328,7 @@ export function createHandler(
                   store,
                   logger,
                   usageTracker,
+                  managerUsageTracker,
                   requestId,
                   sessionKey,
                   requestBody: body,
@@ -255,6 +348,7 @@ export function createHandler(
               store,
               logger,
               usageTracker,
+              managerUsageTracker,
               requestId,
               sessionKey,
               requestBody: body,
@@ -291,6 +385,10 @@ export function createHandler(
             memoryUpdateError,
             archiveRecallCount: loop.recalls.length,
             archiveRecalls: loop.recalls,
+            archiveRecallReturnedBytes: loop.recalls.reduce(
+              (total, recall) => total + recall.returnedBytes,
+              0,
+            ),
             returnedArchiveSourceIds: [
               ...new Set(loop.recalls.flatMap((recall) => recall.returnedSourceIds)),
             ],
@@ -312,6 +410,14 @@ export function createHandler(
       latest: () => contextWindowStats.latest(),
       forSession: (sessionKey: string) => contextWindowStats.forSession(sessionKey),
     },
+    tokenStats: {
+      latest: () => snapshotSessionTokenStats(usageTracker.latest(), managerUsageTracker.latest()),
+      forSession: (sessionKey: string) =>
+        snapshotSessionTokenStats(
+          usageTracker.forSession(sessionKey),
+          managerUsageTracker.forSession(sessionKey),
+        ),
+    },
   };
 }
 
@@ -323,7 +429,7 @@ export function startServer(
     timeoutMs: number,
   ) => Promise<RoundSource[]>,
 ): StartedProxyServer {
-  const { handler, awaitIdle, contextStats } = createHandler(
+  const { handler, awaitIdle, contextStats, tokenStats } = createHandler(
     config,
     undefined,
     fallbackSessionKeyForRequest,
@@ -334,7 +440,7 @@ export function startServer(
     port: config.port,
     onListen: () => {},
   }, handler);
-  return { server, awaitIdle, contextStats };
+  return { server, awaitIdle, contextStats, tokenStats };
 }
 
 function snapshotContextWindowStats(
@@ -366,6 +472,53 @@ function snapshotContextWindowComparisonStats(
   };
 }
 
+function emptyStructuredUsageTotals(): StructuredUsageClassifierTotals {
+  return {
+    attempts: 0,
+    retryAttempts: 0,
+    skipped: 0,
+    estimatedInputTokens: 0,
+    inputTokens: 0,
+    inputTokenDelta: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    durationMs: 0,
+  };
+}
+
+function sumStructuredUsageTotals(
+  values: Array<StructuredUsageClassifierTotals | undefined>,
+): StructuredUsageClassifierTotals {
+  const total = emptyStructuredUsageTotals();
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    total.attempts += value.attempts;
+    total.retryAttempts += value.retryAttempts;
+    total.skipped += value.skipped;
+    total.estimatedInputTokens += value.estimatedInputTokens;
+    total.inputTokens += value.inputTokens;
+    total.inputTokenDelta += value.inputTokenDelta;
+    total.cachedInputTokens += value.cachedInputTokens;
+    total.outputTokens += value.outputTokens;
+    total.totalTokens += value.totalTokens;
+    total.durationMs += value.durationMs;
+  }
+  return total;
+}
+
+function snapshotSessionTokenStats(
+  mainModel: UsageTotals | null,
+  manager: StructuredUsageSessionTotals | null,
+): SessionTokenStats | null {
+  if (!mainModel && !manager) {
+    return null;
+  }
+  return { mainModel, manager };
+}
+
 export async function serve(config: ProxyConfig): Promise<void> {
   const { server } = startServer(config);
   console.log(`Pando Proxy is running at http://${config.host}:${config.port}/v1`);
@@ -378,6 +531,7 @@ type FinalizeRoundOptions = {
   store: SessionStore;
   logger: ReturnType<typeof createLogger>;
   usageTracker: TokenUsageTracker;
+  managerUsageTracker: StructuredUsageTracker;
   requestId: string;
   sessionKey: string;
   requestBody: Record<string, unknown>;
@@ -405,6 +559,7 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     store,
     logger,
     usageTracker,
+    managerUsageTracker,
     requestId,
     sessionKey,
     requestBody,
@@ -420,12 +575,9 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
 
   let finalMemory = previousMemory;
   let memoryUpdateError: string | null = null;
-  const structuredUsageTotals = {
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-  };
+  const structuredUsageByClassifier: Partial<
+    Record<StructuredModelUsage["classifier"], StructuredUsageClassifierTotals>
+  > = {};
 
   try {
     const structuredClients = createStructuredClients(
@@ -439,15 +591,32 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
           ...selection,
         }),
       async (usage) => {
-        structuredUsageTotals.inputTokens += usage.inputTokens ?? 0;
-        structuredUsageTotals.cachedInputTokens += usage.cachedInputTokens ?? 0;
-        structuredUsageTotals.outputTokens += usage.outputTokens ?? 0;
-        structuredUsageTotals.totalTokens += usage.totalTokens ??
+        const classifierTotals = structuredUsageByClassifier[usage.classifier] ??
+          emptyStructuredUsageTotals();
+        classifierTotals.attempts += 1;
+        classifierTotals.retryAttempts += usage.attempt > 1 ? 1 : 0;
+        classifierTotals.estimatedInputTokens += usage.estimatedInputTokens;
+        classifierTotals.inputTokens += usage.inputTokens ?? 0;
+        classifierTotals.inputTokenDelta += usage.inputTokenDelta ?? 0;
+        classifierTotals.cachedInputTokens += usage.cachedInputTokens ?? 0;
+        classifierTotals.outputTokens += usage.outputTokens ?? 0;
+        classifierTotals.totalTokens += usage.totalTokens ??
           ((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0));
+        classifierTotals.durationMs += usage.durationMs;
+        structuredUsageByClassifier[usage.classifier] = classifierTotals;
+        managerUsageTracker.add(sessionKey, usage);
         await logger.log("structured_model_usage", {
           requestId,
           sessionKey,
           ...usage,
+        });
+      },
+      async (skipped) => {
+        managerUsageTracker.addSkipped(sessionKey, skipped);
+        await logger.log("structured_model_skipped", {
+          requestId,
+          sessionKey,
+          ...skipped,
         });
       },
     );
@@ -501,6 +670,13 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
 
   const usage = extractUsageMetrics(loopFinalBody);
   const usageTotals = usage ? usageTracker.add(sessionKey, usage) : null;
+  const structuredUsageTotals = sumStructuredUsageTotals(
+    Object.values(structuredUsageByClassifier),
+  );
+  const archiveRecallReturnedBytes = recalls.reduce(
+    (total, recall) => total + recall.returnedBytes,
+    0,
+  );
   if (usageTotals) {
     await logger.log("usage", {
       requestId,
@@ -515,10 +691,15 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     archiveRecallCount: recalls.length,
     archiveRecalls: recalls,
     returnedArchiveSourceIds: [...new Set(recalls.flatMap((recall) => recall.returnedSourceIds))],
+    archiveRecallReturnedBytes,
     internalManagerInputTokens: structuredUsageTotals.inputTokens,
     internalManagerCachedInputTokens: structuredUsageTotals.cachedInputTokens,
     internalManagerOutputTokens: structuredUsageTotals.outputTokens,
     internalManagerTotalTokens: structuredUsageTotals.totalTokens,
+    internalManagerRetryAttempts: structuredUsageTotals.retryAttempts,
+    internalManagerDurationMs: structuredUsageTotals.durationMs,
+    internalManagerInputTokenDelta: structuredUsageTotals.inputTokenDelta,
+    internalManagerByClassifier: structuredUsageByClassifier,
     ...memoryStateMetrics(finalMemory),
     ...(usageTotals
       ? {

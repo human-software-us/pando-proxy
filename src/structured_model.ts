@@ -31,20 +31,37 @@ export type StructuredModelUsage = {
   chosenModel: string;
   estimatedInputTokens: number;
   selectionReason: StructuredModelSelection["selectionReason"];
+  attempt: number;
+  durationMs: number;
   inputTokens?: number;
+  inputTokenDelta?: number;
   cachedInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
 };
 
+export type StructuredModelSkipped = {
+  classifier: StructuredModelSelection["classifier"];
+  requestModel: string | null;
+  estimatedInputTokens: number;
+  reason: "exceeds_overflow_window";
+  fallback: "whole_selector_batch";
+  sourceCount: number;
+};
+
 export type StructuredClients = {
-  groupIntent: (request: GroupIntentRequest) => Promise<GroupIntentResponse>;
-  sourceChunkBatch: (request: SourceChunkBatchRequest) => Promise<SourceChunkBatchResponse>;
+  groupIntent: (request: GroupIntentRequest, attempt?: number) => Promise<GroupIntentResponse>;
+  sourceChunkBatch: (
+    request: SourceChunkBatchRequest,
+    attempt?: number,
+  ) => Promise<SourceChunkBatchResponse>;
   pieceRetentionBatch: (
     request: PieceRetentionBatchRequest,
+    attempt?: number,
   ) => Promise<PieceRetentionBatchResponse>;
   retainedPiecePrune: (
     request: RetainedPiecePruneRequest,
+    attempt?: number,
   ) => Promise<RetainedPiecePruneResponse>;
 };
 
@@ -57,6 +74,8 @@ type StructuredJsonCallResult<T> = {
   value: T;
   usage: UsageMetrics | null;
   selection: StructuredModelSelection;
+  attempt: number;
+  durationMs: number;
 };
 
 export function createStructuredClients(
@@ -65,9 +84,10 @@ export function createStructuredClients(
   authHeader: string | null,
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
   onUsage?: (usage: StructuredModelUsage) => Promise<void> | void,
+  onSkipped?: (skipped: StructuredModelSkipped) => Promise<void> | void,
 ): StructuredClients {
   return {
-    groupIntent: async (request) => {
+    groupIntent: async (request, attempt = 1) => {
       const result = await callStructuredJson<GroupIntentResponse>(
         config,
         requestModel,
@@ -76,12 +96,13 @@ export function createStructuredClients(
         request,
         groupIntentJsonSchema,
         "group_intent",
+        attempt,
         onSelection,
       );
       await emitUsage(result, onUsage);
       return result.value;
     },
-    sourceChunkBatch: async (request) => {
+    sourceChunkBatch: async (request, attempt = 1) => {
       if (
         !canFitOverflowModel(
           config,
@@ -90,6 +111,18 @@ export function createStructuredClients(
           sourceChunkBatchJsonSchema,
         )
       ) {
+        await onSkipped?.({
+          classifier: "source_chunk_batch",
+          requestModel,
+          estimatedInputTokens: estimateStructuredInputTokens(
+            sourceChunkBatchSystemPrompt,
+            request,
+            sourceChunkBatchJsonSchema,
+          ),
+          reason: "exceeds_overflow_window",
+          fallback: "whole_selector_batch",
+          sourceCount: request.sources.length,
+        });
         return {
           results: request.sources.map((source) => ({
             sourceId: source.sourceId,
@@ -105,12 +138,13 @@ export function createStructuredClients(
         request,
         sourceChunkBatchJsonSchema,
         "source_chunk_batch",
+        attempt,
         onSelection,
       );
       await emitUsage(result, onUsage);
       return normalizeSourceChunkBatchResponse(request, result.value);
     },
-    pieceRetentionBatch: async (request) => {
+    pieceRetentionBatch: async (request, attempt = 1) => {
       const schema = pieceRetentionBatchJsonSchema(request);
       const result = await callStructuredJson<PieceRetentionBatchResponse>(
         config,
@@ -120,12 +154,13 @@ export function createStructuredClients(
         request,
         schema,
         "piece_retention_batch",
+        attempt,
         onSelection,
       );
       await emitUsage(result, onUsage);
       return normalizePieceRetentionBatchResponse(request, result.value);
     },
-    retainedPiecePrune: async (request) => {
+    retainedPiecePrune: async (request, attempt = 1) => {
       const result = await callStructuredJson<RetainedPiecePruneResponse>(
         config,
         requestModel,
@@ -134,6 +169,7 @@ export function createStructuredClients(
         request,
         retainedPiecePruneJsonSchema,
         "retained_piece_prune",
+        attempt,
         onSelection,
       );
       await emitUsage(result, onUsage);
@@ -152,7 +188,12 @@ async function emitUsage<T>(
     chosenModel: result.selection.chosenModel,
     estimatedInputTokens: result.selection.estimatedInputTokens,
     selectionReason: result.selection.selectionReason,
+    attempt: result.attempt,
+    durationMs: result.durationMs,
     inputTokens: result.usage?.inputTokens,
+    inputTokenDelta: result.usage?.inputTokens !== undefined
+      ? result.usage.inputTokens - result.selection.estimatedInputTokens
+      : undefined,
     cachedInputTokens: result.usage?.cachedInputTokens,
     outputTokens: result.usage?.outputTokens,
     totalTokens: result.usage?.totalTokens,
@@ -188,6 +229,7 @@ async function callStructuredJson<T>(
   payload: unknown,
   schema: JsonSchema,
   classifier: StructuredModelSelection["classifier"],
+  attempt: number,
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
 ): Promise<StructuredJsonCallResult<T>> {
   if (!authHeader) {
@@ -206,6 +248,7 @@ async function callStructuredJson<T>(
   );
   await onSelection?.(selection);
   const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
+  const startedAt = performance.now();
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -249,6 +292,8 @@ async function callStructuredJson<T>(
     value: extractJsonObject(text) as T,
     usage,
     selection,
+    attempt,
+    durationMs: Math.round(performance.now() - startedAt),
   };
 }
 
@@ -606,10 +651,10 @@ function normalizePieceRetentionBatchResponse(
   }
   const record = value as Record<string, unknown>;
   const decisionsByPieceId = (
-    record.decisionsByPieceId &&
+      record.decisionsByPieceId &&
       typeof record.decisionsByPieceId === "object" &&
       !Array.isArray(record.decisionsByPieceId)
-  )
+    )
     ? record.decisionsByPieceId as Record<string, unknown>
     : {};
 

@@ -21,6 +21,7 @@ export type UsageTotals = {
 
 export class TokenUsageTracker {
   #bySession = new Map<string, UsageTotals>();
+  #latestSessionKey: string | null = null;
 
   add(sessionKey: string, usage: UsageMetrics): UsageTotals {
     const previous = this.#bySession.get(sessionKey) ?? {
@@ -41,7 +42,16 @@ export class TokenUsageTracker {
       ),
     };
     this.#bySession.set(sessionKey, next);
+    this.#latestSessionKey = sessionKey;
     return next;
+  }
+
+  forSession(sessionKey: string): UsageTotals | null {
+    return this.#bySession.get(sessionKey) ?? null;
+  }
+
+  latest(): UsageTotals | null {
+    return this.#latestSessionKey ? this.forSession(this.#latestSessionKey) : null;
   }
 }
 

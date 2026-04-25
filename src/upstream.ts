@@ -32,6 +32,7 @@ export type ArchiveRecall = {
   offset: number;
   limit: number;
   returnedSourceIds: string[];
+  returnedBytes: number;
 };
 
 export type ResolveArchivedSources = (sourceIds: string[]) => Promise<ArchivedSource[]>;
@@ -150,12 +151,14 @@ export async function runResponsesLoop(
         offset: call.offset,
         limit: call.limit,
         returnedSourceIds: archivedSources.map((source) => source.sourceId),
+        returnedBytes: bytesForValue(archivedSources.map((source) => source.payload)),
       });
       await options.logger?.log("archive_recall", {
         sessionKey,
         offset: call.offset,
         limit: call.limit,
         returnedSourceIds: archivedSources.map((source) => source.sourceId),
+        returnedBytes: bytesForValue(archivedSources.map((source) => source.payload)),
       });
       loopOutputs.push(call.item);
       loopOutputs.push({
@@ -207,10 +210,15 @@ async function resolveSourcesForCall(
   resolveArchivedSources: ResolveArchivedSources,
 ): Promise<{ remainingArchivedSourceCount: number; items: ArchivedSource[] }> {
   const activeSourceIds = new Set(memory.pieces.map((piece) => piece.sourceId));
-  const availableSourceIds = memory.processedSourceIds.filter((sourceId) => !activeSourceIds.has(sourceId));
+  const availableSourceIds = memory.processedSourceIds.filter((sourceId) =>
+    !activeSourceIds.has(sourceId)
+  );
   const selectedIds = availableSourceIds.slice(call.offset, call.offset + call.limit);
   return {
-    remainingArchivedSourceCount: Math.max(0, availableSourceIds.length - (call.offset + selectedIds.length)),
+    remainingArchivedSourceCount: Math.max(
+      0,
+      availableSourceIds.length - (call.offset + selectedIds.length),
+    ),
     items: await resolveArchivedSources(selectedIds),
   };
 }
@@ -272,6 +280,10 @@ function parseRecallArguments(argumentsValue: unknown): { offset: number; limit:
     : 5;
   const limit = Math.max(1, Math.min(20, rawLimit));
   return { offset, limit };
+}
+
+function bytesForValue(value: unknown): number {
+  return new TextEncoder().encode(stableJson(value)).byteLength;
 }
 
 function baseLoopRequestBody(body: Record<string, unknown>): Record<string, unknown> {

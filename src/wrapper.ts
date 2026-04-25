@@ -8,7 +8,11 @@ import {
 import { CliOptions, expandHome, loadConfig, ProxyConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { startInteractiveRolloutTailer } from "./rollout_tailer.ts";
-import type { ContextWindowComparisonStats, ContextWindowStats } from "./server.ts";
+import type {
+  ContextWindowComparisonStats,
+  ContextWindowStats,
+  SessionTokenStats,
+} from "./server.ts";
 import { startServer } from "./server.ts";
 import type { RoundSource } from "./tool_results.ts";
 
@@ -18,6 +22,7 @@ export const CODEX_ALIAS_COMMAND = "npx -y pando-proxy";
 export const WRAPPER_PREFERENCES_RELATIVE_PATH = ".pando-proxy/wrapper-preferences.json";
 export const WRAPPER_LAST_THREAD_RELATIVE_PATH = "wrapper-last-thread.json";
 const SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS = 1_500;
+const NORMAL_PROXY_SUMMARY_TIMEOUT_MS = 10_000;
 const INTERACTIVE_CODEX_HOME_DIRNAME = "codex-home";
 const SHARED_CODEX_HOME_ENTRIES = [
   "config.toml",
@@ -58,6 +63,10 @@ export type StartedProxy = {
   contextStats: {
     latest: () => ContextWindowComparisonStats | null;
     forSession: (sessionKey: string) => ContextWindowComparisonStats | null;
+  };
+  tokenStats: {
+    latest: () => SessionTokenStats | null;
+    forSession: (sessionKey: string) => SessionTokenStats | null;
   };
 };
 
@@ -248,11 +257,13 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
       : undefined,
   );
   let sessionSummaryPrinted = false;
-  const flushAndPrintSessionSummary = async (): Promise<void> => {
+  const flushAndPrintSessionSummary = async (
+    timeoutMs = NORMAL_PROXY_SUMMARY_TIMEOUT_MS,
+  ): Promise<void> => {
     if (sessionSummaryPrinted) {
       return;
     }
-    await started.awaitIdle(SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS).catch(() => {});
+    await started.awaitIdle(timeoutMs).catch(() => {});
     const threadId = observer.latestExecThreadId() ?? interactiveSessionKeyHint;
     await saveLatestWrapperThreadId(baseConfig.stateDir, threadId);
     printCodexSessionSummary(threadId);
@@ -262,11 +273,17 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
         ? started.contextStats.forSession(threadId) ?? started.contextStats.latest()
         : started.contextStats.latest(),
     );
+    printTokenUsageSummary(
+      threadId,
+      threadId
+        ? started.tokenStats.forSession(threadId) ?? started.tokenStats.latest()
+        : started.tokenStats.latest(),
+    );
     sessionSummaryPrinted = true;
   };
   const cleanup = installProxyCleanup(started.server, logger, {
     onSignalExit: async (signal) => {
-      await flushAndPrintSessionSummary();
+      await flushAndPrintSessionSummary(SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS);
       await syncInteractiveStateOnce?.(`signal:${signal}`);
     },
   });
@@ -671,7 +688,7 @@ async function walkInteractiveRolloutFiles(
   path: string,
   out: Array<{ path: string; mtimeMs: number }>,
 ): Promise<void> {
-  let entries: Deno.DirEntry[] = [];
+  const entries: Deno.DirEntry[] = [];
   try {
     for await (const entry of Deno.readDir(path)) {
       entries.push(entry);
@@ -1378,6 +1395,7 @@ export function startProxyOnAvailablePort(
         server: started.server,
         awaitIdle: started.awaitIdle,
         contextStats: started.contextStats,
+        tokenStats: started.tokenStats,
       };
     } catch (error) {
       if (isAddressInUse(error)) {
@@ -1413,6 +1431,50 @@ function printCodexSessionSummary(threadId: string | null): void {
   }
   console.error(`pando-proxy: last Codex session id: ${threadId}`);
   console.error(`pando-proxy: resume with: codex resume ${threadId}`);
+}
+
+function printTokenUsageSummary(
+  threadId: string | null,
+  stats: SessionTokenStats | null,
+): void {
+  if (!stats) {
+    return;
+  }
+  const sessionLabel = threadId ? ` (${threadId})` : "";
+  if (stats.mainModel) {
+    console.error(
+      `Pando Proxy main-model tokens${sessionLabel}: input ${
+        formatCount(stats.mainModel.inputTokens)
+      }, cached ${formatCount(stats.mainModel.cachedInputTokens)}, output ${
+        formatCount(stats.mainModel.outputTokens)
+      }, total ${formatCount(stats.mainModel.totalTokens)}`,
+    );
+  }
+  if (stats.manager) {
+    console.error(
+      `Pando Proxy manager tokens${sessionLabel}: input ${
+        formatCount(stats.manager.totals.inputTokens)
+      }, cached ${formatCount(stats.manager.totals.cachedInputTokens)}, output ${
+        formatCount(stats.manager.totals.outputTokens)
+      }, total ${formatCount(stats.manager.totals.totalTokens)}, retries ${
+        formatCount(stats.manager.totals.retryAttempts)
+      }, skipped ${formatCount(stats.manager.totals.skipped)}, duration ${
+        formatCount(stats.manager.totals.durationMs)
+      }ms`,
+    );
+    for (const [classifier, totals] of Object.entries(stats.manager.byClassifier)) {
+      if (!totals) {
+        continue;
+      }
+      console.error(
+        `Pando Proxy manager ${classifier}${sessionLabel}: total ${
+          formatCount(totals.totalTokens)
+        }, attempts ${formatCount(totals.attempts)}, retries ${
+          formatCount(totals.retryAttempts)
+        }, skipped ${formatCount(totals.skipped)}, duration ${formatCount(totals.durationMs)}ms`,
+      );
+    }
+  }
 }
 
 function formatContextWindowSeries(stats: ContextWindowStats | null): string | null {

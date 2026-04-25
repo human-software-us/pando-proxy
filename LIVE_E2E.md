@@ -56,6 +56,8 @@ After each round, inspect:
 - `memory_round_decision`
 - `memory_round_updated`
 - `memory_state_saved`
+- `structured_model_usage`
+- `structured_model_skipped`
 - `archive_recall`
 - `round_complete`
 
@@ -69,6 +71,8 @@ Also inspect the persisted state under the chosen `--proxy-state-dir`.
 4. If `recall` was used, was it because the model actually needed older exact material?
 5. Did `recall` stay within the hard cap of 3 calls for that round?
 6. Did any round hit `memory_update_failed`?
+7. Which classifier actually cost the tokens and time in `internalManagerByClassifier`?
+8. Did wrapper stderr print both main-model and manager token summaries at exit?
 
 ## Suggested Probe Order
 
@@ -110,7 +114,8 @@ Pattern:
 Expected result:
 
 - `archiveRecallCount` may be 0, 1, 2, or 3 depending on how broad the final ask is
-- if it reaches 3, inspect whether the final request truly demanded a broad chronological archive walk
+- if it reaches 3, inspect whether the final request truly demanded a broad chronological archive
+  walk
 
 ## Failure Loop
 

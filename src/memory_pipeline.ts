@@ -87,8 +87,10 @@ export async function updateMemoryForCompletedRound(
   await logContext.logger?.log("memory_round_chunked", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    pieceCount: chunked.length,
-    pieces: chunked.map((piece) => ({
+    pieceCount: chunked.pieces.length,
+    chunkedViaModelSourceCount: chunked.chunkedViaModelSourceCount,
+    chunkedDeterministicSourceCount: chunked.chunkedDeterministicSourceCount,
+    pieces: chunked.pieces.map((piece) => ({
       id: piece.id,
       sourceId: piece.sourceId,
       sourceKind: piece.sourceKind,
@@ -101,7 +103,7 @@ export async function updateMemoryForCompletedRound(
 
   const applied = await applyGroupUpdate(
     previous,
-    chunked,
+    chunked.pieces,
     groupIntent,
     clients,
   );

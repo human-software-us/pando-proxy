@@ -117,9 +117,9 @@ export type SourceChunkBatchResponse = {
 };
 
 export type GroupMemoryClients = {
-  groupIntent: (request: GroupIntentRequest) => Promise<unknown>;
-  pieceRetentionBatch: (request: PieceRetentionBatchRequest) => Promise<unknown>;
-  retainedPiecePrune: (request: RetainedPiecePruneRequest) => Promise<unknown>;
+  groupIntent: (request: GroupIntentRequest, attempt?: number) => Promise<unknown>;
+  pieceRetentionBatch: (request: PieceRetentionBatchRequest, attempt?: number) => Promise<unknown>;
+  retainedPiecePrune: (request: RetainedPiecePruneRequest, attempt?: number) => Promise<unknown>;
 };
 
 export type AppliedGroupUpdate = {
@@ -139,7 +139,7 @@ export async function requestGroupIntent(
   clients: GroupMemoryClients,
 ): Promise<GroupIntentResponse> {
   const groupIntent = await requestWithSingleRetry(
-    () =>
+    (attempt) =>
       clients.groupIntent({
         groups: state.groups,
         retainedGroupAnchors: retainedPieceAnchors(state.pieces).map((anchor) => ({
@@ -152,7 +152,7 @@ export async function requestGroupIntent(
           createdSeq: anchor.createdSeq,
         })),
         newUserPieces,
-      }),
+      }, attempt),
     parseAndValidateGroupIntent,
     "group_intent",
   );
@@ -186,7 +186,7 @@ export async function applyGroupUpdate(
   const activeGroupIds = new Set(activeGroups(groupsAfter).map((group) => group.id));
 
   const pieceRetention = await requestWithSingleRetry(
-    () =>
+    (attempt) =>
       clients.pieceRetentionBatch({
         groups: groupsAfter,
         retainedPieceAnchors: retainedPieceAnchors(state.pieces),
@@ -199,7 +199,7 @@ export async function applyGroupUpdate(
           previewText: piece.previewText,
           ...(piece.pointer ? { pointer: piece.pointer } : {}),
         })),
-      }),
+      }, attempt),
     (value) => parseAndValidatePieceRetentionBatch(value, newPieces, groupsAfter, state.pieces),
     "piece_retention_batch",
   );
@@ -234,7 +234,7 @@ export async function applyGroupUpdate(
   const retainedPiecePrune = prelimKeptOldPieces.length === 0
     ? { dropPieceIds: [] }
     : await requestWithSingleRetry(
-      () =>
+      (attempt) =>
         clients.retainedPiecePrune({
           groups: groupsAfter,
           retainedOldPieces: prelimKeptOldPieces.map((piece) => ({
@@ -255,7 +255,7 @@ export async function applyGroupUpdate(
             previewText: piece.previewText,
             createdSeq: piece.createdSeq,
           })),
-        }),
+        }, attempt),
       (value) => parseAndValidateRetainedPiecePrune(value, prelimKeptOldPieces),
       "retained_piece_prune",
     );
@@ -311,13 +311,13 @@ function retainedPieceAnchors(
 }
 
 async function requestWithSingleRetry<T>(
-  invoke: () => Promise<unknown>,
+  invoke: (attempt: number) => Promise<unknown>,
   parse: (value: unknown) => { ok: true; value: T } | { ok: false; errors: string[] },
   name: string,
 ): Promise<T> {
   let lastErrors: string[] = [];
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const raw = await invoke();
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const raw = await invoke(attempt);
     const parsed = parse(raw);
     if (parsed.ok) {
       return parsed.value;

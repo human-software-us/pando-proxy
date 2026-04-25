@@ -262,6 +262,8 @@ Important JSONL events:
 - `memory_round_decision`
 - `memory_round_updated`
 - `memory_state_saved`
+- `structured_model_usage`
+- `structured_model_skipped`
 - `archive_recall`
 - `round_complete`
 
@@ -269,6 +271,19 @@ Important JSONL events:
 
 - `archiveRecallCount`
 - `archiveRecalls`
+- `archiveRecallReturnedBytes`
 - `returnedArchiveSourceIds`
+- `internalManagerByClassifier`
+- `internalManagerRetryAttempts`
+- `internalManagerDurationMs`
+- `internalManagerInputTokenDelta`
 - active memory metrics
 - all-in token totals including manager calls
+
+`structured_model_usage` includes:
+
+- `attempt`
+- `durationMs`
+- `estimatedInputTokens`
+- `inputTokens`
+- `inputTokenDelta`

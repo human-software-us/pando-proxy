@@ -13,10 +13,16 @@ const PANDO_ARRAY_KEYS = [
   "edges",
 ];
 
+export type ChunkRoundSourcesResult = {
+  pieces: PieceDraft[];
+  chunkedViaModelSourceCount: number;
+  chunkedDeterministicSourceCount: number;
+};
+
 export async function chunkRoundSources(
   sources: RoundSource[],
   clients: StructuredClients,
-): Promise<PieceDraft[]> {
+): Promise<ChunkRoundSourcesResult> {
   const out: PieceDraft[] = [];
   const batchedSources = sources.filter((source) =>
     !(source.sourceKind === "tool" && isPandoToolName(source.toolName))
@@ -30,11 +36,15 @@ export async function chunkRoundSources(
       ? deterministicPandoSelectors(source.payload)
       : batchedSelectors.get(source.sourceId) ?? [{ kind: "whole" } satisfies ChunkSelector];
     const pieces = materializeSourceSelectors(source, selectors);
-    out.push(...(pieces.length > 0
-      ? pieces
-      : materializeSourceSelectors(source, [{ kind: "whole" }])));
+    out.push(
+      ...(pieces.length > 0 ? pieces : materializeSourceSelectors(source, [{ kind: "whole" }])),
+    );
   }
-  return out;
+  return {
+    pieces: out,
+    chunkedViaModelSourceCount: batchedSources.length,
+    chunkedDeterministicSourceCount: sources.length - batchedSources.length,
+  };
 }
 
 export function isPandoToolName(toolName: string | undefined): boolean {

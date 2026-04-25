@@ -321,9 +321,11 @@ export async function replayRollout(
 
 function buildStubClients(policy: StubPolicy): StructuredClients {
   return {
-    groupIntent: async (request: GroupIntentRequest) => applyStubGroupIntent(request),
-    sourceChunkBatch: async (
+    groupIntent: (request: GroupIntentRequest, _attempt = 1) =>
+      Promise.resolve(applyStubGroupIntent(request)),
+    sourceChunkBatch: (
       request: SourceChunkBatchRequest,
+      _attempt = 1,
     ): Promise<SourceChunkBatchResponse> =>
       Promise.resolve({
         results: request.sources.map((source) => ({
@@ -331,14 +333,18 @@ function buildStubClients(policy: StubPolicy): StructuredClients {
           selectors: [{ kind: "whole" }],
         })),
       }),
-    pieceRetentionBatch: async (
+    pieceRetentionBatch: (
       request: PieceRetentionBatchRequest,
-    ): Promise<PieceRetentionBatchResponse> => applyStubRetentionPolicy(policy, request),
-    retainedPiecePrune: async (
+      _attempt = 1,
+    ): Promise<PieceRetentionBatchResponse> =>
+      Promise.resolve(applyStubRetentionPolicy(policy, request)),
+    retainedPiecePrune: (
       _request: RetainedPiecePruneRequest,
-    ): Promise<RetainedPiecePruneResponse> => ({
-      dropPieceIds: [],
-    }),
+      _attempt = 1,
+    ): Promise<RetainedPiecePruneResponse> =>
+      Promise.resolve({
+        dropPieceIds: [],
+      }),
   };
 }
 

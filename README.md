@@ -8,8 +8,8 @@ The important invariant is simple:
 - active memory is the exact kept piece set
 - the next forwarded prompt contains that exact kept set
 - anything not kept is dropped from active memory completely
-- if older exact material is needed later, the agent can use `recall({offset,limit})`
-  against the per-session archive, up to 3 times in that round
+- if older exact material is needed later, the agent can use `recall({offset,limit})` against the
+  per-session archive, up to 3 times in that round
 
 There is no projection layer, no hidden omitted-memory tier, and no summary/embedding memory.
 
@@ -37,9 +37,9 @@ Normal end-of-round flow:
 
 1. collect new round sources
 2. run `source_chunk_batch` and `group_intent` in parallel
-4. `piece_retention_batch`
-5. `retained_piece_prune`
-6. persist the surviving exact pieces
+3. `piece_retention_batch`
+4. `retained_piece_prune`
+5. persist the surviving exact pieces
 
 Normal request flow:
 
@@ -165,7 +165,15 @@ Inspect after each run:
 - `memory_round_updated`
 - `memory_state_saved`
 - `archive_recall`
+- `structured_model_usage`
+- `structured_model_skipped`
 - `round_complete`
+
+Wrapper stderr now also prints at exit:
+
+- main-model token totals for that wrapper run
+- manager token totals for that wrapper run
+- per-classifier manager totals
 
 ## Repo Map
 
