@@ -58,7 +58,9 @@ Serve/doctor options:
 }
 
 if (import.meta.main) {
-  main().catch((error) => {
+  main().then(() => {
+    Deno.exit(Deno.exitCode);
+  }).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     Deno.exit(1);
   });

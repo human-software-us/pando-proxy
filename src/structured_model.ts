@@ -49,6 +49,17 @@ export type StructuredModelSkipped = {
   sourceCount: number;
 };
 
+export type StructuredModelError = {
+  classifier: StructuredModelSelection["classifier"];
+  requestModel: string | null;
+  chosenModel: string;
+  estimatedInputTokens: number;
+  selectionReason: StructuredModelSelection["selectionReason"];
+  attempt: number;
+  durationMs: number;
+  message: string;
+};
+
 export type StructuredClients = {
   groupIntent: (request: GroupIntentRequest, attempt?: number) => Promise<GroupIntentResponse>;
   sourceChunkBatch: (
@@ -85,6 +96,7 @@ export function createStructuredClients(
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
   onUsage?: (usage: StructuredModelUsage) => Promise<void> | void,
   onSkipped?: (skipped: StructuredModelSkipped) => Promise<void> | void,
+  onError?: (error: StructuredModelError) => Promise<void> | void,
 ): StructuredClients {
   return {
     groupIntent: async (request, attempt = 1) => {
@@ -98,6 +110,7 @@ export function createStructuredClients(
         "group_intent",
         attempt,
         onSelection,
+        onError,
       );
       await emitUsage(result, onUsage);
       return result.value;
@@ -140,6 +153,7 @@ export function createStructuredClients(
         "source_chunk_batch",
         attempt,
         onSelection,
+        onError,
       );
       await emitUsage(result, onUsage);
       return normalizeSourceChunkBatchResponse(request, result.value);
@@ -156,6 +170,7 @@ export function createStructuredClients(
         "piece_retention_batch",
         attempt,
         onSelection,
+        onError,
       );
       await emitUsage(result, onUsage);
       return normalizePieceRetentionBatchResponse(request, result.value);
@@ -171,6 +186,7 @@ export function createStructuredClients(
         "retained_piece_prune",
         attempt,
         onSelection,
+        onError,
       );
       await emitUsage(result, onUsage);
       return result.value;
@@ -231,6 +247,7 @@ async function callStructuredJson<T>(
   classifier: StructuredModelSelection["classifier"],
   attempt: number,
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
+  onError?: (error: StructuredModelError) => Promise<void> | void,
 ): Promise<StructuredJsonCallResult<T>> {
   if (!authHeader) {
     throw new Error(
@@ -247,54 +264,68 @@ async function callStructuredJson<T>(
     classifier,
   );
   await onSelection?.(selection);
-  const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
   const startedAt = performance.now();
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "authorization": authHeader,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: selection.chosenModel,
-      instructions: system,
-      stream: true,
-      store: false,
-      text: {
-        format: {
-          type: "json_schema",
-          name: classifier,
-          strict: true,
-          schema,
-        },
+  try {
+    const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "authorization": authHeader,
+        "content-type": "application/json",
       },
-      input: [{
-        role: "user",
-        content: [{ type: "input_text", text: stableJson(payload) }],
-      }],
-    }),
-    signal: AbortSignal.timeout(config.modelTimeoutMs),
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Structured model call failed: ${response.status} ${text.slice(0, 500)}`);
-  }
+      body: JSON.stringify({
+        model: selection.chosenModel,
+        instructions: system,
+        stream: true,
+        store: false,
+        text: {
+          format: {
+            type: "json_schema",
+            name: classifier,
+            strict: true,
+            schema,
+          },
+        },
+        input: [{
+          role: "user",
+          content: [{ type: "input_text", text: stableJson(payload) }],
+        }],
+      }),
+      signal: AbortSignal.timeout(config.modelTimeoutMs),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Structured model call failed: ${response.status} ${text.slice(0, 500)}`);
+    }
 
-  const bodyText = await response.text();
-  const text = isEventStream(response, bodyText)
-    ? extractResponseTextFromSseText(bodyText)
-    : extractResponseText(JSON.parse(bodyText));
-  if (!text) {
-    throw new Error("Structured model response did not include text");
+    const bodyText = await response.text();
+    const text = isEventStream(response, bodyText)
+      ? extractResponseTextFromSseText(bodyText)
+      : extractResponseText(JSON.parse(bodyText));
+    if (!text) {
+      throw new Error("Structured model response did not include text");
+    }
+    const usage = extractUsageMetricsFromStructuredResponse(response, bodyText);
+    return {
+      value: extractJsonObject(text) as T,
+      usage,
+      selection,
+      attempt,
+      durationMs: Math.round(performance.now() - startedAt),
+    };
+  } catch (error) {
+    await onError?.({
+      classifier: selection.classifier,
+      requestModel: selection.requestModel,
+      chosenModel: selection.chosenModel,
+      estimatedInputTokens: selection.estimatedInputTokens,
+      selectionReason: selection.selectionReason,
+      attempt,
+      durationMs: Math.round(performance.now() - startedAt),
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-  const usage = extractUsageMetricsFromStructuredResponse(response, bodyText);
-  return {
-    value: extractJsonObject(text) as T,
-    usage,
-    selection,
-    attempt,
-    durationMs: Math.round(performance.now() - startedAt),
-  };
 }
 
 function chooseStructuredModel(
@@ -638,7 +669,7 @@ You decide which exact new pieces should be retained in durable memory groups.
 Return JSON matching the supplied schema.
 
 Rules:
-- You are given post-round groups, retained anchor pieces, and all new exact pieces.
+- You are given post-round groups, retained anchors, and preview/pointer/selector anchors for all new exact pieces.
 - Return a decision for every new piece id under decisionsByPieceId.
 - Keep only exact pieces that materially matter later.
 - Prefer original user literals and original tool results over assistant restatements.

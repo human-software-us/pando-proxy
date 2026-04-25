@@ -777,6 +777,12 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
           ...skipped,
         });
       },
+      (error) =>
+        logger.log("structured_model_error", {
+          requestId,
+          sessionKey,
+          ...error,
+        }),
     );
     const observedWaitStartedAt = Date.now();
     const observedSources = observedRoundSourcesForSession

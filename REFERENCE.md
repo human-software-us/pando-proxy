@@ -103,6 +103,7 @@ type PieceRetentionBatchRequest = {
     sourceId: string;
     toolName?: string;
     previewText: string;
+    byteSize: number;
     pointer?: Record<string, unknown>;
     selector: ChunkSelector;
   }>;

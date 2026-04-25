@@ -36,6 +36,7 @@ Codex/OpenAI calls. Unit tests were intentionally skipped. Logs and state were w
 | 3 idle capture           | `/tmp/pando-live-health2-t3-idle-capture/proxy.jsonl` | `/tmp/pando-live-health2-t3-idle-capture/state` | `/tmp/pando-live-health2-t3-idle-capture/r1.txt`; intentionally killed after idle capture          |
 | 4 first attempt          | `/tmp/pando-live-health2-t4b/proxy.jsonl`             | `/tmp/pando-live-health2-t4b/state`             | Used only for failure investigation                                                                |
 | 4 clean rerun            | `/tmp/pando-live-health2-t4c/proxy.jsonl`             | `/tmp/pando-live-health2-t4c/state`             | `/tmp/pando-live-health2-t4c/r1.txt`, `r2.txt`, `r2b.txt`, `r3.txt`, `r4.txt`, `r4b.txt`, `r5.txt` |
+| 4 final investigation    | `/tmp/pando-live-health2-t4-investigate3/proxy.jsonl` | `/tmp/pando-live-health2-t4-investigate3/state` | `/tmp/pando-live-health2-t4-investigate3/r1.txt` through `r5.txt`                                  |
 | 5                        | `/tmp/pando-live-health2-t5/proxy.jsonl`              | `/tmp/pando-live-health2-t5/state`              | `/tmp/pando-live-health2-t5/r1.txt` through `r12.txt`, with `r8b.txt` retry                        |
 
 ## Transcript Details
@@ -187,6 +188,19 @@ First attempt:
 - A live round logged `memoryUpdateError: "Structured model response did not include text"` while
   the session recovered later. This drove the structured invocation retry and settled parallel call
   fix.
+- Follow-up log inspection identified the failing request as `797aed49-af57-4b53-8033-c112784e9da6`
+  in `/tmp/pando-live-health2-t4b/proxy.jsonl`. The old log showed `source_chunk_batch` selected on
+  a very large search payload, then `round_complete` emitted the memory error before a late
+  `group_intent` usage event arrived. That confirmed the old implementation could report a parallel
+  manager failure before both branches had fully settled and been attributed.
+- A diagnostic rerun with `structured_model_error` logging exposed the remaining core issue:
+  `piece_retention_batch` was still receiving full exact piece payloads. A large tool-output round
+  pushed retention to a roughly 50k-token call and timed out once. The fix changed retention inputs
+  to preview/pointer/selector/byte-size anchors only; exact payloads remain stored and rendered, but
+  retention does not reread full content.
+- The wrapper also now waits long enough for one manager timeout plus one retry before printing the
+  final summary and shutting down, and the CLI entrypoint exits explicitly after wrapper shutdown so
+  closed live runs cannot remain alive on upstream keep-alive sockets.
 
 Clean rerun rounds:
 
@@ -207,6 +221,43 @@ Final excerpt:
   "dotnetCounts": { "Invariant": 6270, "Globalization": 4574 },
   "dotnetGlobalSdkVersion": "11.0.100-preview.1.26104.118",
   "geminiRootVersion": "0.25.0-nightly.20260107.59a18e710"
+}
+```
+
+Final investigation rerun:
+
+- Thread: `019dc6f2-4e9e-7b91-91f0-2c980c2f7489`.
+- Log: `/tmp/pando-live-health2-t4-investigate3/proxy.jsonl`.
+- State: `/tmp/pando-live-health2-t4-investigate3/state`.
+- Outputs: `/tmp/pando-live-health2-t4-investigate3/r1.txt` through `r5.txt`.
+- Rounds:
+  1. Gemini metadata: `@google/gemini-cli@0.25.0-nightly.20260107.59a18e710`, README `Gemini CLI`,
+     core package same version. This round also unintentionally produced a large `rg --files` output
+     including node_modules paths, which exercised the high-volume chunking path.
+  2. Gemini search: `auth_line_count=8338`, `sandbox_line_count=1118`, first snippet
+     `docs/get-started/configuration.md:760:- **\`security.auth.selectedType\`** (string):`.
+  3. Dotnet metadata: README `# .NET Runtime`, SDK `11.0.100-preview.1.26104.118`, `String.cs` byte
+     size `28982`.
+  4. Dotnet search: `Invariant=8489`, `Globalization=5368`, first snippet
+     `docs/design/mono/mono-manpage-1.md:1145:members of System.Globalization.CompareInfo class. Collation is enabled`.
+  5. No shell tools. Final output preserved the round 4 counts/snippets, dotnet SDK, and Gemini root
+     package version; it used one bounded archive recall.
+- Log stats: `11` `round_complete` events, `0` memory errors, `1` recall round, max active pieces
+  `6`, manager tokens `87,618`.
+- The stress round had `source_chunk_batch.inputTokens=48,258`, but
+  `piece_retention_batch.inputTokens=1,848`; this confirms the retention payload cliff is gone.
+- No `structured_model_error`, `memory_update_failed`, or `wrapper_pending_finalization_timeout`
+  events appeared in the final investigation rerun.
+
+Final investigation excerpt:
+
+```json
+{
+  "dotnet": {
+    "counts": { "Invariant": 8489, "Globalization": 5368 },
+    "global_sdk_version": "11.0.100-preview.1.26104.118"
+  },
+  "gemini": { "root_package_version": "0.25.0-nightly.20260107.59a18e710" }
 }
 ```
 
@@ -267,6 +318,12 @@ Corrected final excerpt:
   fix makes parallel chunk/group calls wait for both branches to settle before reporting failure,
   and applies the documented single retry to structured invocation failures as well as
   schema-validation failures.
+- Test 4 reinvestigation found that `piece_retention_batch` still included full new-piece content,
+  making retention scale with large tool payloads. The fix makes retention preview/anchor-based:
+  `previewText`, `byteSize`, `selector`, and pointer metadata only.
+- Test 4 reinvestigation also found closed wrapper processes could stay alive after proxy shutdown
+  because upstream keep-alive sockets remained open. The fix makes the CLI entrypoint call
+  `Deno.exit` after `main()` resolves.
 - In Test 5, `retained_piece_prune` dropped a newly kept assistant result, so a no-tool follow-up
   produced incorrect EXE/HEIC byte facts after recall missed the newer source. The fix restores the
   intended old-piece-prune invariant: retention decides new pieces; prune can only drop old pieces.

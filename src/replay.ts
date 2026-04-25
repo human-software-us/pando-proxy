@@ -394,7 +394,7 @@ function selectKeptNewPieceIds(policy: StubPolicy, request: PieceRetentionBatchR
       const keepIds: string[] = [];
       let used = 0;
       for (const piece of [...request.newPieces].reverse()) {
-        const bytes = approxBytes(piece.content);
+        const bytes = piece.byteSize;
         if (used + bytes > 32_768) {
           continue;
         }

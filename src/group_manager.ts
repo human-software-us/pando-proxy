@@ -53,8 +53,9 @@ export type PieceRetentionBatchRequest = {
     sourceKind: "user" | "assistant" | "tool";
     sourceId: string;
     toolName?: string;
-    content: unknown;
     previewText: string;
+    byteSize: number;
+    selector: PieceDraft["selector"];
     pointer?: Record<string, unknown>;
   }>;
 };
@@ -195,8 +196,9 @@ export async function applyGroupUpdate(
           sourceKind: piece.sourceKind,
           sourceId: piece.sourceId,
           ...(piece.toolName ? { toolName: piece.toolName } : {}),
-          content: piece.content,
           previewText: piece.previewText,
+          byteSize: piece.byteSize,
+          selector: piece.selector,
           ...(piece.pointer ? { pointer: piece.pointer } : {}),
         })),
       }, attempt),
