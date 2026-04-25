@@ -1,17 +1,23 @@
 # Live E2E Results: Span-Based Lossless Chunking
 
 Validation policy for this batch:
+
 - live backend only
 - actual tokens/auth
 - no unit tests
 - manual one-by-one sessions with log/state inspection after each run
 
 Fixes made during this batch:
-- persisted pieces were incorrectly saving transient draft `content`; fixed by storing selector metadata only
-- prune only operated on old pieces, so transient current-turn output-shape requests could survive; fixed by widening the prune pass to all currently kept pieces
-- chunker instructions were tightened for delimited blocks, JSON-shaped output requests, and binary-like/base64/hex-like content
+
+- persisted pieces were incorrectly saving transient draft `content`; fixed by storing selector
+  metadata only
+- prune only operated on old pieces, so transient current-turn output-shape requests could survive;
+  fixed by widening the prune pass to all currently kept pieces
+- chunker instructions were tightened for delimited blocks, JSON-shaped output requests, and
+  binary-like/base64/hex-like content
 
 ## Test 1: Fake Poem Block
+
 - Rounds: `3`
 - Session: `live-test1-poem`
 - Final answer:
@@ -24,6 +30,7 @@ Fixes made during this batch:
   - active memory ended on the exact returned poem answer, which is acceptable under the sieve model
 
 ## Test 2: Fake Exact Snippets JSON
+
 - Rounds: `4`
 - Session: `live-test2-snips-rerun3`
 - Final answer:
@@ -32,11 +39,14 @@ Fixes made during this batch:
   - `memoryUpdateError = null` on every round
   - final round used `archiveRecallCount = 1`
   - per-field verbatim checker passed for fields `a` and `c`
-  - final persisted memory dropped the transient JSON-shape request and retained only the exact answer
+  - final persisted memory dropped the transient JSON-shape request and retained only the exact
+    answer
 - Bug found and fixed:
-  - before the prune widening, the manager retained the current-turn JSON wrapper request as durable memory
+  - before the prune widening, the manager retained the current-turn JSON wrapper request as durable
+    memory
 
 ## Test 3: Realistic JSON Configs
+
 - Rounds: `7`
 - Session: `live-test3-json-configs-rerun`
 - Final answer:
@@ -44,15 +54,18 @@ Fixes made during this batch:
 - Checks:
   - `memoryUpdateError = null` on every round
   - no live runtime failures
-  - one of the rounds previously exposed the same transient-output-shape retention bug; the rerun after prompt/prune fixes completed cleanly
+  - one of the rounds previously exposed the same transient-output-shape retention bug; the rerun
+    after prompt/prune fixes completed cleanly
 - Notes:
   - this was the 6+ round realistic session for the batch
 
 ## Test 4: Realistic Binary-Like Executable Manifest
+
 - Rounds: `5`
 - Session: `live-test4-binary-manifest`
 - Final answers:
-  - round 3: `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
+  - round 3:
+    `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
   - round 5: `TVqQAAMAAAAEAAAA//8A`
 - Checks:
   - `memoryUpdateError = null` on every round
@@ -65,10 +78,12 @@ Fixes made during this batch:
   - this specifically exercised binary-like/base64/hex-like content handling
 
 ## Test 5: Realistic Photo Metadata
+
 - Rounds: `4`
 - Session: `live-test5-photo-meta`
 - Final answers:
-  - round 3: `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
+  - round 3:
+    `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
   - round 4: `iPhone15,2`
 - Checks:
   - `memoryUpdateError = null` on every round
@@ -85,11 +100,15 @@ Fixes made during this batch:
 ## Follow-Up: Prompt Cleanup + Selector Dedupe
 
 Changes validated in this follow-up batch:
-- rewrote the manager prompts and developer memory prompt for the same policy content with less repetition and better ordering
+
+- rewrote the manager prompts and developer memory prompt for the same policy content with less
+  repetition and better ordering
 - added within-source selector dedupe by canonical selector identity
-- tightened transient output-shape handling again after live inspection of JSON-shaped follow-up requests
+- tightened transient output-shape handling again after live inspection of JSON-shaped follow-up
+  requests
 
 ### Follow-Up Test A: Realistic JSON Configs
+
 - Rounds: `7`
 - Session: `live-testA2-json-configs-postprompt`
 - Final answer:
@@ -99,14 +118,18 @@ Changes validated in this follow-up batch:
   - `archiveRecallCount = 0` on every round
   - local exact checker passed for `alpha_token` and `beta_flag_1`
 - Bug found and fixed:
-  - a current-turn output template containing concrete values was still being retained as durable memory
-  - fixed by tightening retention/prune guidance so output templates remain transient unless explicitly framed as new remembered source material
+  - a current-turn output template containing concrete values was still being retained as durable
+    memory
+  - fixed by tightening retention/prune guidance so output templates remain transient unless
+    explicitly framed as new remembered source material
 
 ### Follow-Up Test B: Binary-Like Executable Manifest
+
 - Rounds: `5`
 - Session: `live-testB-binary-manifest-postprompt`
 - Final answers:
-  - round 3: `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
+  - round 3:
+    `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
   - round 5: `TVqQAAMAAAAEAAAA//8A`
 - Checks:
   - `memoryUpdateError = null` on every round
@@ -114,10 +137,12 @@ Changes validated in this follow-up batch:
   - local exact checker passed for `sha256`, `entry_hex`, and `base64Prefix`
 
 ### Follow-Up Test C: Photo Metadata
+
 - Rounds: `4`
 - Session: `live-testC-photo-meta-postprompt`
 - Final answers:
-  - round 3: `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
+  - round 3:
+    `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
   - round 4: `iPhone15,2`
 - Checks:
   - `memoryUpdateError = null` on every round
@@ -129,6 +154,7 @@ Changes validated in this follow-up batch:
 Three additional live end-to-end health checks were run after the last prompt/dedupe changes.
 
 ### Health Test 1: JSON Configs
+
 - Rounds: `7`
 - Session: `health-test1-json-configs`
 - Final answer:
@@ -139,10 +165,12 @@ Three additional live end-to-end health checks were run after the last prompt/de
   - local exact checker passed for `alpha_token` and `beta_flag_1`
 
 ### Health Test 2: Binary Manifest
+
 - Rounds: `5`
 - Session: `health-test2-binary-manifest`
 - Final answers:
-  - round 3: `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
+  - round 3:
+    `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
   - round 5: `TVqQAAMAAAAEAAAA//8A`
 - Checks:
   - every `round_complete.memoryUpdateError` was `null`
@@ -150,19 +178,24 @@ Three additional live end-to-end health checks were run after the last prompt/de
   - local exact checker passed for `sha256`, `entry_hex`, and `base64Prefix`
 
 ### Health Test 3: Photo Metadata
+
 - Initial session: `health-test3-photo-meta`
 - Rounds: `4`
 - Issue found:
-  - the final model shortened the visible exact base64-like value from `/9j/4AAQSkZJRgABAQAAAQABAAD` to `/9j/`
+  - the final model shortened the visible exact base64-like value from `/9j/4AAQSkZJRgABAQAAAQABAAD`
+    to `/9j/`
   - memory itself was still correct; the problem was output copying, not memory loss
 - Fix:
-  - tightened the developer memory prompt so visibly exact values must be copied fully and not abbreviated
+  - tightened the developer memory prompt so visibly exact values must be copied fully and not
+    abbreviated
 
 ### Health Test 3 Rerun: Photo Metadata
+
 - Session: `health-test3-photo-meta-rerun`
 - Rounds: `4`
 - Final answers:
-  - round 3: `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
+  - round 3:
+    `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
   - round 4: `iPhone15,2`
 - Checks:
   - every `round_complete.memoryUpdateError` was `null`

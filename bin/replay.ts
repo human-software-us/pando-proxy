@@ -7,7 +7,7 @@
 //     [--max-rounds N] [--out-dir tmp/replay/<name>]
 //     [--real-llm --auth-from-codex]
 
-import { parseArgs } from "jsr:@std/cli/parse-args";
+import { parseArgs } from "@std/cli/parse-args";
 import { replayRollout, type ReplayTurnResult, type StubPolicy } from "../src/replay.ts";
 import type { StructuredModelUsage } from "../src/structured_model.ts";
 

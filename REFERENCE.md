@@ -44,7 +44,8 @@ Important invariant:
 - the stored `pieces` set is the active prompt-memory set
 - pieces reference exact original sources through selectors instead of storing rewritten payloads
 - non-Pando text-like pieces use exact `text_spans` into the archived original source
-- one conceptual piece may contain multiple ordered spans when separated source regions belong together
+- one conceptual piece may contain multiple ordered spans when separated source regions belong
+  together
 - there is no `inlinePieceIds`
 - there is no visibility split like `inline | omittable`
 

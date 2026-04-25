@@ -169,9 +169,9 @@ Inspect after each run:
 
 Wrapper stderr now also prints at exit:
 
-- main-model token totals for that wrapper run
-- manager token totals for that wrapper run
-- per-classifier manager totals
+- estimated input tokens without the proxy
+- billed all-in tokens with the proxy
+- proxy overhead tokens from internal manager calls
 
 ## Repo Map
 
@@ -182,6 +182,7 @@ Wrapper stderr now also prints at exit:
 - [REFERENCE.md](./REFERENCE.md) — concrete runtime types and contracts
 - [LIVE_E2E.md](./LIVE_E2E.md) — live validation loop
 - [MEMORY_DIAGRAMS.md](./MEMORY_DIAGRAMS.md) — simplified diagrams
+- [npm-publishing.md](./npm-publishing.md) — package checks and npm release flow
 
 Key runtime files:
 

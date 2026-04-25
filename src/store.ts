@@ -7,7 +7,6 @@ import {
   isRecord,
   type MaterializedMemoryPiece,
   type MaterializedMemoryState,
-  type MemoryPiece,
   pruneMemoryState,
   type SessionRecord,
 } from "./memory_state.ts";

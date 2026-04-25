@@ -41,7 +41,7 @@ export class CodexEventObserver {
     if (activeThreadId && isRecord(payload) && payload.type === "turn.started") {
       this.#currentExecTurnStateByThread.set(activeThreadId, emptyObservedExecTurnState());
     }
-    await this.#observeExecTurnArtifacts(parsed, payload, activeThreadId);
+    this.#observeExecTurnArtifacts(parsed, payload, activeThreadId);
     const toolSource = extractExecToolSource(payload);
     if (toolSource && activeThreadId) {
       const state = this.#currentExecTurnStateByThread.get(activeThreadId);
@@ -106,11 +106,11 @@ export class CodexEventObserver {
     });
   }
 
-  async #observeExecTurnArtifacts(
+  #observeExecTurnArtifacts(
     rawPayload: unknown,
     payload: unknown,
     threadId: string | null,
-  ): Promise<void> {
+  ): void {
     if (!threadId) {
       return;
     }

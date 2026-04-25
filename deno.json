@@ -1,4 +1,7 @@
 {
+  "imports": {
+    "@std/cli/parse-args": "jsr:@std/cli@1.0.29/parse-args"
+  },
   "tasks": {
     "check": "deno fmt --check && deno lint && deno check src/main.ts && deno test --allow-net --allow-read --allow-write --allow-env --allow-run",
     "dev": "deno run --allow-net --allow-env --allow-read --allow-write src/main.ts serve",

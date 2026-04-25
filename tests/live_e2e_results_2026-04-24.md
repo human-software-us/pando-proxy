@@ -265,8 +265,10 @@ Observed stats:
 
 Commentary:
 
-- first live run exposed a real bug: stale transient instructions like `reply STEP-4 only` were being treated as durable memory and overrode the real retained token
-- fixed by tightening `group_intent`, `piece_retention_batch`, and `retained_piece_prune` prompts to drop one-turn control chatter and preserve durable evidence
+- first live run exposed a real bug: stale transient instructions like `reply STEP-4 only` were
+  being treated as durable memory and overrode the real retained token
+- fixed by tightening `group_intent`, `piece_retention_batch`, and `retained_piece_prune` prompts to
+  drop one-turn control chatter and preserve durable evidence
 - rerun passed cleanly
 
 ## Test 9: Six-Round Large Blob Lookup
@@ -331,9 +333,12 @@ Observed stats:
 
 Commentary:
 
-- first live run exposed a real bug: `group_intent` sometimes returned a contradictory replacement result, retiring a group id and also keeping it in `groupsAfter`
-- that caused `memory_update_failed`, fail-closed state retention, and a wrong final answer (`B-10-2222`)
-- fixed by steering within-thread value swaps toward “continue same group, supersede old piece” instead of “retire and recreate the group”
+- first live run exposed a real bug: `group_intent` sometimes returned a contradictory replacement
+  result, retiring a group id and also keeping it in `groupsAfter`
+- that caused `memory_update_failed`, fail-closed state retention, and a wrong final answer
+  (`B-10-2222`)
+- fixed by steering within-thread value swaps toward “continue same group, supersede old piece”
+  instead of “retire and recreate the group”
 - rerun passed cleanly with no retry failure
 
 ## Test 11: Eight-Round Multi-Fact Retention
@@ -356,7 +361,8 @@ Rounds:
 
 Observed outputs:
 
-- round 8: `{"ALPHA11":"red-111","BETA11":"blue-222","GAMMA11":"green-333","DELTA11":"yellow-444","EPSILON11":"purple-555"}`
+- round 8:
+  `{"ALPHA11":"red-111","BETA11":"blue-222","GAMMA11":"green-333","DELTA11":"yellow-444","EPSILON11":"purple-555"}`
 
 Observed stats:
 
@@ -367,7 +373,8 @@ Observed stats:
 Commentary:
 
 - clean pass
-- the manager progressively pruned older exact pieces while carrying the exact retained facts forward in the active group summary
+- the manager progressively pruned older exact pieces while carrying the exact retained facts
+  forward in the active group summary
 - no archive recall was needed in this case
 
 ## Test 12: Nine-Round Seven-Fact Accumulation
@@ -448,7 +455,8 @@ Goal:
 Observed outputs:
 
 - rounds 1-8: expected block acknowledgements / holds
-- round 9: `{"B":"bravo15-222","H":"hotel15-888","N":"november15-1414","T":"tango15-2020","Z":"zulu15-2626","FF":"foxtrotfoxtrot15-3232"}`
+- round 9:
+  `{"B":"bravo15-222","H":"hotel15-888","N":"november15-1414","T":"tango15-2020","Z":"zulu15-2626","FF":"foxtrotfoxtrot15-3232"}`
 
 Observed stats:
 
@@ -494,7 +502,8 @@ Observed outputs:
 
 - closed blue thread
 - later red and green exact lookups were correct
-- final round returned `{"red_token":"RED17-111","blue_token":"UNKNOWN","green_note":"green-note-17"}`
+- final round returned
+  `{"red_token":"RED17-111","blue_token":"UNKNOWN","green_note":"green-note-17"}`
 
 Observed stats:
 
@@ -504,7 +513,8 @@ Observed stats:
 Commentary:
 
 - memory behavior was correct
-- one surface wording blemish remained on the immediate blue-lookup round: the model answered `I don’t know.` instead of the requested exact literal `UNKNOWN`
+- one surface wording blemish remained on the immediate blue-lookup round: the model answered
+  `I don’t know.` instead of the requested exact literal `UNKNOWN`
 - that looks like main-model instruction following, not a memory-state corruption
 
 ## Test 18: Partial Supersession In One Config Thread
@@ -526,7 +536,8 @@ Observed stats:
 Commentary:
 
 - clean pass
-- partial update semantics behaved correctly: old `PORT=1801` was replaced, while `HOST` and `MODE` survived
+- partial update semantics behaved correctly: old `PORT=1801` was replaced, while `HOST` and `MODE`
+  survived
 
 ## Test 19: Dual Parallel Configs With Independent Updates
 
@@ -537,7 +548,8 @@ Goal:
 Observed outputs:
 
 - later exact answers: `1902` and `blue-key-19b`
-- final round returned `{"red_host":"red-host-19","red_port":1902,"blue_host":"blue-host-19","blue_port":2901,"blue_key":"blue-key-19b"}`
+- final round returned
+  `{"red_host":"red-host-19","red_port":1902,"blue_host":"blue-host-19","blue_port":2901,"blue_key":"blue-key-19b"}`
 
 Observed stats:
 
@@ -558,7 +570,8 @@ Goal:
 Observed outputs:
 
 - exact intermediate answers for A, B, and C threads
-- final round returned `{"a_token":"alpha-20x-v2","a_note":"a-note-20x","b_token":"bravo-20x","b_note":"b-note-20x","c_token":"charlie-20x","c_note":"c-note-20x"}`
+- final round returned
+  `{"a_token":"alpha-20x-v2","a_note":"a-note-20x","b_token":"bravo-20x","b_note":"b-note-20x","c_token":"charlie-20x","c_note":"c-note-20x"}`
 
 Observed stats:
 
@@ -568,19 +581,22 @@ Observed stats:
 Commentary:
 
 - clean pass
-- after `THREAD_A` was updated, later retrievals consistently returned the v2 token rather than the old one
+- after `THREAD_A` was updated, later retrievals consistently returned the v2 token rather than the
+  old one
 
 ## Test 21: Reopen Same Label After Close
 
 Goal:
 
-- verify closing a thread and starting it again with the same label does not resurrect the old exact value
+- verify closing a thread and starting it again with the same label does not resurrect the old exact
+  value
 
 Observed outputs:
 
 - later exact answer for `TASK_ALPHA` was `alpha-new-21`
 - later exact answer for `TASK_BETA` note was `beta-note-21`
-- final round returned `{"alpha_token":"alpha-new-21","alpha_note":"new-note-21","beta_token":"beta-21","beta_note":"beta-note-21"}`
+- final round returned
+  `{"alpha_token":"alpha-new-21","alpha_note":"new-note-21","beta_token":"beta-21","beta_note":"beta-note-21"}`
 
 Observed stats:
 
@@ -600,19 +616,8 @@ Goal:
 
 Observed outputs:
 
-- final round returned:
-  `BLOCK22-A`
-  `{`
-  `  header: "alpha-23",`
-  `  items: [`
-  `    "first",`
-  `    "second",`
-  `    "third"`
-  `  ],`
-  ``
-  `  note: "two  spaces  inside",`
-  `  marker: "[keep]{exact}(23)!"`
-  `}`
+- final round returned: `BLOCK22-A` `{` `header: "alpha-23",` `items: [` `"first",` `"second",`
+  `"third"` `],` `` `note: "two  spaces  inside",` `marker: "[keep]{exact}(23)!"` `}`
 
 Observed stats:
 
@@ -634,7 +639,8 @@ Goal:
 
 Observed outputs after fix:
 
-- final round returned the exact original `BLOCK23-A` text, including the label line, braces, indentation, punctuation, and double spaces
+- final round returned the exact original `BLOCK23-A` text, including the label line, braces,
+  indentation, punctuation, and double spaces
 
 Observed stats:
 
@@ -644,9 +650,12 @@ Observed stats:
 
 Commentary:
 
-- first live run exposed a real bug: the manager/archive path let the model reconstruct a lossy version of the block from summary text
-- first fix made the model call `recall`, but the recalled source was still the whole wrapper message, so the answer still omitted the `BLOCK23-A` label line
-- final fix tightened chunking so wrapper instructions are split away from clearly delimited exact blocks, and tightened retention/prompt guidance for formatting-sensitive raw sources
+- first live run exposed a real bug: the manager/archive path let the model reconstruct a lossy
+  version of the block from summary text
+- first fix made the model call `recall`, but the recalled source was still the whole wrapper
+  message, so the answer still omitted the `BLOCK23-A` label line
+- final fix tightened chunking so wrapper instructions are split away from clearly delimited exact
+  blocks, and tightened retention/prompt guidance for formatting-sensitive raw sources
 - rerun passed cleanly with one archive recall
 
 ## Test 24: Two Older Verbatim Blocks In JSON
@@ -680,14 +689,9 @@ Goal:
 
 Observed outputs:
 
-- later exact answer for current `ALPHA25` block was:
-  `ALPHA25`
+- later exact answer for current `ALPHA25` block was: `ALPHA25`
   `{ old: false, token: "alpha-new-25" }`
-- later exact answer for `BETA25` block was:
-  `BETA25`
-  `<beta token="beta-25">`
-  `  keep`
-  `</beta>`
+- later exact answer for `BETA25` block was: `BETA25` `<beta token="beta-25">` `keep` `</beta>`
 
 Observed stats:
 
@@ -696,7 +700,8 @@ Observed stats:
 
 Commentary:
 
-- the first run of this scenario hit a transient upstream `503` during post-response memory finalization, so it was rerun from scratch
+- the first run of this scenario hit a transient upstream `503` during post-response memory
+  finalization, so it was rerun from scratch
 - the rerun was clean
 - old closed alpha content did not leak back; only the reopened alpha block survived
 
@@ -721,9 +726,12 @@ Observed stats:
 
 Commentary:
 
-- first live run exposed a real bug: the model returned only `alpha-26` / `charlie-26` instead of the full original snippets
+- first live run exposed a real bug: the model returned only `alpha-26` / `charlie-26` instead of
+  the full original snippets
 - active memory only contained summary information, but the model still did not call `recall`
-- fixed by making the prompt memory text and the `recall` tool description more explicit: if the user asks for exact original raw text and that raw text is not visibly present in `<exact_pieces>`, the model must use `recall`
+- fixed by making the prompt memory text and the `recall` tool description more explicit: if the
+  user asks for exact original raw text and that raw text is not visibly present in
+  `<exact_pieces>`, the model must use `recall`
 - rerun passed cleanly with one archive recall
 
 ## Summary So Far
@@ -734,13 +742,17 @@ Overall:
 
 - four real memory-manager / active-memory-path bugs were found and fixed during the manual sweep:
   - stale transient answer instructions were being retained as durable memory
-  - repeated within-thread value replacement could produce contradictory `group_intent` replacement output
-- formatting-sensitive raw blocks could be reconstructed lossily from summaries instead of preserved/recalled exactly
-- the model could skip `recall` and answer exact-original-snippet requests from summaries, yielding only inner values instead of the requested raw snippets
+  - repeated within-thread value replacement could produce contradictory `group_intent` replacement
+    output
+- formatting-sensitive raw blocks could be reconstructed lossily from summaries instead of
+  preserved/recalled exactly
+- the model could skip `recall` and answer exact-original-snippet requests from summaries, yielding
+  only inner values instead of the requested raw snippets
 - all recorded post-fix reruns are clean
 - no non-null `round_complete.memoryUpdateError` remains in the recorded passing runs
 - archive recall is now exercised in the recorded suite and works in passing runs
-- the current design still relies heavily on active group summaries carrying exact values after many raw pieces are pruned
+- the current design still relies heavily on active group summaries carrying exact values after many
+  raw pieces are pruned
 
 Notes:
 
