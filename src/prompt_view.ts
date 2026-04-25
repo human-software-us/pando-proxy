@@ -1,6 +1,7 @@
 import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
 import {
+  activeGroups,
   chronologicalPieces,
   type MemoryPiece,
   type MemoryState,
@@ -18,15 +19,13 @@ export type RewriteDiff = {
   rawInputTypeCounts: Record<string, number>;
   rewrittenInputTypeCounts: Record<string, number>;
   insertedMemory: boolean;
-  inlinePieceCount: number;
-  omittedPieceCount: number;
+  memoryPieceCount: number;
 };
 
 export type RewriteResult = {
   body: Record<string, unknown>;
   diff: RewriteDiff;
-  inlinePieceIds: string[];
-  omittedPieceIds: string[];
+  memoryPieceIds: string[];
 };
 
 export async function rewriteRequestWithMemory(
@@ -38,8 +37,8 @@ export async function rewriteRequestWithMemory(
   const filtered = raw.filter((item) => !item.isSyntheticMemory);
   const instructions = leadingInstructions(filtered);
   const tail = currentRoundTail(filtered);
-  const selected = selectedPromptPieces(memory);
-  const memoryItem = makePromptMemoryItem(memory, selected.inlinePieces);
+  const memoryPieces = chronologicalPieces(memory.pieces);
+  const memoryItem = makePromptMemoryItem(memory, memoryPieces);
   const rewrittenItems = [
     ...instructions.map((item) => item.item),
     ...(memoryItem ? [memoryItem] : []),
@@ -51,7 +50,7 @@ export async function rewriteRequestWithMemory(
     body: {
       ...body,
       input: rewrittenItems,
-      tools: injectContextGetTool(body.tools, memory.pieces.length > 0),
+      tools: injectRecallTool(body.tools, hasArchivedSourceGap(memory)),
     },
     diff: {
       droppedInputIds: filtered.filter((item) => !containsRef(item, instructions, tail)).map((
@@ -61,11 +60,9 @@ export async function rewriteRequestWithMemory(
       rawInputTypeCounts: itemTypeCounts(raw),
       rewrittenInputTypeCounts: itemTypeCounts(rewrittenDescriptors),
       insertedMemory: Boolean(memoryItem),
-      inlinePieceCount: selected.inlinePieces.length,
-      omittedPieceCount: selected.omittedPieces.length,
+      memoryPieceCount: memoryPieces.length,
     },
-    inlinePieceIds: selected.inlinePieces.map((piece) => piece.id),
-    omittedPieceIds: selected.omittedPieces.map((piece) => piece.id),
+    memoryPieceIds: memoryPieces.map((piece) => piece.id),
   };
 }
 
@@ -94,17 +91,16 @@ export async function buildDerivedPrompt(
       rawInputTypeCounts: itemTypeCounts(raw),
       rewrittenInputTypeCounts: itemTypeCounts(rewrittenDescriptors),
       insertedMemory: Boolean(memoryItem),
-      inlinePieceCount: 0,
-      omittedPieceCount: 0,
+      memoryPieceCount: 0,
     },
   };
 }
 
 export function makePromptMemoryItem(
   memory: MemoryState,
-  inlinePieces: MemoryPiece[],
+  pieces: MemoryPiece[],
 ): Record<string, unknown> | null {
-  if (memory.pieces.length === 0) {
+  if (memory.groups.length === 0 && pieces.length === 0) {
     return null;
   }
 
@@ -113,16 +109,28 @@ export function makePromptMemoryItem(
     role: "developer",
     content: [{
       type: "input_text",
-      text: buildPromptMemoryText(inlinePieces),
+      text: buildPromptMemoryText(memory, pieces),
     }],
   };
 }
 
-export function buildPromptMemoryText(inlinePieces: MemoryPiece[]): string {
-  const lines = ["<pando_memory>"];
+export function buildPromptMemoryText(memory: MemoryState, pieces: MemoryPiece[]): string {
+  const lines = ["<pando_group_memory>"];
+  const groups = activeGroups(memory.groups);
+  if (groups.length > 0) {
+    lines.push("<groups>");
+    for (const group of groups) {
+      lines.push(
+        `- groupId=${group.id} status=${group.status} label=${group.routingLabel} summary=${group.summary}`,
+      );
+    }
+    lines.push("</groups>");
+  }
   lines.push("<exact_pieces>");
-  for (const piece of inlinePieces) {
-    lines.push(`<piece pieceId=${piece.id} sourceKind=${piece.sourceKind}>`);
+  for (const piece of pieces) {
+    lines.push(
+      `<piece pieceId=${piece.id} groupId=${piece.groupId} sourceKind=${piece.sourceKind}>`,
+    );
     lines.push(
       piece.payloadInline === undefined
         ? piecePreview(piece)
@@ -131,79 +139,22 @@ export function buildPromptMemoryText(inlinePieces: MemoryPiece[]): string {
     lines.push("</piece>");
   }
   lines.push("</exact_pieces>");
-  lines.push("<context_get>");
-  lines.push("Use context_get({pieceIds:[...]}) when you know the needed piece ids.");
-  lines.push(
-    "Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.",
-  );
-  lines.push("Prefer attached exact pieces when they already contain the needed fact.");
-  lines.push("</context_get>");
-  lines.push("</pando_memory>");
+  if (hasArchivedSourceGap(memory)) {
+    lines.push("<archive>");
+    lines.push(
+      "If you truly need older exact material that is not shown above, you may call recall({offset,limit}) once.",
+    );
+    lines.push(
+      "Use it only as an emergency recovery path for earlier exact sources from the per-session archive, not from active memory.",
+    );
+    lines.push("</archive>");
+  }
+  lines.push("</pando_group_memory>");
   return lines.join("\n");
 }
 
 function formatPiecePayload(payload: unknown): string {
   return typeof payload === "string" ? payload : stableJson(payload);
-}
-
-function selectedPromptPieces(
-  memory: MemoryState,
-): { inlinePieces: MemoryPiece[]; omittedPieces: MemoryPiece[] } {
-  const ordered = chronologicalPieces(memory.pieces);
-  const inlineIdSet = new Set(memory.inlinePieceIds);
-  const inlinePieces = ordered.filter((piece) => inlineIdSet.has(piece.id));
-  return {
-    inlinePieces,
-    omittedPieces: ordered.filter((piece) => !inlineIdSet.has(piece.id)),
-  };
-}
-
-function injectContextGetTool(tools: unknown, shouldInject: boolean): unknown {
-  const existing = Array.isArray(tools) ? [...tools] : [];
-  if (!shouldInject) {
-    return existing;
-  }
-  if (existing.some((tool) => isContextGetTool(tool))) {
-    return existing;
-  }
-  existing.push({
-    type: "function",
-    name: "context_get",
-    description:
-      "Fetch additional exact retained memory pieces by id or in chronological order.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        pieceIds: {
-          type: "array",
-          items: { type: "string" },
-          description: "Exact retained piece ids to fetch.",
-        },
-        offset: {
-          type: "integer",
-          minimum: 0,
-          description: "How many retained pieces to skip when browsing.",
-        },
-        limit: {
-          type: "integer",
-          minimum: 1,
-          maximum: 50,
-          description: "How many retained pieces to return when browsing.",
-        },
-      },
-    },
-  });
-  return existing;
-}
-
-function isContextGetTool(tool: unknown): boolean {
-  return Boolean(
-    tool &&
-      typeof tool === "object" &&
-      !Array.isArray(tool) &&
-      (tool as Record<string, unknown>).name === "context_get",
-  );
 }
 
 function leadingInstructions(items: InputItemDescriptor[]): InputItemDescriptor[] {
@@ -236,6 +187,55 @@ function containsRef(
 ): boolean {
   return instructions.some((candidate) => candidate.ref === item.ref) ||
     tail.some((candidate) => candidate.ref === item.ref);
+}
+
+function hasArchivedSourceGap(memory: MemoryState): boolean {
+  const visibleSourceIds = new Set(memory.pieces.map((piece) => piece.sourceId));
+  return memory.processedSourceIds.some((sourceId) => !visibleSourceIds.has(sourceId));
+}
+
+function injectRecallTool(tools: unknown, shouldInject: boolean): unknown {
+  const existing = Array.isArray(tools) ? [...tools] : [];
+  if (!shouldInject) {
+    return existing;
+  }
+  if (existing.some((tool) => isRecallTool(tool))) {
+    return existing;
+  }
+  existing.push({
+    type: "function",
+    name: "recall",
+    description:
+      "Emergency one-shot recovery of older exact archived sources in chronological order.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "How many archived older sources to skip.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description: "How many archived older sources to return.",
+        },
+      },
+      required: ["offset", "limit"],
+    },
+  });
+  return existing;
+}
+
+function isRecallTool(tool: unknown): boolean {
+  return Boolean(
+    tool &&
+      typeof tool === "object" &&
+      !Array.isArray(tool) &&
+      (tool as Record<string, unknown>).name === "recall",
+  );
 }
 
 export function inputTypeCounts(input: unknown): Promise<Record<string, number>> {

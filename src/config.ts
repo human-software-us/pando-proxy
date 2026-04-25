@@ -12,9 +12,6 @@ export type ProxyConfig = {
   memoryEnabled: boolean;
   logFile: string | null;
   inlinePieceByteLimit: number;
-  piecePreviewCharLimit: number;
-  maxInlinePieces: number;
-  maxLocalContextToolCalls: number;
   codexAutoCompactTokenLimit: number;
 };
 
@@ -42,9 +39,6 @@ export const DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW = 272_000;
 export const DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW = 1_000_000;
 export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
 export const DEFAULT_INLINE_PIECE_BYTE_LIMIT = 16_384;
-export const DEFAULT_PIECE_PREVIEW_CHAR_LIMIT = 96;
-export const DEFAULT_MAX_INLINE_PIECES = 12;
-export const DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS = 4;
 export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 280_000;
 
 export function loadConfig(options: CliOptions = {}): ProxyConfig {
@@ -86,18 +80,6 @@ export function loadConfig(options: CliOptions = {}): ProxyConfig {
     inlinePieceByteLimit: parsePositiveInt(
       Deno.env.get("PANDO_PROXY_INLINE_PIECE_BYTE_LIMIT"),
       DEFAULT_INLINE_PIECE_BYTE_LIMIT,
-    ),
-    piecePreviewCharLimit: parsePositiveInt(
-      Deno.env.get("PANDO_PROXY_PIECE_PREVIEW_CHAR_LIMIT"),
-      DEFAULT_PIECE_PREVIEW_CHAR_LIMIT,
-    ),
-    maxInlinePieces: parsePositiveInt(
-      Deno.env.get("PANDO_PROXY_MAX_INLINE_PIECES"),
-      DEFAULT_MAX_INLINE_PIECES,
-    ),
-    maxLocalContextToolCalls: parsePositiveInt(
-      Deno.env.get("PANDO_PROXY_MAX_LOCAL_CONTEXT_TOOL_CALLS"),
-      DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS,
     ),
     codexAutoCompactTokenLimit: parsePositiveInt(
       options.codexAutoCompactTokenLimit !== undefined

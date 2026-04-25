@@ -4,8 +4,8 @@ import type {
   GroupIntentResponse,
   PieceRetentionBatchRequest,
   PieceRetentionBatchResponse,
-  PromptProjectionRequest,
-  PromptProjectionResponse,
+  RetainedPiecePruneRequest,
+  RetainedPiecePruneResponse,
   SourceChunkBatchRequest,
   SourceChunkBatchResponse,
 } from "./group_manager.ts";
@@ -44,8 +44,7 @@ export type ReplayTurnResult = {
   baselineInputItemCount: number;
   pandoApproxInputTokens: number;
   pandoInputItemCount: number;
-  pandoInlinePieceCount: number;
-  pandoOmittedPieceCount: number;
+  pandoMemoryPieceCount: number;
   pandoGroupCount: number;
   pandoPieceCount: number;
   pandoPieceBytes: number;
@@ -256,7 +255,6 @@ export async function replayRollout(
       fakeResponse,
       [],
       clients,
-      config,
       { sessionKey: `replay_${round.index}`, requestId: `replay_${round.index}` },
     );
     memory = updated.memory;
@@ -269,8 +267,7 @@ export async function replayRollout(
       baselineInputItemCount: baselineMetrics.inputItemCount as number,
       pandoApproxInputTokens: pandoMetrics.approxInputTokens as number,
       pandoInputItemCount: pandoMetrics.inputItemCount as number,
-      pandoInlinePieceCount: rewrite.diff.inlinePieceCount,
-      pandoOmittedPieceCount: rewrite.diff.omittedPieceCount,
+      pandoMemoryPieceCount: rewrite.diff.memoryPieceCount,
       pandoGroupCount: memory.groups.length,
       pandoPieceCount: memory.pieces.length,
       pandoPieceBytes: memory.pieces.reduce((total, piece) => total + piece.byteSize, 0),
@@ -337,13 +334,10 @@ function buildStubClients(policy: StubPolicy): StructuredClients {
     pieceRetentionBatch: async (
       request: PieceRetentionBatchRequest,
     ): Promise<PieceRetentionBatchResponse> => applyStubRetentionPolicy(policy, request),
-    promptProjection: async (
-      request: PromptProjectionRequest,
-    ): Promise<PromptProjectionResponse> => ({
-      inlinePieceIds: request.retainedPieces
-        .filter((piece) => piece.visibility === "inline")
-        .slice(-Math.max(0, request.maxInlinePieces))
-        .map((piece) => piece.id),
+    retainedPiecePrune: async (
+      _request: RetainedPiecePruneRequest,
+    ): Promise<RetainedPiecePruneResponse> => ({
+      dropPieceIds: [],
     }),
   };
 }
@@ -370,7 +364,6 @@ function applyStubRetentionPolicy(
       keep: keepIds.includes(piece.id),
       groupId: keepIds.includes(piece.id) ? activeGroupId : null,
       supersedesPieceIds: [],
-      visibility: piece.sourceKind === "user" ? "inline" : "omittable",
     })),
   };
 }

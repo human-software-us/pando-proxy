@@ -3,13 +3,9 @@ import { resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import { stableJson } from "./json.ts";
 import type { ProxyLogger } from "./logger.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
-import {
-  chronologicalPieces,
-  isRecord,
-  type MemoryState,
-} from "./memory_state.ts";
+import { isRecord, type MemoryState } from "./memory_state.ts";
 import { buildDerivedPrompt, makePromptMemoryItem } from "./prompt_view.ts";
-import type { ExactPiece } from "./store.ts";
+import type { ArchivedSource } from "./store.ts";
 import type { RoundSource } from "./tool_results.ts";
 import { extractAssistantSourcesFromResponse, inputItems } from "./tool_results.ts";
 
@@ -30,14 +26,13 @@ export type UpstreamOptions = {
   logger?: ProxyLogger;
 };
 
-export type LocalContextFetch = {
+export type ArchiveRecall = {
   offset: number;
   limit: number;
-  requestedPieceIds?: string[];
-  returnedPieceIds: string[];
+  returnedSourceIds: string[];
 };
 
-export type ResolveExactPieces = (pieceIds: string[]) => Promise<ExactPiece[]>;
+export type ResolveArchivedSources = (sourceIds: string[]) => Promise<ArchivedSource[]>;
 
 export type UpstreamLoopResult =
   | {
@@ -45,12 +40,12 @@ export type UpstreamLoopResult =
     finalBody: Record<string, unknown>;
     response: Response;
     assistantSources: RoundSource[];
-    fetches: LocalContextFetch[];
+    recalls: ArchiveRecall[];
   }
   | {
     ok: false;
     response: Response;
-    fetches: LocalContextFetch[];
+    recalls: ArchiveRecall[];
   };
 
 export async function forwardResponsesRequest(
@@ -101,20 +96,18 @@ export async function runResponsesLoop(
   config: ProxyConfig,
   options: UpstreamOptions,
   memory: MemoryState,
-  inlinePieceIds: string[],
-  resolveExactPieces: ResolveExactPieces,
+  resolveArchivedSources: ResolveArchivedSources,
   sessionKey?: string,
 ): Promise<UpstreamLoopResult> {
-  const fetches: LocalContextFetch[] = [];
+  const recalls: ArchiveRecall[] = [];
   const assistantSources: RoundSource[] = [];
-  const visiblePieceIds = new Set(inlinePieceIds);
   const loopOutputs: Record<string, unknown>[] = [];
+  let archiveRecoveryUsed = false;
 
-  for (let iteration = 0; iteration <= config.maxLocalContextToolCalls; iteration += 1) {
+  for (let iteration = 0; iteration <= 1; iteration += 1) {
     const requestBody = await rebuildLoopRequestBody(
       options.body,
       memory,
-      visiblePieceIds,
       loopOutputs,
     );
     const upstream = await postResponsesJson(
@@ -124,54 +117,57 @@ export async function runResponsesLoop(
       options.logger,
     );
     if (!upstream.ok) {
-      return { ok: false, response: upstream.response, fetches };
+      return { ok: false, response: upstream.response, recalls };
     }
 
     const responseBody = upstream.body;
     assistantSources.push(...await extractAssistantSourcesFromResponse(responseBody));
-    const localCalls = parseContextGetCalls(responseBody);
+    const localCalls = parseRecallCalls(responseBody);
     if (localCalls.length === 0) {
       return {
         ok: true,
         finalBody: responseBody,
         response: responseForClient(responseBody, Boolean(options.body.stream)),
         assistantSources,
-        fetches,
+        recalls,
       };
     }
-    if (iteration === config.maxLocalContextToolCalls) {
-      throw new Error("Exceeded max local context_get calls");
+    if (archiveRecoveryUsed || iteration === 1) {
+      throw new Error("Exceeded max local recall calls");
     }
+    archiveRecoveryUsed = true;
 
     for (const call of localCalls) {
-      const exactPieces = await resolvePiecesForCall(
+      const archivedSources = await resolveSourcesForCall(
         memory,
-        visiblePieceIds,
         call,
-        resolveExactPieces,
+        resolveArchivedSources,
       );
-      for (const piece of exactPieces) {
-        visiblePieceIds.add(piece.id);
-      }
-      fetches.push({
+      recalls.push({
         offset: call.offset,
         limit: call.limit,
-        ...(call.pieceIds.length > 0 ? { requestedPieceIds: call.pieceIds } : {}),
-        returnedPieceIds: exactPieces.map((piece) => piece.id),
+        returnedSourceIds: archivedSources.map((source) => source.sourceId),
       });
-      await options.logger?.log("context_get_fetch", {
+      await options.logger?.log("archive_recall", {
         sessionKey,
         offset: call.offset,
         limit: call.limit,
-        ...(call.pieceIds.length > 0 ? { requestedPieceIds: call.pieceIds } : {}),
-        returnedPieceIds: exactPieces.map((piece) => piece.id),
+        returnedSourceIds: archivedSources.map((source) => source.sourceId),
       });
       loopOutputs.push(call.item);
       loopOutputs.push({
         type: "function_call_output",
         call_id: call.callId,
         output: stableJson({
-          items: exactPieces.map((piece) => ({ id: piece.id, payload: piece.payload })),
+          source: "archive",
+          note:
+            "The following items are from the per-session archive, not active memory. They were dropped from working memory earlier and will not automatically persist in future prompts.",
+          items: archivedSources.map((source) => ({
+            sourceId: source.sourceId,
+            sourceKind: source.sourceKind,
+            ...(source.toolName ? { toolName: source.toolName } : {}),
+            payload: source.payload,
+          })),
         }),
       });
     }
@@ -183,12 +179,9 @@ export async function runResponsesLoop(
 async function rebuildLoopRequestBody(
   originalBody: Record<string, unknown>,
   memory: MemoryState,
-  visiblePieceIds: Set<string>,
   loopOutputs: Record<string, unknown>[],
 ): Promise<Record<string, unknown>> {
-  const ordered = chronologicalPieces(memory.pieces);
-  const inlinePieces = ordered.filter((piece) => visiblePieceIds.has(piece.id));
-  const memoryItem = makePromptMemoryItem(memory, inlinePieces);
+  const memoryItem = makePromptMemoryItem(memory, memory.pieces);
   const derived = await buildDerivedPrompt(
     [...inputItems(originalBody.input), ...loopOutputs],
     memoryItem,
@@ -201,29 +194,24 @@ async function rebuildLoopRequestBody(
   };
 }
 
-async function resolvePiecesForCall(
+async function resolveSourcesForCall(
   memory: MemoryState,
-  visiblePieceIds: Set<string>,
-  call: { offset: number; limit: number; pieceIds: string[] },
-  resolveExactPieces: ResolveExactPieces,
-): Promise<ExactPiece[]> {
-  const available = chronologicalPieces(memory.pieces).filter((piece) =>
-    !visiblePieceIds.has(piece.id)
-  );
-  const selectedIds = call.pieceIds.length > 0
-    ? call.pieceIds.filter((id) => available.some((piece) => piece.id === id))
-    : available.slice(call.offset, call.offset + call.limit).map((piece) => piece.id);
-  return await resolveExactPieces(selectedIds);
+  call: { offset: number; limit: number },
+  resolveArchivedSources: ResolveArchivedSources,
+): Promise<ArchivedSource[]> {
+  const activeSourceIds = new Set(memory.pieces.map((piece) => piece.sourceId));
+  const availableSourceIds = memory.processedSourceIds.filter((sourceId) => !activeSourceIds.has(sourceId));
+  const selectedIds = availableSourceIds.slice(call.offset, call.offset + call.limit);
+  return await resolveArchivedSources(selectedIds);
 }
 
-function parseContextGetCalls(
+function parseRecallCalls(
   responseBody: Record<string, unknown>,
 ): Array<
   {
     callId: string;
     offset: number;
     limit: number;
-    pieceIds: string[];
     item: Record<string, unknown>;
   }
 > {
@@ -233,7 +221,6 @@ function parseContextGetCalls(
       callId: string;
       offset: number;
       limit: number;
-      pieceIds: string[];
       item: Record<string, unknown>;
     }
   > = [];
@@ -242,47 +229,39 @@ function parseContextGetCalls(
       continue;
     }
     if (
-      item.type !== "function_call" || item.name !== "context_get" ||
+      item.type !== "function_call" || item.name !== "recall" ||
       typeof item.call_id !== "string"
     ) {
       continue;
     }
-    const parsed = parseContextGetArguments(item.arguments);
+    const parsed = parseRecallArguments(item.arguments);
     out.push({
       callId: item.call_id,
       offset: parsed.offset,
       limit: parsed.limit,
-      pieceIds: parsed.pieceIds,
       item,
     });
   }
   return out;
 }
 
-function parseContextGetArguments(
-  argumentsValue: unknown,
-): { offset: number; limit: number; pieceIds: string[] } {
+function parseRecallArguments(argumentsValue: unknown): { offset: number; limit: number } {
   let parsed: unknown = argumentsValue;
   if (typeof argumentsValue === "string") {
     parsed = JSON.parse(argumentsValue);
   }
   if (!isRecord(parsed)) {
-    return { offset: 0, limit: 10, pieceIds: [] };
+    return { offset: 0, limit: 5 };
   }
-  const pieceIds = Array.isArray(parsed.pieceIds)
-    ? parsed.pieceIds.filter((value): value is string =>
-      typeof value === "string" && value.trim().length > 0
-    )
-    : [];
   const offset =
     typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0
       ? parsed.offset
       : 0;
   const rawLimit = typeof parsed.limit === "number" && Number.isInteger(parsed.limit)
     ? parsed.limit
-    : 10;
-  const limit = Math.max(1, Math.min(50, rawLimit));
-  return { offset, limit, pieceIds };
+    : 5;
+  const limit = Math.max(1, Math.min(20, rawLimit));
+  return { offset, limit };
 }
 
 function baseLoopRequestBody(body: Record<string, unknown>): Record<string, unknown> {

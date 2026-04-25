@@ -7,6 +7,15 @@ an OpenAI Responses-compatible proxy between Codex and the upstream model. The p
 small, mechanical group-and-piece memory so multi-round Codex sessions stay within context without
 replaying the whole history.
 
+## Validation Policy
+
+For the active memory redesign work in this repository:
+
+- ignore unit tests completely
+- do not use unit tests as a correctness signal
+- validate with live E2E runs against the real backend instead
+- inspect logs and persisted state as the primary verification method
+
 ## Measured replay benchmarks
 
 Current benchmark reruns are summarized in [`QUICK_BENCHMARKS.md`](./QUICK_BENCHMARKS.md) and

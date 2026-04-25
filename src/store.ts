@@ -8,6 +8,7 @@ import {
   pruneMemoryState,
   type SessionRecord,
 } from "./memory_state.ts";
+import type { RoundSource } from "./tool_results.ts";
 
 export type ExactPiece = {
   id: string;
@@ -17,6 +18,8 @@ export type ExactPiece = {
   selector: MemoryPiece["selector"];
   payload: unknown;
 };
+
+export type ArchivedSource = RoundSource;
 
 export class SessionStore {
   #root: string;
@@ -90,6 +93,61 @@ export class SessionStore {
     return out;
   }
 
+  async materializeMemory(sessionKey: string, memory: SessionRecord["memory"]): Promise<SessionRecord["memory"]> {
+    const dir = await this.#sessionDir(sessionKey);
+    return {
+      ...memory,
+      pieces: await Promise.all(memory.pieces.map(async (piece) => ({
+        ...piece,
+        payloadInline: piece.payloadInline !== undefined
+          ? piece.payloadInline
+          : piece.payloadRef
+          ? await this.#readPiecePayload(dir, piece)
+          : undefined,
+      }))),
+    };
+  }
+
+  async archiveSources(sessionKey: string, sources: RoundSource[]): Promise<void> {
+    const dir = await this.#sessionDir(sessionKey);
+    const archiveDir = `${dir}/archive`;
+    await Deno.mkdir(archiveDir, { recursive: true });
+    for (const source of sources) {
+      const path = `${dir}/${await this.#archiveRefForSource(source.sourceId)}`;
+      try {
+        await Deno.stat(path);
+        continue;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+      await atomicWriteText(path, `${JSON.stringify(source)}\n`);
+    }
+  }
+
+  async getArchivedSources(sessionKey: string, sourceIds: string[]): Promise<ArchivedSource[]> {
+    const dir = await this.#sessionDir(sessionKey);
+    const out: ArchivedSource[] = [];
+    for (const sourceId of sourceIds) {
+      try {
+        const path = `${dir}/${await this.#archiveRefForSource(sourceId)}`;
+        const parsed = JSON.parse(await Deno.readTextFile(path));
+        if (
+          parsed && typeof parsed === "object" && !Array.isArray(parsed) &&
+          typeof parsed.sourceId === "string" && parsed.sourceId === sourceId
+        ) {
+          out.push(parsed as ArchivedSource);
+        }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          throw error;
+        }
+      }
+    }
+    return out;
+  }
+
   async withLock<T>(sessionKey: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.#locks.get(sessionKey) ?? Promise.resolve();
     let release!: () => void;
@@ -121,6 +179,10 @@ export class SessionStore {
 
   async #payloadRefForPiece(pieceId: string): Promise<string> {
     return `payloads/${await shortHash(pieceId, 16)}.json`;
+  }
+
+  async #archiveRefForSource(sourceId: string): Promise<string> {
+    return `archive/${await shortHash(sourceId, 16)}.json`;
   }
 
   async #sessionDir(sessionKey: string): Promise<string> {

@@ -250,7 +250,7 @@ function isSyntheticMemoryItem(item: unknown): boolean {
     return true;
   }
   const text = extractInlineText(item);
-  return text.includes("<pando_memory>");
+  return text.includes("<pando_group_memory>") || text.includes("<pando_memory>");
 }
 
 function extractInlineText(item: Record<string, unknown>): string {

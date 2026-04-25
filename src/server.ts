@@ -14,7 +14,7 @@ import { rewriteRequestWithMemory } from "./prompt_view.ts";
 import { createStructuredClients } from "./structured_model.ts";
 import { SessionStore } from "./store.ts";
 import type { RoundSource } from "./tool_results.ts";
-import { forwardResponsesRequest, type LocalContextFetch, runResponsesLoop } from "./upstream.ts";
+import { forwardResponsesRequest, type ArchiveRecall, runResponsesLoop } from "./upstream.ts";
 
 const OBSERVED_TURN_SOURCES_TIMEOUT_MS = 3_000;
 const FINALIZATION_DRAIN_TIMEOUT_MS = 10_000;
@@ -195,17 +195,17 @@ export function createHandler(
     try {
       return await store.withLock(sessionKey, async () => {
         const record = await store.load(sessionKey);
+        const promptMemory = await store.materializeMemory(sessionKey, record.memory);
         let finalMemory = record.memory;
         let memoryUpdateError: string | null = null;
-        const rewrite = await rewriteRequestWithMemory(body, record.memory, config);
+        const rewrite = await rewriteRequestWithMemory(body, promptMemory, config);
         await logger.log("rewritten_context", {
           requestId,
           sessionKey,
           droppedInputIds: rewrite.diff.droppedInputIds,
           keptInputIds: rewrite.diff.keptInputIds,
           insertedMemory: rewrite.diff.insertedMemory,
-          inlinePieceCount: rewrite.diff.inlinePieceCount,
-          omittedPieceCount: rewrite.diff.omittedPieceCount,
+          memoryPieceCount: rewrite.diff.memoryPieceCount,
           ...requestContextMetrics(rewrite.body),
         });
         contextWindowStats.recordWithProxy(sessionKey, estimateBytesForValue(rewrite.body));
@@ -213,9 +213,8 @@ export function createHandler(
         const loop = await runResponsesLoop(
           config,
           { authHeader, body: rewrite.body, logger },
-          record.memory,
-          rewrite.inlinePieceIds,
-          (pieceIds) => store.getExactPieces(sessionKey, pieceIds),
+          promptMemory,
+          (sourceIds) => store.getArchivedSources(sessionKey, sourceIds),
           sessionKey,
         );
         if (!loop.ok) {
@@ -244,7 +243,7 @@ export function createHandler(
                   previousMemory: record.memory,
                   loopFinalBody: loop.finalBody,
                   assistantSources: loop.assistantSources,
-                  fetches: loop.fetches,
+                  recalls: loop.recalls,
                   authHeader,
                   observedRoundSourcesForSession,
                   saveWithinExistingLock: false,
@@ -263,7 +262,7 @@ export function createHandler(
               previousMemory: record.memory,
               loopFinalBody: loop.finalBody,
               assistantSources: loop.assistantSources,
-              fetches: loop.fetches,
+              recalls: loop.recalls,
               authHeader,
               saveWithinExistingLock: true,
             });
@@ -290,9 +289,11 @@ export function createHandler(
             requestId,
             sessionKey,
             memoryUpdateError,
-            localContextFetchCount: loop.fetches.length,
-            localContextFetches: loop.fetches,
-            returnedPieceIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedPieceIds))],
+            archiveRecallCount: loop.recalls.length,
+            archiveRecalls: loop.recalls,
+            returnedArchiveSourceIds: [
+              ...new Set(loop.recalls.flatMap((recall) => recall.returnedSourceIds)),
+            ],
             ...memoryStateMetrics(finalMemory),
             ...(usageTotals ? usageTotals : {}),
           });
@@ -384,7 +385,7 @@ type FinalizeRoundOptions = {
   previousMemory: MemoryState;
   loopFinalBody: Record<string, unknown>;
   assistantSources: RoundSource[];
-  fetches: LocalContextFetch[];
+  recalls: ArchiveRecall[];
   authHeader: string | null;
   observedRoundSourcesForSession?: (
     sessionKey: string,
@@ -411,7 +412,7 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     previousMemory,
     loopFinalBody,
     assistantSources,
-    fetches,
+    recalls,
     authHeader,
     observedRoundSourcesForSession,
     saveWithinExistingLock = false,
@@ -468,10 +469,10 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
       loopFinalBody,
       [...assistantSources, ...observedSources],
       structuredClients,
-      config,
       { logger, requestId, sessionKey },
     );
     finalMemory = memoryUpdate.memory;
+    await store.archiveSources(sessionKey, memoryUpdate.sources);
     if (memoryUpdate.changed) {
       const persist = async () => {
         await store.save(sessionKey, { memory: memoryUpdate.memory });
@@ -511,9 +512,9 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     requestId,
     sessionKey,
     memoryUpdateError,
-    localContextFetchCount: fetches.length,
-    localContextFetches: fetches,
-    returnedPieceIds: [...new Set(fetches.flatMap((fetch) => fetch.returnedPieceIds))],
+    archiveRecallCount: recalls.length,
+    archiveRecalls: recalls,
+    returnedArchiveSourceIds: [...new Set(recalls.flatMap((recall) => recall.returnedSourceIds))],
     internalManagerInputTokens: structuredUsageTotals.inputTokens,
     internalManagerCachedInputTokens: structuredUsageTotals.cachedInputTokens,
     internalManagerOutputTokens: structuredUsageTotals.outputTokens,

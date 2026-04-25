@@ -1,4 +1,3 @@
-import type { ProxyConfig } from "./config.ts";
 import { chunkRoundSources } from "./chunking.ts";
 import { applyGroupUpdate } from "./group_manager.ts";
 import type { ProxyLogger } from "./logger.ts";
@@ -22,6 +21,7 @@ export type CompletedRoundMemoryResult = {
   changed: boolean;
   newPieceIds: string[];
   droppedPieceIds: string[];
+  sources: RoundSource[];
 };
 
 export async function updateMemoryForCompletedRound(
@@ -30,7 +30,6 @@ export async function updateMemoryForCompletedRound(
   response: unknown,
   assistantSources: RoundSource[] = [],
   clients: StructuredClients,
-  config: ProxyConfig,
   logContext: MemoryLogContext = {},
 ): Promise<CompletedRoundMemoryResult> {
   const requestSources = await extractNewRequestSources(body, new Set(previous.processedSourceIds));
@@ -65,11 +64,12 @@ export async function updateMemoryForCompletedRound(
       changed: false,
       newPieceIds: [],
       droppedPieceIds: [],
+      sources,
     };
   }
 
   const beforePieceIds = new Set(previous.pieces.map((piece) => piece.id));
-  const chunked = await chunkRoundSources(sources, config, clients);
+  const chunked = await chunkRoundSources(sources, clients);
 
   await logContext.logger?.log("memory_round_chunked", {
     sessionKey: logContext.sessionKey,
@@ -90,7 +90,6 @@ export async function updateMemoryForCompletedRound(
     previous,
     chunked,
     clients,
-    config.maxInlinePieces,
   );
   const next = applied.memory;
   const afterPieceIds = new Set(next.pieces.map((piece) => piece.id));
@@ -106,7 +105,7 @@ export async function updateMemoryForCompletedRound(
     closedGroupIds: applied.groupIntent.closedGroupIds,
     replacedGroupIds: applied.groupIntent.replacedGroupIds,
     pieceRetention: applied.pieceRetention.decisions,
-    inlinePieceIds: applied.promptProjection.inlinePieceIds,
+    prunedOldPieceIds: applied.retainedPiecePrune.dropPieceIds,
     keptOldPieceIds: applied.keptOldPieceIds,
     droppedOldPieceIds: applied.droppedOldPieceIds,
     keptNewPieceIds: applied.keptNewPieceIds,
@@ -126,6 +125,7 @@ export async function updateMemoryForCompletedRound(
     changed: true,
     newPieceIds,
     droppedPieceIds,
+    sources,
   };
 }
 

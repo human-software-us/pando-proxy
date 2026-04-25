@@ -63,34 +63,42 @@ export type PieceRetentionDecision = {
   keep: boolean;
   groupId: string | null;
   supersedesPieceIds: string[];
-  visibility: "inline" | "omittable";
 };
 
 export type PieceRetentionBatchResponse = {
   decisions: PieceRetentionDecision[];
 };
 
-export type PromptProjectionRequest = {
+export type RetainedPiecePruneRequest = {
   groups: MemoryGroup[];
-  retainedPieces: Array<{
+  retainedOldPieces: Array<{
     id: string;
     groupId: string;
     sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
+    toolName?: string;
     previewText: string;
-    visibility: "inline" | "omittable";
     createdSeq: number;
   }>;
-  maxInlinePieces: number;
+  keptNewPieces: Array<{
+    id: string;
+    groupId: string;
+    sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
+    toolName?: string;
+    previewText: string;
+    createdSeq: number;
+  }>;
 };
 
-export type PromptProjectionResponse = {
-  inlinePieceIds: string[];
+export type RetainedPiecePruneResponse = {
+  dropPieceIds: string[];
 };
 
 export type SourceChunkBatchRequest = {
   sources: Array<{
     sourceId: string;
-    sourceKind: "assistant" | "tool";
+    sourceKind: "user" | "assistant" | "tool";
     toolName?: string;
     content: unknown;
     pointer?: Record<string, unknown>;
@@ -111,14 +119,14 @@ export type SourceChunkBatchResponse = {
 export type GroupMemoryClients = {
   groupIntent: (request: GroupIntentRequest) => Promise<unknown>;
   pieceRetentionBatch: (request: PieceRetentionBatchRequest) => Promise<unknown>;
-  promptProjection: (request: PromptProjectionRequest) => Promise<unknown>;
+  retainedPiecePrune: (request: RetainedPiecePruneRequest) => Promise<unknown>;
 };
 
 export type AppliedGroupUpdate = {
   memory: MemoryState;
   groupIntent: GroupIntentResponse;
   pieceRetention: PieceRetentionBatchResponse;
-  promptProjection: PromptProjectionResponse;
+  retainedPiecePrune: RetainedPiecePruneResponse;
   keptOldPieceIds: string[];
   droppedOldPieceIds: string[];
   keptNewPieceIds: string[];
@@ -129,7 +137,6 @@ export async function applyGroupUpdate(
   state: MemoryState,
   newPieces: PieceDraft[],
   clients: GroupMemoryClients,
-  maxInlinePieces: number,
 ): Promise<AppliedGroupUpdate> {
   if (newPieces.length === 0) {
     return {
@@ -140,7 +147,7 @@ export async function applyGroupUpdate(
         replacedGroupIds: [],
       },
       pieceRetention: { decisions: [] },
-      promptProjection: { inlinePieceIds: state.inlinePieceIds },
+      retainedPiecePrune: { dropPieceIds: [] },
       keptOldPieceIds: state.pieces.map((piece) => piece.id),
       droppedOldPieceIds: [],
       keptNewPieceIds: [],
@@ -172,7 +179,7 @@ export async function applyGroupUpdate(
             ...(piece.pointer ? { pointer: piece.pointer } : {}),
           })),
       }),
-    (value) => parseAndValidateGroupIntent(value),
+    parseAndValidateGroupIntent,
     "group_intent",
   );
   const groupsAfter = dedupeGroups(groupIntent.groupsAfter);
@@ -197,6 +204,9 @@ export async function applyGroupUpdate(
     "piece_retention_batch",
   );
 
+  const decisionsByPieceId = new Map(
+    pieceRetention.decisions.map((decision) => [decision.pieceId, decision] as const),
+  );
   const supersededPieceIds = new Set(
     pieceRetention.decisions.flatMap((decision) => decision.supersedesPieceIds),
   );
@@ -204,13 +214,11 @@ export async function applyGroupUpdate(
     ...groupIntent.closedGroupIds,
     ...groupIntent.replacedGroupIds,
   ]);
-  const keptOldPieces = state.pieces.filter((piece) =>
+
+  const prelimKeptOldPieces = state.pieces.filter((piece) =>
     activeGroupIds.has(piece.groupId) &&
     !retiredGroupIds.has(piece.groupId) &&
     !supersededPieceIds.has(piece.id)
-  );
-  const decisionsByPieceId = new Map(
-    pieceRetention.decisions.map((decision) => [decision.pieceId, decision] as const),
   );
   const keptNewPieces: MemoryPiece[] = newPieces
     .filter((piece) => decisionsByPieceId.get(piece.id)?.keep)
@@ -219,45 +227,56 @@ export async function applyGroupUpdate(
       return {
         ...piece,
         groupId: decision.groupId!,
-        visibility: decision.visibility,
         createdSeq: nextSeq,
       };
     });
-  const retainedPieces = chronologicalPieces([...keptOldPieces, ...keptNewPieces]);
-  const promptProjection = await requestWithSingleRetry(
-    () =>
-      clients.promptProjection({
-        groups: groupsAfter,
-        retainedPieces: retainedPieces.map((piece) => ({
-          id: piece.id,
-          groupId: piece.groupId,
-          sourceKind: piece.sourceKind,
-          previewText: piece.previewText,
-          visibility: piece.visibility,
-          createdSeq: piece.createdSeq,
-        })),
-        maxInlinePieces,
-      }),
-    (value) => parseAndValidatePromptProjection(value, retainedPieces, maxInlinePieces),
-    "prompt_projection",
-  );
 
+  const retainedPiecePrune = prelimKeptOldPieces.length === 0
+    ? { dropPieceIds: [] }
+    : await requestWithSingleRetry(
+      () =>
+        clients.retainedPiecePrune({
+          groups: groupsAfter,
+          retainedOldPieces: prelimKeptOldPieces.map((piece) => ({
+            id: piece.id,
+            groupId: piece.groupId,
+            sourceKind: piece.sourceKind,
+            sourceId: piece.sourceId,
+            ...(piece.toolName ? { toolName: piece.toolName } : {}),
+            previewText: piece.previewText,
+            createdSeq: piece.createdSeq,
+          })),
+          keptNewPieces: keptNewPieces.map((piece) => ({
+            id: piece.id,
+            groupId: piece.groupId,
+            sourceKind: piece.sourceKind,
+            sourceId: piece.sourceId,
+            ...(piece.toolName ? { toolName: piece.toolName } : {}),
+            previewText: piece.previewText,
+            createdSeq: piece.createdSeq,
+          })),
+        }),
+      (value) => parseAndValidateRetainedPiecePrune(value, prelimKeptOldPieces),
+      "retained_piece_prune",
+    );
+
+  const prunedOldPieceIds = new Set(retainedPiecePrune.dropPieceIds);
+  const keptOldPieces = prelimKeptOldPieces.filter((piece) => !prunedOldPieceIds.has(piece.id));
   const memory = pruneMemoryState({
     roundSeq: nextSeq,
     groups: groupsAfter,
-    pieces: retainedPieces,
+    pieces: chronologicalPieces([...keptOldPieces, ...keptNewPieces]),
     processedSourceIds: unique([
       ...state.processedSourceIds,
       ...newPieces.map((piece) => piece.sourceId),
     ]),
-    inlinePieceIds: promptProjection.inlinePieceIds,
   });
 
   return {
     memory,
     groupIntent,
     pieceRetention,
-    promptProjection,
+    retainedPiecePrune,
     keptOldPieceIds: keptOldPieces.map((piece) => piece.id),
     droppedOldPieceIds: state.pieces.map((piece) => piece.id).filter((id) =>
       !keptOldPieces.some((piece) => piece.id === id)
@@ -387,13 +406,8 @@ function validatePieceRetentionBatch(
       errors.push(`piece_retention_batch duplicated piece ${decision.pieceId}`);
     }
     seenDecisionIds.add(decision.pieceId);
-    if (decision.keep) {
-      if (!decision.groupId || !activeGroupIds.has(decision.groupId)) {
-        errors.push(`kept piece ${decision.pieceId} must reference an active group`);
-      }
-      if (decision.visibility !== "inline" && decision.visibility !== "omittable") {
-        errors.push(`kept piece ${decision.pieceId} has invalid visibility`);
-      }
+    if (decision.keep && (!decision.groupId || !activeGroupIds.has(decision.groupId))) {
+      errors.push(`kept piece ${decision.pieceId} must reference an active group`);
     }
     for (const supersededId of decision.supersedesPieceIds) {
       if (!retainedPieceIds.has(supersededId)) {
@@ -411,33 +425,34 @@ function validatePieceRetentionBatch(
   return errors;
 }
 
-function parseAndValidatePromptProjection(
+function parseAndValidateRetainedPiecePrune(
   value: unknown,
-  retainedPieces: MemoryPiece[],
-  maxInlinePieces: number,
-): { ok: true; value: PromptProjectionResponse } | { ok: false; errors: string[] } {
-  const response = coercePromptProjection(value);
+  retainedOldPieces: MemoryPiece[],
+): { ok: true; value: RetainedPiecePruneResponse } | { ok: false; errors: string[] } {
+  const response = coerceRetainedPiecePrune(value);
   if (!response) {
-    return { ok: false, errors: ["prompt_projection response must be an object"] };
+    return { ok: false, errors: ["retained_piece_prune response must be an object"] };
   }
-  const errors = validatePromptProjection(response, retainedPieces, maxInlinePieces);
+  const errors = validateRetainedPiecePrune(response, retainedOldPieces);
   return errors.length === 0 ? { ok: true, value: response } : { ok: false, errors };
 }
 
-function validatePromptProjection(
-  response: PromptProjectionResponse,
-  retainedPieces: MemoryPiece[],
-  maxInlinePieces: number,
+function validateRetainedPiecePrune(
+  response: RetainedPiecePruneResponse,
+  retainedOldPieces: MemoryPiece[],
 ): string[] {
-  const retainedPieceIds = new Set(retainedPieces.map((piece) => piece.id));
+  const retainedOldIds = new Set(retainedOldPieces.map((piece) => piece.id));
+  const seenDropIds = new Set<string>();
   const errors: string[] = [];
-  if (response.inlinePieceIds.length > Math.max(0, maxInlinePieces)) {
-    errors.push("prompt_projection exceeded maxInlinePieces");
-  }
-  for (const pieceId of response.inlinePieceIds) {
-    if (!retainedPieceIds.has(pieceId)) {
-      errors.push(`prompt_projection references unknown retained piece ${pieceId}`);
+  for (const pieceId of response.dropPieceIds) {
+    if (!retainedOldIds.has(pieceId)) {
+      errors.push(`retained_piece_prune references unknown old piece ${pieceId}`);
+      continue;
     }
+    if (seenDropIds.has(pieceId)) {
+      errors.push(`retained_piece_prune duplicated piece ${pieceId}`);
+    }
+    seenDropIds.add(pieceId);
   }
   return errors;
 }
@@ -488,20 +503,17 @@ function coercePieceRetentionBatch(value: unknown): PieceRetentionBatchResponse 
           supersedesPieceIds: Array.isArray(decision.supersedesPieceIds)
             ? decision.supersedesPieceIds.map(String)
             : [],
-          visibility: decision.visibility === "omittable" ? "omittable" : "inline",
         }))
       : [],
   };
 }
 
-function coercePromptProjection(value: unknown): PromptProjectionResponse | null {
+function coerceRetainedPiecePrune(value: unknown): RetainedPiecePruneResponse | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   const record = value as Record<string, unknown>;
   return {
-    inlinePieceIds: Array.isArray(record.inlinePieceIds)
-      ? unique(record.inlinePieceIds.map(String))
-      : [],
+    dropPieceIds: Array.isArray(record.dropPieceIds) ? unique(record.dropPieceIds.map(String)) : [],
   };
 }

@@ -1,4 +1,3 @@
-import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
 import type { ChunkSelector, PieceDraft } from "./memory_state.ts";
 import type { StructuredClients } from "./structured_model.ts";
@@ -16,28 +15,24 @@ const PANDO_ARRAY_KEYS = [
 
 export async function chunkRoundSources(
   sources: RoundSource[],
-  config: ProxyConfig,
   clients: StructuredClients,
 ): Promise<PieceDraft[]> {
   const out: PieceDraft[] = [];
   const batchedSources = sources.filter((source) =>
-    source.sourceKind !== "user" &&
     !(source.sourceKind === "tool" && isPandoToolName(source.toolName))
   );
   const batchedSelectors = batchedSources.length > 0
-    ? await chunkBatchWithModel(batchedSources, config, clients)
+    ? await chunkBatchWithModel(batchedSources, clients)
     : new Map<string, ChunkSelector[]>();
 
   for (const source of sources) {
-    const selectors = source.sourceKind === "user"
-      ? [{ kind: "whole" } satisfies ChunkSelector]
-      : source.sourceKind === "tool" && isPandoToolName(source.toolName)
+    const selectors = source.sourceKind === "tool" && isPandoToolName(source.toolName)
       ? deterministicPandoSelectors(source.payload)
       : batchedSelectors.get(source.sourceId) ?? [{ kind: "whole" } satisfies ChunkSelector];
-    const pieces = materializeSourceSelectors(source, selectors, config);
+    const pieces = materializeSourceSelectors(source, selectors);
     out.push(...(pieces.length > 0
       ? pieces
-      : materializeSourceSelectors(source, [{ kind: "whole" }], config)));
+      : materializeSourceSelectors(source, [{ kind: "whole" }])));
   }
   return out;
 }
@@ -68,7 +63,6 @@ export function deterministicPandoSelectors(payload: unknown): ChunkSelector[] {
 export function materializeSourceSelectors(
   source: RoundSource,
   selectors: ChunkSelector[],
-  _config: Pick<ProxyConfig, "piecePreviewCharLimit">,
 ): PieceDraft[] {
   const out: PieceDraft[] = [];
   for (const [index, selector] of selectors.entries()) {
@@ -111,13 +105,12 @@ export function materializeSelector(payload: unknown, selector: ChunkSelector): 
 
 async function chunkBatchWithModel(
   sources: RoundSource[],
-  config: ProxyConfig,
   clients: StructuredClients,
 ): Promise<Map<string, ChunkSelector[]>> {
   const response = await clients.sourceChunkBatch({
     sources: sources.map((source) => ({
       sourceId: source.sourceId,
-      sourceKind: source.sourceKind as "assistant" | "tool",
+      sourceKind: source.sourceKind,
       ...(source.toolName ? { toolName: source.toolName } : {}),
       content: source.payload,
       ...(source.pointer ? { pointer: source.pointer } : {}),

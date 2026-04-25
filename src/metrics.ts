@@ -113,8 +113,6 @@ export function memoryStateMetrics(state: MemoryState): Record<string, unknown> 
     pieceIds: state.pieces.map((piece) => piece.id),
     pieceBytes: state.pieces.reduce((total, piece) => total + piece.byteSize, 0),
     processedSourceCount: state.processedSourceIds.length,
-    inlinePieceCount: state.inlinePieceIds.length,
-    inlinePieceIds: state.inlinePieceIds,
   };
 }
 

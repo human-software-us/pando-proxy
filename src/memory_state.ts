@@ -31,7 +31,6 @@ export type MemoryPiece = {
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  visibility: "inline" | "omittable";
   payloadInline?: unknown;
   payloadRef?: string;
   previewText: string;
@@ -46,7 +45,6 @@ export type MemoryState = {
   groups: MemoryGroup[];
   pieces: MemoryPiece[];
   processedSourceIds: string[];
-  inlinePieceIds: string[];
 };
 
 export type SessionRecord = {
@@ -59,7 +57,6 @@ export function emptyMemoryState(): MemoryState {
     groups: [],
     pieces: [],
     processedSourceIds: [],
-    inlinePieceIds: [],
   };
 }
 
@@ -73,7 +70,6 @@ export function pruneMemoryState(state: MemoryState): MemoryState {
   const pieces = dedupePieces(
     (state.pieces ?? []).filter((piece) => typeof piece?.groupId === "string" && groupIds.has(piece.groupId)),
   );
-  const pieceIds = new Set(pieces.map((piece) => piece.id));
   return {
     roundSeq: Math.max(0, Math.trunc(state.roundSeq ?? 0)),
     groups,
@@ -81,11 +77,6 @@ export function pruneMemoryState(state: MemoryState): MemoryState {
     processedSourceIds: unique(
       (state.processedSourceIds ?? []).filter((id): id is string =>
         typeof id === "string" && id.length > 0
-      ),
-    ),
-    inlinePieceIds: unique(
-      (state.inlinePieceIds ?? []).filter((id): id is string =>
-        typeof id === "string" && id.length > 0 && pieceIds.has(id)
       ),
     ),
   };
@@ -124,7 +115,6 @@ export function dedupePieces(pieces: MemoryPiece[]): MemoryPiece[] {
     }
     byId.set(piece.id, {
       ...piece,
-      visibility: piece.visibility === "omittable" ? "omittable" : "inline",
       previewText: typeof piece.previewText === "string" ? piece.previewText : "",
     });
   }
@@ -182,9 +172,6 @@ export function assertMemoryInvariant(state: MemoryState): void {
     if (!groupIds.has(piece.groupId)) {
       errors.push(`Piece ${piece.id} references unknown group id`);
     }
-    if (piece.visibility !== "inline" && piece.visibility !== "omittable") {
-      errors.push(`Piece ${piece.id} has invalid visibility`);
-    }
     if (piece.byteSize < 0) {
       errors.push(`Piece ${piece.id} has invalid byteSize`);
     }
@@ -195,9 +182,6 @@ export function assertMemoryInvariant(state: MemoryState): void {
 
   if ((state.processedSourceIds ?? []).some((id) => !id)) {
     errors.push("processedSourceIds must not contain empty values");
-  }
-  if ((state.inlinePieceIds ?? []).some((id) => !pieceIds.has(id))) {
-    errors.push("inlinePieceIds must reference retained pieces");
   }
 
   if (errors.length > 0) {

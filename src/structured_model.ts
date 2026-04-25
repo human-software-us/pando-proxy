@@ -4,8 +4,8 @@ import {
   type GroupIntentResponse,
   type PieceRetentionBatchRequest,
   type PieceRetentionBatchResponse,
-  type PromptProjectionRequest,
-  type PromptProjectionResponse,
+  type RetainedPiecePruneRequest,
+  type RetainedPiecePruneResponse,
   type SourceChunkBatchRequest,
   type SourceChunkBatchResponse,
 } from "./group_manager.ts";
@@ -14,7 +14,11 @@ import { extractUsageMetrics, type UsageMetrics } from "./metrics.ts";
 import { type ChunkSelector } from "./memory_state.ts";
 
 export type StructuredModelSelection = {
-  classifier: "group_intent" | "source_chunk_batch" | "piece_retention_batch" | "prompt_projection";
+  classifier:
+    | "group_intent"
+    | "source_chunk_batch"
+    | "piece_retention_batch"
+    | "retained_piece_prune";
   requestModel: string | null;
   estimatedInputTokens: number;
   chosenModel: string;
@@ -39,7 +43,9 @@ export type StructuredClients = {
   pieceRetentionBatch: (
     request: PieceRetentionBatchRequest,
   ) => Promise<PieceRetentionBatchResponse>;
-  promptProjection: (request: PromptProjectionRequest) => Promise<PromptProjectionResponse>;
+  retainedPiecePrune: (
+    request: RetainedPiecePruneRequest,
+  ) => Promise<RetainedPiecePruneResponse>;
 };
 
 const OUTPUT_TOKEN_RESERVE = 4_096;
@@ -119,15 +125,15 @@ export function createStructuredClients(
       await emitUsage(result, onUsage);
       return normalizePieceRetentionBatchResponse(request, result.value);
     },
-    promptProjection: async (request) => {
-      const result = await callStructuredJson<PromptProjectionResponse>(
+    retainedPiecePrune: async (request) => {
+      const result = await callStructuredJson<RetainedPiecePruneResponse>(
         config,
         requestModel,
         authHeader,
-        promptProjectionSystemPrompt,
+        retainedPiecePruneSystemPrompt,
         request,
-        promptProjectionJsonSchema,
-        "prompt_projection",
+        retainedPiecePruneJsonSchema,
+        "retained_piece_prune",
         onSelection,
       );
       await emitUsage(result, onUsage);
@@ -506,9 +512,8 @@ function pieceRetentionBatchJsonSchema(request: PieceRetentionBatchRequest): Jso
         ],
       },
       supersedesPieceIds: { type: "array", items: { type: "string" } },
-      visibility: { type: "string", enum: ["inline", "omittable"] },
     },
-    required: ["keep", "groupId", "supersedesPieceIds", "visibility"],
+    required: ["keep", "groupId", "supersedesPieceIds"],
     additionalProperties: false,
   };
 
@@ -529,12 +534,12 @@ function pieceRetentionBatchJsonSchema(request: PieceRetentionBatchRequest): Jso
   };
 }
 
-const promptProjectionJsonSchema = {
+const retainedPiecePruneJsonSchema = {
   type: "object",
   properties: {
-    inlinePieceIds: { type: "array", items: { type: "string" } },
+    dropPieceIds: { type: "array", items: { type: "string" } },
   },
-  required: ["inlinePieceIds"],
+  required: ["dropPieceIds"],
   additionalProperties: false,
 };
 
@@ -560,7 +565,7 @@ Rules:
 `.trim();
 
 const sourceChunkBatchSystemPrompt = `
-You split assistant/tool payloads into exact retained pieces.
+You split user, assistant, and tool payloads into exact retained pieces.
 
 Return JSON matching the supplied schema.
 
@@ -587,9 +592,8 @@ Rules:
 - Keep only exact pieces that materially matter later.
 - Prefer original user literals and original tool results over assistant restatements.
 - groupId must be an active group when keep=true.
-- When keep=false, set groupId to null, supersedesPieceIds to [], and visibility to "omittable".
+- When keep=false, set groupId to null and supersedesPieceIds to [].
 - supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
-- visibility decides whether the exact piece should usually be inlined next round or can stay retrievable.
 - Return JSON only.
 `.trim();
 
@@ -622,23 +626,21 @@ function normalizePieceRetentionBatchResponse(
         supersedesPieceIds: Array.isArray(decision.supersedesPieceIds)
           ? decision.supersedesPieceIds.map(String)
           : [],
-        visibility: decision.visibility === "inline" ? "inline" : "omittable",
       };
     }),
   };
 }
 
-const promptProjectionSystemPrompt = `
-You choose which retained exact pieces should be inline in the next prompt.
+const retainedPiecePruneSystemPrompt = `
+You prune previously kept old exact pieces that are no longer worth sending next round.
 
 Return JSON matching the supplied schema.
 
 Rules:
-- You are given the current groups and all retained exact piece previews.
-- inlinePieceIds must be a subset of retained piece ids.
-- Prefer pieces that are most likely needed immediately next round.
-- Respect the provided maxInlinePieces budget.
-- If a visible exact piece already answers an obvious likely follow-up, include it.
+- You are given the current groups, surviving old pieces, and newly kept pieces.
+- dropPieceIds must be a subset of retainedOldPieces ids.
+- Drop only old pieces that are clearly obsolete now.
+- If unsure, keep the old piece.
 - Return JSON only.
 `.trim();
 
