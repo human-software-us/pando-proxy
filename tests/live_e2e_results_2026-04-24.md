@@ -370,9 +370,231 @@ Commentary:
 - the manager progressively pruned older exact pieces while carrying the exact retained facts forward in the active group summary
 - no archive recall was needed in this case
 
+## Test 12: Nine-Round Seven-Fact Accumulation
+
+Goal:
+
+- verify a longer single-thread fact accumulation still answers exact values correctly
+
+Observed outputs:
+
+- rounds 1-8: expected short acknowledgements
+- round 9: exact JSON for `A12` through `G12`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+- final `pieceCount`: `2`
+
+Commentary:
+
+- clean pass
+- no archive recall used
+- the manager started pruning raw pieces while carrying exact facts in the active group summary
+
+## Test 13: Twelve-Round Ten-Fact Accumulation
+
+Goal:
+
+- push the same single-thread fact pattern farther to see whether exact values drift
+
+Observed outputs:
+
+- round 12: exact JSON for `A13` through `J13`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+- final `pieceCount`: `1`
+
+Commentary:
+
+- clean pass
+- exact values remained correct across 12 rounds
+- again, no recall usage; summaries carried most of the durable exact material
+
+## Test 14: Twenty-Round Eighteen-Fact Stress Case
+
+Goal:
+
+- verify exact retention still works in a materially longer session
+- check whether archive recall appears naturally
+
+Observed outputs:
+
+- rounds 1-19: expected short acknowledgements / hold
+- round 20: exact JSON for `A20` through `R20`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+- final `pieceCount`: `1`
+
+Commentary:
+
+- clean pass over 20 rounds
+- no archive recall triggered
+- the main thing visible in logs was increasing manager prompt size, not correctness failure
+
+## Test 15: Multi-Blob Exact Lookup
+
+Goal:
+
+- verify multiple large remembered blocks can be queried later by exact field
+
+Observed outputs:
+
+- rounds 1-8: expected block acknowledgements / holds
+- round 9: `{"B":"bravo15-222","H":"hotel15-888","N":"november15-1414","T":"tango15-2020","Z":"zulu15-2626","FF":"foxtrotfoxtrot15-3232"}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+- final `groupCount`: `6`
+
+Commentary:
+
+- clean pass
+- six lookup blocks stayed separated as distinct groups
+- no recall needed; exact values were recoverable from active group state
+
+## Test 16: Overlapping Field Names Across Groups
+
+Goal:
+
+- verify similarly-shaped groups do not collapse into one latest-value memory
+
+Observed outputs:
+
+- exact per-round answers for red/blue/green values
+- final round returned exact JSON with the correct red, blue, and green fields
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+- final `groupCount`: `3`
+
+Commentary:
+
+- clean pass
+- same field names like `STATUS` and `TOKEN` stayed correctly scoped per group
+
+## Test 17: Selective Close With Other Groups Preserved
+
+Goal:
+
+- verify one group can be explicitly closed without damaging the others
+
+Observed outputs:
+
+- closed blue thread
+- later red and green exact lookups were correct
+- final round returned `{"red_token":"RED17-111","blue_token":"UNKNOWN","green_note":"green-note-17"}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- memory behavior was correct
+- one surface wording blemish remained on the immediate blue-lookup round: the model answered `I don’t know.` instead of the requested exact literal `UNKNOWN`
+- that looks like main-model instruction following, not a memory-state corruption
+
+## Test 18: Partial Supersession In One Config Thread
+
+Goal:
+
+- verify updating one field does not lose untouched fields
+
+Observed outputs:
+
+- exact later answers: `host18-a`, `1802`, `45s`
+- final round returned `{"host":"host18-a","port":1802,"mode":"dev18","timeout":"45s"}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- clean pass
+- partial update semantics behaved correctly: old `PORT=1801` was replaced, while `HOST` and `MODE` survived
+
+## Test 19: Dual Parallel Configs With Independent Updates
+
+Goal:
+
+- verify two evolving configs do not interfere with each other
+
+Observed outputs:
+
+- later exact answers: `1902` and `blue-key-19b`
+- final round returned `{"red_host":"red-host-19","red_port":1902,"blue_host":"blue-host-19","blue_port":2901,"blue_key":"blue-key-19b"}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- clean pass
+- independent updates stayed scoped to the intended service
+
+## Test 20: Interleaved Multi-Thread Retrievals
+
+Goal:
+
+- verify repeated thread switching does not corrupt current exact values
+
+Observed outputs:
+
+- exact intermediate answers for A, B, and C threads
+- final round returned `{"a_token":"alpha-20x-v2","a_note":"a-note-20x","b_token":"bravo-20x","b_note":"b-note-20x","c_token":"charlie-20x","c_note":"c-note-20x"}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- clean pass
+- after `THREAD_A` was updated, later retrievals consistently returned the v2 token rather than the old one
+
+## Test 21: Reopen Same Label After Close
+
+Goal:
+
+- verify closing a thread and starting it again with the same label does not resurrect the old exact value
+
+Observed outputs:
+
+- later exact answer for `TASK_ALPHA` was `alpha-new-21`
+- later exact answer for `TASK_BETA` note was `beta-note-21`
+- final round returned `{"alpha_token":"alpha-new-21","alpha_note":"new-note-21","beta_token":"beta-21","beta_note":"beta-note-21"}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- clean pass
+- the reopened alpha thread used the new value only; the old closed alpha value did not leak back
+
 ## Summary So Far
 
-Completed manual live runs recorded here: `11`
+Completed manual live runs recorded here: `21`
 
 Overall:
 
@@ -381,7 +603,8 @@ Overall:
   - repeated within-thread value replacement could produce contradictory `group_intent` replacement output
 - all recorded post-fix reruns are clean
 - no non-null `round_complete.memoryUpdateError` remains in the recorded passing runs
-- archive recall still was not needed in these eleven recorded runs
+- archive recall still was not naturally needed in these twenty-one recorded runs
+- the current stress cases rely heavily on active group summaries carrying exact values after raw pieces are pruned
 
 Notes:
 
