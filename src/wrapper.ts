@@ -10,8 +10,8 @@ import { createLogger } from "./logger.ts";
 import { startInteractiveRolloutTailer } from "./rollout_tailer.ts";
 import type {
   ContextWindowComparisonStats,
-  ContextWindowStats,
   SessionTokenStats,
+  TokenSeriesStats,
 } from "./server.ts";
 import { startServer } from "./server.ts";
 import type { RoundSource } from "./tool_results.ts";
@@ -266,13 +266,6 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     await started.awaitIdle(timeoutMs).catch(() => {});
     const threadId = observer.latestExecThreadId() ?? interactiveSessionKeyHint;
     await saveLatestWrapperThreadId(baseConfig.stateDir, threadId);
-    printCodexSessionSummary(threadId);
-    printContextWindowSummary(
-      threadId,
-      threadId
-        ? started.contextStats.forSession(threadId) ?? started.contextStats.latest()
-        : started.contextStats.latest(),
-    );
     printTokenUsageSummary(
       threadId,
       threadId
@@ -1407,32 +1400,6 @@ export function startProxyOnAvailablePort(
   throw new Error(`No available port found at or above ${portStart}`);
 }
 
-function printContextWindowSummary(
-  threadId: string | null,
-  stats: ContextWindowComparisonStats | null,
-): void {
-  if (!stats) {
-    return;
-  }
-  const sessionLabel = threadId ? ` (${threadId})` : "";
-  const withoutProxy = formatContextWindowSeries(stats.withoutProxy);
-  const withProxy = formatContextWindowSeries(stats.withProxy);
-  if (withoutProxy) {
-    console.error(`Pando Proxy context bytes without proxy${sessionLabel}: ${withoutProxy}`);
-  }
-  if (withProxy) {
-    console.error(`Pando Proxy context bytes with proxy${sessionLabel}: ${withProxy}`);
-  }
-}
-
-function printCodexSessionSummary(threadId: string | null): void {
-  if (!threadId) {
-    return;
-  }
-  console.error(`pando-proxy: last Codex session id: ${threadId}`);
-  console.error(`pando-proxy: resume with: codex resume ${threadId}`);
-}
-
 function printTokenUsageSummary(
   threadId: string | null,
   stats: SessionTokenStats | null,
@@ -1441,49 +1408,45 @@ function printTokenUsageSummary(
     return;
   }
   const sessionLabel = threadId ? ` (${threadId})` : "";
-  if (stats.mainModel) {
+  if (stats.withoutProxy?.estimatedInputTokens) {
     console.error(
-      `Pando Proxy main-model tokens${sessionLabel}: input ${
-        formatCount(stats.mainModel.inputTokens)
-      }, cached ${formatCount(stats.mainModel.cachedInputTokens)}, output ${
-        formatCount(stats.mainModel.outputTokens)
-      }, total ${formatCount(stats.mainModel.totalTokens)}`,
+      `Pando Proxy tokens without proxy, estimated input${sessionLabel}: ${
+        formatTokenSeries(stats.withoutProxy.estimatedInputTokens)
+      }`,
     );
   }
-  if (stats.manager) {
+  if (stats.withProxy?.totalTokens) {
+    const mainTotal = stats.mainModel?.totalTokens ?? 0;
+    const overheadTotal = stats.proxyOverhead?.totals.totalTokens ?? 0;
     console.error(
-      `Pando Proxy manager tokens${sessionLabel}: input ${
-        formatCount(stats.manager.totals.inputTokens)
-      }, cached ${formatCount(stats.manager.totals.cachedInputTokens)}, output ${
-        formatCount(stats.manager.totals.outputTokens)
-      }, total ${formatCount(stats.manager.totals.totalTokens)}, retries ${
-        formatCount(stats.manager.totals.retryAttempts)
-      }, skipped ${formatCount(stats.manager.totals.skipped)}, duration ${
-        formatCount(stats.manager.totals.durationMs)
+      `Pando Proxy tokens with proxy, billed all-in${sessionLabel}: total ${
+        formatTokenSeries(stats.withProxy.totalTokens)
+      }, input total ${formatCount(stats.withProxy.inputTokens.total)}, cached total ${
+        formatCount(stats.withProxy.cachedInputTokens.total)
+      }, output total ${formatCount(stats.withProxy.outputTokens.total)}, main total ${
+        formatCount(mainTotal)
+      }, overhead total ${formatCount(overheadTotal)}`,
+    );
+  }
+  if (stats.proxyOverhead) {
+    console.error(
+      `Pando Proxy proxy overhead${sessionLabel}: total ${
+        formatCount(stats.proxyOverhead.totals.totalTokens)
+      }, input ${formatCount(stats.proxyOverhead.totals.inputTokens)}, cached ${
+        formatCount(stats.proxyOverhead.totals.cachedInputTokens)
+      }, output ${formatCount(stats.proxyOverhead.totals.outputTokens)}, retries ${
+        formatCount(stats.proxyOverhead.totals.retryAttempts)
+      }, skipped ${formatCount(stats.proxyOverhead.totals.skipped)}, duration ${
+        formatCount(stats.proxyOverhead.totals.durationMs)
       }ms`,
     );
-    for (const [classifier, totals] of Object.entries(stats.manager.byClassifier)) {
-      if (!totals) {
-        continue;
-      }
-      console.error(
-        `Pando Proxy manager ${classifier}${sessionLabel}: total ${
-          formatCount(totals.totalTokens)
-        }, attempts ${formatCount(totals.attempts)}, retries ${
-          formatCount(totals.retryAttempts)
-        }, skipped ${formatCount(totals.skipped)}, duration ${formatCount(totals.durationMs)}ms`,
-      );
-    }
   }
 }
 
-function formatContextWindowSeries(stats: ContextWindowStats | null): string | null {
-  if (!stats) {
-    return null;
-  }
-  return `min ${formatCount(stats.minBytes)}, avg ${formatCount(stats.avgBytes)}, max ${
-    formatCount(stats.maxBytes)
-  }`;
+function formatTokenSeries(stats: TokenSeriesStats): string {
+  return `min ${formatCount(stats.min)}, avg ${formatCount(stats.avg)}, max ${
+    formatCount(stats.max)
+  }, total ${formatCount(stats.total)}`;
 }
 
 function formatCount(value: number): string {
