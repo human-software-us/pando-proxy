@@ -599,12 +599,16 @@ Rules:
 - Keep groupsAfter small and concrete.
 - Continue a group when the user is still working on the same thing.
 - If the user is asking a follow-up question about facts, tokens, notes, or markers already established in the same ongoing thread, continue the existing group instead of replacing it.
+- If the user updates or replaces an exact value inside the same ongoing thread (for example "forget token B, remember token C instead"), keep the same group id and update that group's summary rather than retiring the group and creating a fresh one.
+- Use replacedGroupIds only when the broader thread itself is being abandoned in favor of a distinct new thread, not for ordinary within-thread value updates.
 - Preserve active groups by default when their retained anchor facts may still matter later, even if the current round also asks for new inspection work.
 - Do not discard an active group just because the user asks another repo-inspection question in the same broader thread.
 - Replace or close obsolete groups when the user moves on.
 - closedGroupIds and replacedGroupIds retire prior groups and those ids must not appear in groupsAfter.
 - routingLabel should be short and operational.
-- summary should say what exact evidence matters in that group.
+- summary should say what durable exact evidence matters in that group.
+- summary must not include one-turn reply instructions, stale formatting requirements, or obsolete answer text commands such as "reply STEP-4 only".
+- summary should describe durable task state, not the transient wording of the most recent answer instruction.
 - Do not invent vague meta-groups.
 - Return JSON only.
 `.trim();
@@ -636,6 +640,8 @@ Rules:
 - Return a decision for every new piece id under decisionsByPieceId.
 - Keep only exact pieces that materially matter later.
 - Prefer original user literals and original tool results over assistant restatements.
+- Do not retain transient one-turn response-formatting instructions such as "reply X only", "answer UNKNOWN only", or "do not reveal it this round" unless they also contain durable facts that will matter later.
+- When a round contains both durable exact evidence and transient answer-formatting instructions, keep the durable evidence and drop the transient control chatter.
 - groupId must be an active group when keep=true.
 - When keep=false, set groupId to null and supersedesPieceIds to [].
 - supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
@@ -685,6 +691,8 @@ Rules:
 - You are given the current groups, surviving old pieces, and newly kept pieces.
 - dropPieceIds must be a subset of retainedOldPieces ids.
 - Drop only old pieces that are clearly obsolete now.
+- Prefer to keep earlier original user literals, tokens, constraints, and exact values when later rounds may still depend on them.
+- Prefer to drop transient response-formatting or acknowledgment pieces before dropping earlier durable exact evidence.
 - If unsure, keep the old piece.
 - Return JSON only.
 `.trim();

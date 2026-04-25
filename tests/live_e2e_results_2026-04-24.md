@@ -235,17 +235,153 @@ Commentary:
 - old token stayed dead
 - new token survived and answered correctly
 
+## Test 8: Five-Round Retention Drift
+
+Goal:
+
+- verify transient one-turn answer instructions do not overwrite durable retained facts
+- verify the same exact token survives across several distraction rounds
+
+Rounds:
+
+1. store exact token, expect `STEP-1`
+2. transient answer instruction, expect `STEP-2`
+3. transient answer instruction, expect `STEP-3`
+4. transient answer instruction, expect `STEP-4`
+5. ask for exact token
+
+Observed outputs after fix:
+
+- round 1: `STEP-1`
+- round 2: `STEP-2`
+- round 3: `STEP-3`
+- round 4: `STEP-4`
+- round 5: `BLUE-MANUAL-08-7319`
+
+Observed stats:
+
+- `memoryUpdateErrors`: `[null, null, null, null, null]`
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- first live run exposed a real bug: stale transient instructions like `reply STEP-4 only` were being treated as durable memory and overrode the real retained token
+- fixed by tightening `group_intent`, `piece_retention_batch`, and `retained_piece_prune` prompts to drop one-turn control chatter and preserve durable evidence
+- rerun passed cleanly
+
+## Test 9: Six-Round Large Blob Lookup
+
+Goal:
+
+- verify an exact value inside a larger stored blob survives several later rounds
+
+Rounds:
+
+1. store pseudo file with `KEY_A`, `KEY_B`, `KEY_C`
+2. transient arithmetic
+3. transient arithmetic
+4. transient arithmetic
+5. transient arithmetic
+6. ask for `KEY_B`
+
+Observed outputs:
+
+- round 1: `FILE-STORED`
+- round 6: `BETA-09-4826`
+
+Observed stats:
+
+- `memoryUpdateErrors`: `[null, null, null, null, null, null]`
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- clean pass
+- later transient rounds did not break exact lookup
+
+## Test 10: Six-Round Replacement Chain
+
+Goal:
+
+- verify repeated exact-value replacement inside one ongoing thread does not corrupt group state
+
+Rounds:
+
+1. remember token A
+2. replace with token B
+3. replace with token C
+4. hold
+5. hold
+6. ask for current token
+
+Observed outputs after fix:
+
+- round 1: `A1`
+- round 2: `B2`
+- round 3: `C3`
+- round 4: `HOLD-4`
+- round 5: `HOLD-5`
+- round 6: `C-10-3333`
+
+Observed stats:
+
+- `memoryUpdateErrors`: `[null, null, null, null, null, null]`
+- `archiveRecallCount`: `0`
+- active group id stayed stable as `group_1`
+
+Commentary:
+
+- first live run exposed a real bug: `group_intent` sometimes returned a contradictory replacement result, retiring a group id and also keeping it in `groupsAfter`
+- that caused `memory_update_failed`, fail-closed state retention, and a wrong final answer (`B-10-2222`)
+- fixed by steering within-thread value swaps toward “continue same group, supersede old piece” instead of “retire and recreate the group”
+- rerun passed cleanly with no retry failure
+
+## Test 11: Eight-Round Multi-Fact Retention
+
+Goal:
+
+- verify multiple exact facts remain answerable after several later rounds
+- inspect whether archive recall is needed
+
+Rounds:
+
+1. remember `ALPHA11=red-111`
+2. remember `BETA11=blue-222`
+3. remember `GAMMA11=green-333`
+4. remember `DELTA11=yellow-444`
+5. remember `EPSILON11=purple-555`
+6. transient round
+7. transient round
+8. ask for all five as exact JSON
+
+Observed outputs:
+
+- round 8: `{"ALPHA11":"red-111","BETA11":"blue-222","GAMMA11":"green-333","DELTA11":"yellow-444","EPSILON11":"purple-555"}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: `[null, null, null, null, null, null, null, null]`
+- `archiveRecallCount`: `0`
+- final `pieceCount`: `0`
+
+Commentary:
+
+- clean pass
+- the manager progressively pruned older exact pieces while carrying the exact retained facts forward in the active group summary
+- no archive recall was needed in this case
+
 ## Summary So Far
 
-Completed manual live runs recorded here: `7`
+Completed manual live runs recorded here: `11`
 
 Overall:
 
-- no proxy runtime failures
-- no `memory_update_failed`
-- no non-null `round_complete.memoryUpdateError`
-- no archive recall was needed in these seven short scenarios
-- no immediate product bug found in these completed runs
+- two real memory-manager bugs were found and fixed during the manual sweep:
+  - stale transient answer instructions were being retained as durable memory
+  - repeated within-thread value replacement could produce contradictory `group_intent` replacement output
+- all recorded post-fix reruns are clean
+- no non-null `round_complete.memoryUpdateError` remains in the recorded passing runs
+- archive recall still was not needed in these eleven recorded runs
 
 Notes:
 
