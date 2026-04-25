@@ -123,3 +123,48 @@ Changes validated in this follow-up batch:
   - `memoryUpdateError = null` on every round
   - round 3 used `archiveRecallCount = 1`
   - local exact checker passed for `file`, `mime`, `ocr`, `thumbBase64`, and `exifModel`
+
+## Proxy Health Follow-Up
+
+Three additional live end-to-end health checks were run after the last prompt/dedupe changes.
+
+### Health Test 1: JSON Configs
+- Rounds: `7`
+- Session: `health-test1-json-configs`
+- Final answer:
+  - `{"alpha_token":"ALPHA-7741","beta_port":9443,"beta_flag_1":"sync"}`
+- Checks:
+  - every `round_complete.memoryUpdateError` was `null`
+  - `archiveRecallCount = 0` on every round
+  - local exact checker passed for `alpha_token` and `beta_flag_1`
+
+### Health Test 2: Binary Manifest
+- Rounds: `5`
+- Session: `health-test2-binary-manifest`
+- Final answers:
+  - round 3: `{"sha256":"8b7f4d3a9c1188aa77bbccddeeff00112233445566778899aabbccddeeff1020","entry_hex":"4d5a90000300000004000000ffff0000"}`
+  - round 5: `TVqQAAMAAAAEAAAA//8A`
+- Checks:
+  - every `round_complete.memoryUpdateError` was `null`
+  - `archiveRecallCount = 0` on every round
+  - local exact checker passed for `sha256`, `entry_hex`, and `base64Prefix`
+
+### Health Test 3: Photo Metadata
+- Initial session: `health-test3-photo-meta`
+- Rounds: `4`
+- Issue found:
+  - the final model shortened the visible exact base64-like value from `/9j/4AAQSkZJRgABAQAAAQABAAD` to `/9j/`
+  - memory itself was still correct; the problem was output copying, not memory loss
+- Fix:
+  - tightened the developer memory prompt so visibly exact values must be copied fully and not abbreviated
+
+### Health Test 3 Rerun: Photo Metadata
+- Session: `health-test3-photo-meta-rerun`
+- Rounds: `4`
+- Final answers:
+  - round 3: `{"file":"receipt.jpg","mime":"image/jpeg","ocr":"TOTAL 84.73","thumb":"/9j/4AAQSkZJRgABAQAAAQABAAD"}`
+  - round 4: `iPhone15,2`
+- Checks:
+  - every `round_complete.memoryUpdateError` was `null`
+  - `archiveRecallCount = 0` on every round
+  - local exact checker passed for `file`, `mime`, `ocr`, `thumbBase64`, and `exifModel`

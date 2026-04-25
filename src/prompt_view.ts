@@ -128,6 +128,9 @@ export function buildPromptMemoryText(
     lines.push(
       "If the user asks for an exact original block, snippet, template, or raw text and that full raw text is not visibly present in <exact_pieces>, you must use recall before answering.",
     );
+    lines.push(
+      "If an exact value is visibly present in <exact_pieces>, copy it fully. Do not shorten, normalize, abbreviate, or elide base64-like, hex-like, path-like, token-like, or other exact string values.",
+    );
     lines.push("</groups>");
   }
   lines.push("<exact_pieces>");
