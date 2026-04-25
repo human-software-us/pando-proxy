@@ -339,12 +339,10 @@ function buildStubClients(policy: StubPolicy): StructuredClients {
     ): Promise<PieceRetentionBatchResponse> =>
       Promise.resolve(applyStubRetentionPolicy(policy, request)),
     retainedPiecePrune: (
-      _request: RetainedPiecePruneRequest,
+      request: RetainedPiecePruneRequest,
       _attempt = 1,
     ): Promise<RetainedPiecePruneResponse> =>
-      Promise.resolve({
-        dropPieceIds: [],
-      }),
+      Promise.resolve(applyStubRetainedPiecePrune(policy, request)),
   };
 }
 
@@ -379,7 +377,7 @@ function selectKeptNewPieceIds(policy: StubPolicy, request: PieceRetentionBatchR
     case "retain-all":
       return request.newPieces.map((piece) => piece.id);
     case "drop-tools":
-      return request.newPieces.filter((piece) => piece.sourceKind !== "tool").map((piece) =>
+      return request.newPieces.filter((piece) => piece.sourceKind === "user").map((piece) =>
         piece.id
       );
     case "retain-recent":
@@ -400,6 +398,54 @@ function selectKeptNewPieceIds(policy: StubPolicy, request: PieceRetentionBatchR
       return keepIds;
     }
   }
+}
+
+function applyStubRetainedPiecePrune(
+  policy: StubPolicy,
+  request: RetainedPiecePruneRequest,
+): RetainedPiecePruneResponse {
+  switch (policy) {
+    case "retain-all":
+      return { dropPieceIds: [] };
+    case "keep-none":
+      return { dropPieceIds: request.retainedOldPieces.map((piece) => piece.id) };
+    case "drop-tools":
+      return { dropPieceIds: selectDropToolsPrunedIds(request) };
+    case "retain-recent":
+      return { dropPieceIds: selectRecentPrunedIds(request, 12, 32_768) };
+    case "cap-bytes":
+      return { dropPieceIds: selectRecentPrunedIds(request, Number.POSITIVE_INFINITY, 32_768) };
+  }
+}
+
+function selectDropToolsPrunedIds(request: RetainedPiecePruneRequest): string[] {
+  if (request.keptNewPieces.length > 0) {
+    return request.retainedOldPieces.map((piece) => piece.id);
+  }
+  return selectRecentPrunedIds(request, 1, 8_192);
+}
+
+function selectRecentPrunedIds(
+  request: RetainedPiecePruneRequest,
+  maxPieces: number,
+  maxBytes: number,
+): string[] {
+  const keep = new Set<string>();
+  let used = sumOf(request.keptNewPieces.map((piece) => approxBytes(piece.previewText)));
+  let keptCount = 0;
+  for (const piece of [...request.retainedOldPieces].reverse()) {
+    if (keptCount >= maxPieces) {
+      continue;
+    }
+    const bytes = approxBytes(piece.previewText);
+    if (used + bytes > maxBytes) {
+      continue;
+    }
+    used += bytes;
+    keptCount += 1;
+    keep.add(piece.id);
+  }
+  return request.retainedOldPieces.filter((piece) => !keep.has(piece.id)).map((piece) => piece.id);
 }
 
 function deriveGroupFromRequest(request: GroupIntentRequest): MemoryGroup | null {

@@ -59,16 +59,16 @@ Aggregate across all `345` fetched trajectories:
 
 | Set                                             | Samples | Rounds | Policy       | Avg baseline min | Avg pando min | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Avg avg savings | Avg max savings | Aggregate avg reduction | Aggregate peak reduction |
 | ----------------------------------------------- | ------: | -----: | ------------ | ---------------: | ------------: | ---------------: | ------------: | ---------------: | ------------: | --------------: | --------------: | ----------------------: | -----------------------: |
-| SWE-bench Verified devstral public trajectories |     345 | 21,709 | `drop-tools` |            1,402 |         1,305 |           15,199 |         3,063 |           33,636 |        10,023 |          12,136 |          23,613 |                   79.8% |                    70.2% |
+| SWE-bench Verified devstral public trajectories |     345 | 21,709 | `drop-tools` |            1,402 |           462 |           15,199 |           936 |           33,636 |         7,085 |          14,262 |          26,551 |                   93.8% |                    78.9% |
 
 Additional distribution notes:
 
-- 71.3% of traces had positive average-token savings
-- 71.3% of traces had positive peak-token savings
-- mean per-trace average reduction was 75.1%
-- mean per-trace peak reduction was 72.1%
-- median per-trace average reduction was 76.3%
-- median per-trace peak reduction was 74.6%
+- 71.6% of traces had positive average-token savings
+- 71.6% of traces had positive peak-token savings
+- mean per-trace average reduction was 92.2%
+- mean per-trace peak reduction was 84.0%
+- median per-trace average reduction was 93.0%
+- median per-trace peak reduction was 87.1%
 
 ### SWE-bench Verified devstral top-20 public sample (stub replay)
 
@@ -113,14 +113,14 @@ Aggregate across that selected top-20 set:
 
 | Set                                | Samples | Rounds | Mode         | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Aggregate avg reduction | Aggregate peak reduction | Mean per-trace avg reduction | Mean per-trace peak reduction |
 | ---------------------------------- | ------: | -----: | ------------ | ---------------: | ------------: | ---------------: | ------------: | ----------------------: | -----------------------: | ---------------------------: | ----------------------------: |
-| SWE-bench Verified devstral top-20 |      20 |  3,807 | `drop-tools` |           43,924 |         5,202 |          142,623 |        64,692 |                   88.2% |                    54.6% |                        84.8% |                         66.4% |
+| SWE-bench Verified devstral top-20 |      20 |  3,807 | `drop-tools` |           43,924 |         2,069 |          142,623 |        60,772 |                   95.3% |                    57.4% |                        92.9% |                         69.5% |
 
 Notes:
 
 - All `20` selected traces had positive average-token savings.
 - All `20` selected traces had positive peak-token savings.
-- Median per-trace average reduction was 91.4%.
-- Median per-trace peak reduction was 89.0%.
+- Median per-trace average reduction was 96.6%.
+- Median per-trace peak reduction was 92.2%.
 
 ## Historical real-LLM and one-off runs
 
@@ -193,8 +193,8 @@ Set-level summary across the current public reruns plus the preserved historical
 
 | Set                                               | Samples | Avg baseline min | Avg pando min | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Avg avg savings | Avg max savings |
 | ------------------------------------------------- | ------: | ---------------: | ------------: | ---------------: | ------------: | ---------------: | ------------: | --------------: | --------------: |
-| SWE-bench Verified devstral full corpus           |     345 |            1,402 |         1,305 |           15,199 |         3,063 |           33,636 |        10,023 |          12,136 |          23,613 |
-| SWE-bench Verified devstral top-20                |      20 |            2,069 |         1,936 |           43,924 |         5,202 |          142,623 |        64,692 |          38,723 |          77,931 |
+| SWE-bench Verified devstral full corpus           |     345 |            1,402 |           462 |           15,199 |           936 |           33,636 |         7,085 |          14,262 |          26,551 |
+| SWE-bench Verified devstral top-20                |      20 |            2,069 |           713 |           43,924 |         2,069 |          142,623 |        60,772 |          41,856 |          81,851 |
 | Local `exec` one-off                              |       1 |            1,421 |         1,352 |            7,674 |         5,195 |           13,231 |         7,788 |           2,479 |           5,443 |
 | Local `cli` one-off                               |       1 |            2,988 |         1,842 |          193,840 |        60,407 |          286,898 |        87,877 |         133,433 |         199,021 |
 | Public open one-off                               |       1 |            1,081 |           686 |            1,292 |           885 |            1,502 |         1,084 |             407 |             418 |

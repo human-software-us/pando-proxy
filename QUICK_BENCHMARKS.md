@@ -20,8 +20,8 @@ python3 scripts/run_replay_batch.py \
 
 | Case                                             | Avg reduction | Peak reduction | Avg without proxy | Avg with proxy | Peak without proxy | Peak with proxy | Rounds |
 | ------------------------------------------------ | ------------: | -------------: | ----------------: | -------------: | -----------------: | --------------: | -----: |
-| SWE-bench Verified devstral full corpus (345)    |         79.8% |          70.2% |            15,199 |          3,063 |             33,636 |          10,023 | 21,709 |
-| SWE-bench Verified devstral top-20 public sample |         88.2% |          54.6% |            43,924 |          5,202 |            142,623 |          64,692 |  3,807 |
+| SWE-bench Verified devstral full corpus (345)    |         93.8% |          78.9% |            15,199 |            936 |             33,636 |           7,085 | 21,709 |
+| SWE-bench Verified devstral top-20 public sample |         95.3% |          57.4% |            43,924 |          2,069 |            142,623 |          60,772 |  3,807 |
 
 ## Public sources used
 
@@ -73,7 +73,7 @@ Current aggregate on the shipped lossless task/piece manager:
 
 | Set                                             | Samples | Rounds | Avg without proxy | Avg with proxy | Peak without proxy | Peak with proxy | Aggregate avg reduction | Aggregate peak reduction |
 | ----------------------------------------------- | ------: | -----: | ----------------: | -------------: | -----------------: | --------------: | ----------------------: | -----------------------: |
-| SWE-bench Verified devstral public trajectories |     345 | 21,709 |            15,199 |          3,063 |             33,636 |          10,023 |                   79.8% |                    70.2% |
+| SWE-bench Verified devstral public trajectories |     345 | 21,709 |            15,199 |            936 |             33,636 |           7,085 |                   93.8% |                    78.9% |
 
 Current local rerun commands for the full-corpus stub pass:
 
@@ -110,7 +110,7 @@ Current aggregate on the shipped lossless task/piece manager:
 
 | Set                                | Samples | Rounds | Mode         | Avg without proxy | Avg with proxy | Peak without proxy | Peak with proxy | Aggregate avg reduction | Aggregate peak reduction |
 | ---------------------------------- | ------: | -----: | ------------ | ----------------: | -------------: | -----------------: | --------------: | ----------------------: | -----------------------: |
-| SWE-bench Verified devstral top-20 |      20 |  3,807 | `drop-tools` |            43,924 |          5,202 |            142,623 |          64,692 |                   88.2% |                    54.6% |
+| SWE-bench Verified devstral top-20 |      20 |  3,807 | `drop-tools` |            43,924 |          2,069 |            142,623 |          60,772 |                   95.3% |                    57.4% |
 
 Naive replay for the exact same top-20 selection reproduces with:
 
