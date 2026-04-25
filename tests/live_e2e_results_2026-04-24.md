@@ -592,19 +592,155 @@ Commentary:
 - clean pass
 - the reopened alpha thread used the new value only; the old closed alpha value did not leak back
 
+## Test 22: Verbatim Old Block Without Recall
+
+Goal:
+
+- verify a simpler old verbatim block can still be reproduced exactly after later rounds
+
+Observed outputs:
+
+- final round returned:
+  `BLOCK22-A`
+  `{`
+  `  header: "alpha-23",`
+  `  items: [`
+  `    "first",`
+  `    "second",`
+  `    "third"`
+  `  ],`
+  ``
+  `  note: "two  spaces  inside",`
+  `  marker: "[keep]{exact}(23)!"`
+  `}`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- `archiveRecallCount`: `0`
+- final `pieceCount`: `1`
+
+Commentary:
+
+- clean pass
+- this one succeeded directly from active memory without archive recall
+
+## Test 23: Byte-Sensitive Weird Block Reproduction
+
+Goal:
+
+- verify formatting-sensitive raw block reproduction works after later rounds
+- specifically exercise archive recall and exact block chunking
+
+Observed outputs after fix:
+
+- final round returned the exact original `BLOCK23-A` text, including the label line, braces, indentation, punctuation, and double spaces
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- total `archiveRecallCount`: `1`
+- `archiveRecallReturnedBytes`: `[1503]`
+
+Commentary:
+
+- first live run exposed a real bug: the manager/archive path let the model reconstruct a lossy version of the block from summary text
+- first fix made the model call `recall`, but the recalled source was still the whole wrapper message, so the answer still omitted the `BLOCK23-A` label line
+- final fix tightened chunking so wrapper instructions are split away from clearly delimited exact blocks, and tightened retention/prompt guidance for formatting-sensitive raw sources
+- rerun passed cleanly with one archive recall
+
+## Test 24: Two Older Verbatim Blocks In JSON
+
+Goal:
+
+- verify the model can return two older exact blocks in one structured answer
+
+Observed outputs:
+
+- final round returned exact JSON with:
+  - `block_a` = full original `BLOCK24-A`
+  - `block_b` = full original `BLOCK24-B`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- total `archiveRecallCount`: `1`
+- `archiveRecallReturnedBytes`: `[1738]`
+
+Commentary:
+
+- clean pass
+- archive recall was used once and returned enough coverage for both requested exact blocks
+
+## Test 25: Close And Reopen Formatting-Sensitive Block
+
+Goal:
+
+- verify a closed block stays dead after reopening the same label with a new exact block
+
+Observed outputs:
+
+- later exact answer for current `ALPHA25` block was:
+  `ALPHA25`
+  `{ old: false, token: "alpha-new-25" }`
+- later exact answer for `BETA25` block was:
+  `BETA25`
+  `<beta token="beta-25">`
+  `  keep`
+  `</beta>`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null` on the clean rerun
+- `archiveRecallCount`: `0`
+
+Commentary:
+
+- the first run of this scenario hit a transient upstream `503` during post-response memory finalization, so it was rerun from scratch
+- the rerun was clean
+- old closed alpha content did not leak back; only the reopened alpha block survived
+
+## Test 26: Older Exact Snippets In Final JSON
+
+Goal:
+
+- verify the model can return older exact snippets inside a compact final JSON object
+- specifically check that it does not collapse exact snippets down to only their inner values
+
+Observed outputs after fix:
+
+- final round returned exact JSON with:
+  - `snippet_a` = full original `SNIP26-A`
+  - `snippet_c` = full original `SNIP26-C`
+
+Observed stats:
+
+- `memoryUpdateErrors`: all `null`
+- total `archiveRecallCount`: `1`
+- `archiveRecallReturnedBytes`: `[3070]`
+
+Commentary:
+
+- first live run exposed a real bug: the model returned only `alpha-26` / `charlie-26` instead of the full original snippets
+- active memory only contained summary information, but the model still did not call `recall`
+- fixed by making the prompt memory text and the `recall` tool description more explicit: if the user asks for exact original raw text and that raw text is not visibly present in `<exact_pieces>`, the model must use `recall`
+- rerun passed cleanly with one archive recall
+
 ## Summary So Far
 
-Completed manual live runs recorded here: `21`
+Completed manual live runs recorded here: `26`
 
 Overall:
 
-- two real memory-manager bugs were found and fixed during the manual sweep:
+- four real memory-manager / active-memory-path bugs were found and fixed during the manual sweep:
   - stale transient answer instructions were being retained as durable memory
   - repeated within-thread value replacement could produce contradictory `group_intent` replacement output
+- formatting-sensitive raw blocks could be reconstructed lossily from summaries instead of preserved/recalled exactly
+- the model could skip `recall` and answer exact-original-snippet requests from summaries, yielding only inner values instead of the requested raw snippets
 - all recorded post-fix reruns are clean
 - no non-null `round_complete.memoryUpdateError` remains in the recorded passing runs
-- archive recall still was not naturally needed in these twenty-one recorded runs
-- the current stress cases rely heavily on active group summaries carrying exact values after raw pieces are pruned
+- archive recall is now exercised in the recorded suite and works in passing runs
+- the current design still relies heavily on active group summaries carrying exact values after many raw pieces are pruned
 
 Notes:
 

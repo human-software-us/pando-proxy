@@ -7,11 +7,7 @@ import {
   type MemoryState,
   piecePreview,
 } from "./memory_state.ts";
-import {
-  describeInputItems,
-  type InputItemDescriptor,
-  itemTypeCounts,
-} from "./tool_results.ts";
+import { describeInputItems, type InputItemDescriptor, itemTypeCounts } from "./tool_results.ts";
 
 export type RewriteDiff = {
   droppedInputIds: string[];
@@ -124,6 +120,12 @@ export function buildPromptMemoryText(memory: MemoryState, pieces: MemoryPiece[]
         `- groupId=${group.id} status=${group.status} label=${group.routingLabel} summary=${group.summary}`,
       );
     }
+    lines.push(
+      "Group summaries are summaries only. For verbatim or formatting-sensitive output, use visible exact pieces or recall; do not reconstruct byte-exact text from a summary.",
+    );
+    lines.push(
+      "If the user asks for an exact original block, snippet, template, or raw text and that full raw text is not visibly present in <exact_pieces>, you must use recall before answering.",
+    );
     lines.push("</groups>");
   }
   lines.push("<exact_pieces>");
@@ -151,6 +153,12 @@ export function buildPromptMemoryText(memory: MemoryState, pieces: MemoryPiece[]
     );
     lines.push(
       "Prefer answering from active memory first. If you do use recall, request enough chronological coverage to satisfy the task and err on asking for more archived pieces rather than fewer.",
+    );
+    lines.push(
+      "If the task asks for verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction and the needed raw source is not visibly present above, use recall instead of reconstructing from a summary.",
+    );
+    lines.push(
+      "Names or summaries like BLOCK23-A or SNIP26-A do not make the raw text visible. Only <exact_pieces> or recall provide the canonical raw source.",
     );
     lines.push("</archive>");
   }
@@ -215,7 +223,7 @@ function injectRecallTool(tools: unknown, shouldInject: boolean): unknown {
     type: "function",
     name: "recall",
     description:
-      "Emergency recovery of older exact archived sources in chronological order. Use only when exact needed material is missing from active memory, request enough coverage to satisfy the task, err on asking for more rather than fewer, and use at most 3 times per round.",
+      "Emergency recovery of older exact archived sources in chronological order. Use it when the user asks for exact original raw text, snippets, blocks, templates, or formatting-sensitive content that is not fully visible in active memory; request enough coverage to satisfy the task, err on asking for more rather than fewer, and use at most 3 times per round.",
     parameters: {
       type: "object",
       additionalProperties: false,

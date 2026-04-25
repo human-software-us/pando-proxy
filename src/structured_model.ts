@@ -626,6 +626,8 @@ Rules:
   - line_range using original 1-based lines
   - object_path for exact JSON paths
 - Prefer a few meaningful exact pieces over many tiny fragments.
+- When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, select the payload block itself instead of the wrapper instructions.
+- For user messages that say things like "remember this exact block" or "use this exact snippet", prefer a line_range covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
 - If splitting would be lossy or ambiguous, use whole.
 - Return JSON only.
 `.trim();
@@ -642,6 +644,8 @@ Rules:
 - Prefer original user literals and original tool results over assistant restatements.
 - Do not retain transient one-turn response-formatting instructions such as "reply X only", "answer UNKNOWN only", or "do not reveal it this round" unless they also contain durable facts that will matter later.
 - When a round contains both durable exact evidence and transient answer-formatting instructions, keep the durable evidence and drop the transient control chatter.
+- If a piece is the canonical raw source for future verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction, keep that original raw piece.
+- Do not treat a group summary as a replacement for the canonical raw source when exact reproduction of the original text may matter later.
 - groupId must be an active group when keep=true.
 - When keep=false, set groupId to null and supersedesPieceIds to [].
 - supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
@@ -693,6 +697,8 @@ Rules:
 - Drop only old pieces that are clearly obsolete now.
 - Prefer to keep earlier original user literals, tokens, constraints, and exact values when later rounds may still depend on them.
 - Prefer to drop transient response-formatting or acknowledgment pieces before dropping earlier durable exact evidence.
+- Do not drop the only remaining canonical raw source for material that may need verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction later.
+- For formatting-sensitive blocks or snippets, prefer to keep the original raw source piece rather than relying on the group summary alone.
 - If unsure, keep the old piece.
 - Return JSON only.
 `.trim();
