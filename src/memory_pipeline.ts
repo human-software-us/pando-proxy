@@ -79,10 +79,12 @@ export async function updateMemoryForCompletedRound(
       previewText: previewForGroupIntent(source.payload),
       ...(source.pointer ? { pointer: source.pointer } : {}),
     }));
-  const [chunked, groupIntent] = await Promise.all([
-    chunkRoundSources(sources, clients),
-    requestGroupIntent(previous, userPiecesForGroupIntent, clients),
-  ]);
+  const [chunked, groupIntent] = await settledPair(
+    [
+      chunkRoundSources(sources, clients),
+      requestGroupIntent(previous, userPiecesForGroupIntent, clients),
+    ],
+  );
 
   await logContext.logger?.log("memory_round_chunked", {
     sessionKey: logContext.sessionKey,
@@ -155,4 +157,18 @@ export function filterPersistableRoundSources(
 function previewForGroupIntent(value: unknown): string {
   const text = typeof value === "string" ? value : stableJson(value);
   return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+}
+
+async function settledPair<A, B>(promises: [Promise<A>, Promise<B>]): Promise<[A, B]> {
+  const results = await Promise.allSettled(promises);
+  const rejected = results.find((result): result is PromiseRejectedResult =>
+    result.status === "rejected"
+  );
+  if (rejected) {
+    throw rejected.reason;
+  }
+  return [
+    (results[0] as PromiseFulfilledResult<A>).value,
+    (results[1] as PromiseFulfilledResult<B>).value,
+  ];
 }

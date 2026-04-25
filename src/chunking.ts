@@ -187,7 +187,7 @@ async function chunkBatchWithModel(
   sources: RoundSource[],
   clients: StructuredClients,
 ): Promise<Map<string, ChunkSelector[]>> {
-  const response = await clients.sourceChunkBatch({
+  const request = {
     sources: sources.map((source) => ({
       sourceId: source.sourceId,
       sourceKind: source.sourceKind,
@@ -195,7 +195,10 @@ async function chunkBatchWithModel(
       contentText: sourceTextView(source),
       ...(source.pointer ? { pointer: source.pointer } : {}),
     })),
-  });
+  };
+  const response = await requestChunkBatchWithSingleRetry(
+    (attempt) => clients.sourceChunkBatch(request, attempt),
+  );
   const byId = new Map<string, ChunkSelector[]>();
   for (const entry of response.results ?? []) {
     byId.set(
@@ -206,6 +209,22 @@ async function chunkBatchWithModel(
     );
   }
   return byId;
+}
+
+async function requestChunkBatchWithSingleRetry(
+  invoke: (
+    attempt: number,
+  ) => Promise<{ results?: Array<{ sourceId: string; selectors?: ChunkSelector[] }> }>,
+): Promise<{ results?: Array<{ sourceId: string; selectors?: ChunkSelector[] }> }> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await invoke(attempt);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 function buildPointer(

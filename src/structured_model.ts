@@ -698,8 +698,9 @@ Return JSON matching the supplied schema.
 
 Rules:
 - You are given the current groups, surviving old pieces, and newly kept pieces.
-- dropPieceIds must be a subset of the ids from retainedOldPieces plus keptNewPieces.
-- Drop only pieces that are clearly obsolete now.
+- dropPieceIds must be a subset of ids from retainedOldPieces only.
+- Newly kept pieces are shown as context only; do not drop them in this call.
+- Drop only old pieces that are clearly obsolete now.
 - Prefer to keep earlier original user literals, tokens, constraints, and exact values when later rounds may still depend on them.
 - Prefer to drop transient response-formatting, acknowledgment, or answer-shape pieces before dropping earlier durable exact evidence.
 - Drop current-turn answer-shape requests such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" prompts before dropping durable exact evidence.

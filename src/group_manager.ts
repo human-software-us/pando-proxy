@@ -270,11 +270,10 @@ export async function applyGroupUpdate(
 
   const prunedPieceIds = new Set(retainedPiecePrune.dropPieceIds);
   const keptOldPieces = prelimKeptOldPieces.filter((piece) => !prunedPieceIds.has(piece.id));
-  const finalKeptNewPieces = keptNewPieces.filter((piece) => !prunedPieceIds.has(piece.id));
   const memory = pruneMemoryState({
     roundSeq: nextSeq,
     groups: groupsAfter,
-    pieces: chronologicalPieces([...keptOldPieces, ...finalKeptNewPieces]),
+    pieces: chronologicalPieces([...keptOldPieces, ...keptNewPieces]),
     processedSourceIds: unique([
       ...state.processedSourceIds,
       ...newPieces.map((piece) => piece.sourceId),
@@ -290,10 +289,10 @@ export async function applyGroupUpdate(
     droppedOldPieceIds: state.pieces.map((piece) => piece.id).filter((id) =>
       !keptOldPieces.some((piece) => piece.id === id)
     ),
-    keptNewPieceIds: finalKeptNewPieces.map((piece) => piece.id),
+    keptNewPieceIds: keptNewPieces.map((piece) => piece.id),
     droppedNewPieceIds: newPieces
       .map((piece) => piece.id)
-      .filter((id) => !finalKeptNewPieces.some((piece) => piece.id === id)),
+      .filter((id) => !keptNewPieces.some((piece) => piece.id === id)),
   };
 }
 
@@ -325,13 +324,23 @@ async function requestWithSingleRetry<T>(
   name: string,
 ): Promise<T> {
   let lastErrors: string[] = [];
+  let lastInvokeError: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const raw = await invoke(attempt);
+    let raw: unknown;
+    try {
+      raw = await invoke(attempt);
+    } catch (error) {
+      lastInvokeError = error;
+      continue;
+    }
     const parsed = parse(raw);
     if (parsed.ok) {
       return parsed.value;
     }
     lastErrors = parsed.errors;
+  }
+  if (lastInvokeError && lastErrors.length === 0) {
+    throw lastInvokeError;
   }
   throw new Error(`${name} validation failed: ${lastErrors.join("; ")}`);
 }
@@ -455,15 +464,17 @@ function validateRetainedPiecePrune(
   retainedOldPieces: MemoryPiece[],
   keptNewPieces: MemoryPiece[],
 ): string[] {
-  const retainedIds = new Set([
-    ...retainedOldPieces.map((piece) => piece.id),
-    ...keptNewPieces.map((piece) => piece.id),
-  ]);
+  const retainedOldIds = new Set(retainedOldPieces.map((piece) => piece.id));
   const seenDropIds = new Set<string>();
   const errors: string[] = [];
   for (const pieceId of response.dropPieceIds) {
-    if (!retainedIds.has(pieceId)) {
-      errors.push(`retained_piece_prune references unknown kept piece ${pieceId}`);
+    if (!retainedOldIds.has(pieceId)) {
+      const newPiece = keptNewPieces.some((piece) => piece.id === pieceId);
+      errors.push(
+        newPiece
+          ? `retained_piece_prune cannot drop newly kept piece ${pieceId}`
+          : `retained_piece_prune references unknown old piece ${pieceId}`,
+      );
       continue;
     }
     if (seenDropIds.has(pieceId)) {
