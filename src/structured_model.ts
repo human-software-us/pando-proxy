@@ -536,11 +536,15 @@ You maintain durable active memory groups for a coding session.
 Return JSON matching the supplied schema.
 
 Rules:
-- You are given the current groups and the new user pieces from the latest round.
+- You are given the current groups, retained exact anchor previews for those groups, and the new user pieces from the latest round.
 - groupsAfter must be the full post-round group list.
 - Keep groupsAfter small and concrete.
 - Continue a group when the user is still working on the same thing.
+- If the user is asking a follow-up question about facts, tokens, notes, or markers already established in the same ongoing thread, continue the existing group instead of replacing it.
+- Preserve active groups by default when their retained anchor facts may still matter later, even if the current round also asks for new inspection work.
+- Do not discard an active group just because the user asks another repo-inspection question in the same broader thread.
 - Replace or close obsolete groups when the user moves on.
+- closedGroupIds and replacedGroupIds retire prior groups and those ids must not appear in groupsAfter.
 - routingLabel should be short and operational.
 - summary should say what exact evidence matters in that group.
 - Do not invent vague meta-groups.
@@ -631,7 +635,9 @@ function normalizeSourceChunkBatchResponse(
   };
 }
 
-function defaultSourceChunkBatchResponse(request: SourceChunkBatchRequest): SourceChunkBatchResponse {
+function defaultSourceChunkBatchResponse(
+  request: SourceChunkBatchRequest,
+): SourceChunkBatchResponse {
   return {
     results: request.sources.map((source) => ({
       sourceId: source.sourceId,

@@ -4,7 +4,7 @@
 
 `pando-proxy` is a thin local wrapper around [Codex](https://github.com/openai/codex) that inserts
 an OpenAI Responses-compatible proxy between Codex and the upstream model. The proxy maintains a
-small, mechanical task-and-piece memory so multi-round Codex sessions stay within context without
+small, mechanical group-and-piece memory so multi-round Codex sessions stay within context without
 replaying the whole history.
 
 ## Measured replay benchmarks
@@ -15,7 +15,7 @@ are indexed in [`benchmarks/SOURCES.md`](./benchmarks/SOURCES.md).
 
 `bin/replay.ts` replays a saved rollout turn by turn and compares two prompt shapes: the naive
 baseline (`without proxy`), which keeps sending the accumulated conversation history each round, and
-the Pando rewrite (`with proxy`), which sends the compact task-and-piece memory prompt instead.
+the Pando rewrite (`with proxy`), which sends the compact group-memory prompt instead.
 
 The current public reruns on the shipped lossless memory manager use deterministic stub replay
 (`--policy drop-tools`), which makes them cheap to reproduce locally while still exercising the
@@ -51,9 +51,10 @@ average peak prompt dropped from `33,636` to `10,023` tokens.
 Long Codex sessions blow up the prompt with raw tool output and prior rounds. `pando-proxy` replaces
 that approach with:
 
-- a small task list per session
-- exact retained pieces only (no prose summaries, no preview catalogs, no embeddings)
-- aggressive end-of-turn pruning of new material through `round_update`
+- a small active-group list per session
+- exact retained pieces plus compact per-group routing summaries
+- aggressive end-of-turn pruning of new material through `group_intent`, `piece_retention_batch`,
+  and `prompt_projection`
 - an optional local `context_get({pieceIds:[...]})` or `context_get({offset,limit})` fallback the
   model can call to pull remaining exact pieces on demand
 - a separate clean finalization pass for the user-facing answer
@@ -91,10 +92,10 @@ on POST /v1/responses:
   sessionKey    = derivedFromHeadersOrBody(request, body)
   waitForAnyPendingFinalization(sessionKey)
 
-  record        = store.load(sessionKey)          # tasks + kept pieces + processedSourceIds
+  record        = store.load(sessionKey)          # groups + kept pieces + processedSourceIds + inlinePieceIds
   rewritten     = rewriteRequestWithMemory(body, record.memory)
     # drops prior-round items not needed
-    # inserts <pando_task_memory> developer block with tasks + selected exact pieces
+    # inserts <pando_group_memory> developer block with active groups + selected exact pieces
     # injects context_get if retained pieces were omitted from prompt
 
   response, fetches, assistantSources = runResponsesLoop(rewritten)
@@ -108,17 +109,26 @@ on POST /v1/responses:
       # assistant/tool -> structured piece chunker (small model)
       # pando outputs  -> deterministic splitter
 
-    update = round_update(
-      tasks          = record.memory.tasks,
-      retainedPieces = record.memory.pieces,
-      newPieces      = newPieces,
+    groupIntent = group_intent(
+      groups        = record.memory.groups,
+      newUserPieces = userPieces(newPieces),
     )
-    # returns: { tasksAfter, pieceSelection, keptPieceTaskLinks }
+    retention = piece_retention_batch(
+      groups               = groupIntent.groupsAfter,
+      retainedPieceAnchors = anchorPieces(record.memory.pieces),
+      newPieces            = newPieces,
+    )
+    projection = prompt_projection(
+      groups          = groupIntent.groupsAfter,
+      retainedPieces  = keep(active old pieces + retained new pieces),
+      maxInlinePieces = config.maxInlinePieces,
+    )
 
     store.save(sessionKey, {
-      tasks:              update.tasksAfter,
-      pieces:             keep(active old pieces + selected new pieces),
+      groups:             groupIntent.groupsAfter,
+      pieces:             keep(active old pieces + retained new pieces),
       processedSourceIds: record.processedSourceIds ∪ sourcesSeenThisRound,
+      inlinePieceIds:     projection.inlinePieceIds,
     })
 
   return response
@@ -128,18 +138,18 @@ on POST /v1/responses:
 
 ```
 [ leading_instructions_from_request ]
-<pando_task_memory>
-  <tasks>
-    - taskId=task:main status=open text=…current active task…
-  </tasks>
+<pando_group_memory>
+  <groups>
+    - groupId=group_1 status=active label=repo-docs summary=Update docs to match current runtime
+  </groups>
   <exact_pieces>
-    <piece pieceId="piece_17" sourceKind="tool" taskIds="task:main">…exact payload…</piece>
+    <piece pieceId=piece_17 groupId=group_1 sourceKind=tool>…exact payload…</piece>
     …
   </exact_pieces>
   <context_get>
     If the attached exact pieces are insufficient, call context_get({offset,limit}).
   </context_get>
-</pando_task_memory>
+</pando_group_memory>
 [ current_round_tail ]
 ```
 
@@ -297,7 +307,7 @@ Every wrapper/serve flag has an equivalent env var. CLI flags win; env vars fall
 | `PANDO_PROXY_LOG_FILE`                           | `--log-file`                                       |
 | `PANDO_PROXY_INLINE_PIECE_BYTE_LIMIT`            | inline payload cap (bytes)                         |
 | `PANDO_PROXY_PIECE_PREVIEW_CHAR_LIMIT`           | internal preview cap                               |
-| `PANDO_PROXY_MAX_INDEXED_PIECES_PER_TASK`        | max inline pieces per prompt                       |
+| `PANDO_PROXY_MAX_INLINE_PIECES`                  | max inline pieces per prompt                       |
 | `PANDO_PROXY_MAX_LOCAL_CONTEXT_TOOL_CALLS`       | per-round cap on `context_get(...)` calls          |
 | `PANDO_PROXY_CODEX_AUTO_COMPACT_TOKEN_LIMIT`     | `--codex-auto-compact-token-limit`                 |
 | `OPENAI_API_KEY`                                 | fallback `Authorization` if Codex doesn't send one |
@@ -306,30 +316,34 @@ Every wrapper/serve flag has an equivalent env var. CLI flags win; env vars fall
 
 Durable per-session state is just:
 
-- `tasks` (a small list of active durable tasks)
-- `pieces` (array of exact retained pieces, usually inline payloads, optionally spilled to payload
-  refs when they exceed the inline byte limit)
+- `groups` (a small list of active durable memory groups with routing labels and short summaries)
+- `pieces` (exact retained pieces linked to groups, optionally spilled to payload refs when they
+  exceed the inline byte limit)
 - `processedSourceIds`
+- `inlinePieceIds`
 
-The runtime stays exact: no summaries, no semantic rewrites, and no embedding store. Large payloads
-may be spilled to per-session payload files while preserving exact retrieval. See `REFERENCE.md` for
-the exact types.
+The runtime stays exact where it matters: retained evidence is stored as exact pieces, while the
+group layer carries only compact routing metadata (`routingLabel` and `summary`). There is still no
+embedding store. Large payloads may be spilled to per-session payload files while preserving exact
+retrieval. See `REFERENCE.md` for the exact types.
 
-At the end of each completed round, the proxy runs one structured `round_update` call with:
+At the end of each completed round, the proxy runs three structured maintenance steps:
 
-- the previous tasks
-- the previously retained pieces
-- the new exact pieces observed during the round
+- `group_intent` updates the durable active groups from the previous groups plus the new user pieces
+- `piece_retention_batch` decides which new exact pieces to keep, which group each kept piece
+  belongs to, and whether it should usually be `inline` or `omittable`
+- `prompt_projection` chooses which retained pieces should actually be inlined next round, subject
+  to `maxInlinePieces`
 
-It returns `{ tasksAfter, pieceSelection, keptPieceTaskLinks }`. New pieces are retained only when
-explicitly linked to still-active tasks. Older pieces remain while their task ids remain active.
+New pieces are retained only when explicitly linked to still-active groups. Older pieces remain
+while their groups remain active and they are not superseded by newer retained pieces.
 
 ## Prompt rewrite
 
 Each upstream request is rebuilt from:
 
 - the leading instructions in the original request
-- a single developer-role `<pando_task_memory>` block containing the active tasks and the inline
+- a single developer-role `<pando_group_memory>` block containing the active groups and the inline
   exact pieces selected for this turn
 - the current round tail (the live user message and in-flight tool results)
 
@@ -343,7 +357,7 @@ fallback, not the main retrieval path.
 Work and final answer are decoupled:
 
 1. Work pass: tools and intermediate steps allowed.
-2. Memory update: keep/drop exact pieces and update the active task set.
+2. Memory update: update groups, keep/drop exact pieces, and project the next inline set.
 3. Finalization pass: no tools, produce the user-facing answer from exact work results.
 
 The final answer should match the user's request, not the proxy's internal fragments.
@@ -357,12 +371,13 @@ When enabled, every round emits JSONL events: `incoming_request`, `rewritten_con
 `memory_round_decision`, `context_get_fetch`, `memory_round_updated`, `memory_state_saved`,
 `round_complete`.
 
-`round_complete` is the round-level aggregate: current task ids/count, piece ids/count, total stored
-piece bytes, processed source count, local fetch count and returned ids, token usage, and any
-memory-update error.
+`round_complete` is the round-level aggregate: current group ids/count, piece ids/count, total
+stored piece bytes, processed source count, inline piece ids/count, local fetch count and returned
+ids, internal structured-model usage, aggregate token usage, and any memory-update error.
 
-`memory_round_decision` records the task set before and after the round, the new-piece selection,
-the new kept-piece task links, and the explicit kept/dropped ids for that round.
+`memory_round_decision` records the group set before and after the round, retired group ids, piece
+retention decisions, the new inline-piece projection, and the explicit kept/dropped piece ids for
+that round.
 
 ## Local development
 
@@ -394,7 +409,7 @@ Core implementation:
 - `src/server.ts` — HTTP proxy for `/v1/responses`
 - `src/upstream.ts` — upstream call + local `context_get(...)` interception
 - `src/prompt_view.ts` — request rewrite with working memory
-- `src/memory_pipeline.ts`, `src/round_update.ts` — end-of-round task/piece update
+- `src/memory_pipeline.ts`, `src/group_manager.ts` — end-of-round group/piece update
 - `src/chunking.ts`, `src/tool_results.ts` — source chunking
 - `src/store.ts`, `src/memory_state.ts` — session state on disk
 - `src/structured_model.ts` — small/overflow structured-model clients

@@ -2,18 +2,21 @@
 
 This document describes the current shipped runtime schema and maintenance contracts.
 
-## `Task`
+## `MemoryGroup`
 
 ```ts
-type Task = {
+type MemoryGroup = {
   id: string;
-  text: string;
-  status: "open" | "closed";
-  kind: "do";
+  status: "active" | "closed";
+  routingLabel: string;
+  summary: string;
+  lastTouchedSeq: number;
 };
 ```
 
-## `Piece`
+`summary` is compact routing metadata for the group. Exact retained evidence still lives in pieces.
+
+## `MemoryPiece`
 
 ```ts
 type ChunkSelector =
@@ -21,15 +24,16 @@ type ChunkSelector =
   | { kind: "line_range"; startLine: number; endLine: number }
   | { kind: "object_path"; path: Array<string | number> };
 
-type PieceRecord = {
+type MemoryPiece = {
   id: string;
+  groupId: string;
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  taskIds: string[];
+  visibility: "inline" | "omittable";
   payloadInline?: unknown;
   payloadRef?: string;
-  previewText?: string;
+  previewText: string;
   pointer?: Record<string, unknown>;
   byteSize: number;
   createdSeq: number;
@@ -37,35 +41,74 @@ type PieceRecord = {
 };
 ```
 
+Large piece payloads may be written to per-session payload files and referenced through
+`payloadRef`. Retrieval still returns the exact original payload.
+
 ## Session State
 
 ```ts
 type MemoryState = {
   roundSeq: number;
-  tasks: Task[];
-  pieces: PieceRecord[];
+  groups: MemoryGroup[];
+  pieces: MemoryPiece[];
   processedSourceIds: string[];
+  inlinePieceIds: string[];
 };
 ```
 
-Large piece payloads may be written to per-session payload files and referenced through
-`payloadRef`. Retrieval still returns the exact original payload.
+`inlinePieceIds` is the prompt projection for the next round. Retained pieces not in that list stay
+durable and retrievable through `context_get`.
 
-## `round_update`
+## `group_intent`
 
 Request:
 
 ```ts
-type RoundUpdateRequest = {
-  tasks: Task[];
-  retainedPieces: Array<{
+type GroupIntentRequest = {
+  groups: MemoryGroup[];
+  newUserPieces: Array<{
     id: string;
+    sourceId: string;
+    content: unknown;
+    previewText: string;
+    pointer?: Record<string, unknown>;
+  }>;
+};
+```
+
+Response:
+
+```ts
+type GroupIntentResponse = {
+  groupsAfter: MemoryGroup[];
+  closedGroupIds: string[];
+  replacedGroupIds: string[];
+};
+```
+
+Validation rules:
+
+- every `groupsAfter` entry must have `id`, `status`, `routingLabel`, `summary`, and
+  `lastTouchedSeq`
+- every group id must be unique and non-empty
+- retired ids in `closedGroupIds` and `replacedGroupIds` must be non-empty
+- retired ids must not also appear in `groupsAfter`
+
+## `piece_retention_batch`
+
+Request:
+
+```ts
+type PieceRetentionBatchRequest = {
+  groups: MemoryGroup[];
+  retainedPieceAnchors: Array<{
+    id: string;
+    groupId: string;
     sourceKind: "user" | "assistant" | "tool";
     sourceId: string;
     toolName?: string;
-    content: unknown;
-    pointer?: Record<string, unknown>;
-    taskIds: string[];
+    previewText: string;
+    createdSeq: number;
   }>;
   newPieces: Array<{
     id: string;
@@ -73,6 +116,7 @@ type RoundUpdateRequest = {
     sourceId: string;
     toolName?: string;
     content: unknown;
+    previewText: string;
     pointer?: Record<string, unknown>;
   }>;
 };
@@ -81,57 +125,91 @@ type RoundUpdateRequest = {
 Response:
 
 ```ts
-type PieceSelection =
-  | { mode: "keep_all" }
-  | { mode: "drop_all" }
-  | { mode: "keep_only"; ids: string[] }
-  | { mode: "drop_only"; ids: string[] };
+type PieceRetentionDecision = {
+  pieceId: string;
+  keep: boolean;
+  groupId?: string;
+  supersedesPieceIds: string[];
+  visibility: "inline" | "omittable";
+};
 
-type RoundUpdateResponse = {
-  tasksAfter: Task[];
-  pieceSelection: PieceSelection;
-  keptPieceTaskLinks: Array<{
-    id: string;
-    taskIds: string[];
-  }>;
+type PieceRetentionBatchResponse = {
+  decisions: PieceRetentionDecision[];
 };
 ```
 
 Validation rules:
 
-- every `tasksAfter` entry must have `id`, `text`, `status`, and `kind`
-- `pieceSelection` applies to `newPieces`
-- every kept new piece id must exist in `newPieces`
-- every kept new piece must appear in `keptPieceTaskLinks`
-- every linked task id in `keptPieceTaskLinks` must exist in `tasksAfter`
-- older retained pieces remain only if their linked task ids still exist after cleanup
+- every `newPieces` entry must have exactly one decision
+- every kept piece must reference an active group in `groups`
+- `visibility` must be either `inline` or `omittable`
+- every superseded piece id must reference an older retained piece
 
-## `source_chunk`
+## `prompt_projection`
 
 Request:
 
 ```ts
-type SourceChunkRequest = {
-  sourceKind: "assistant" | "tool";
-  toolName?: string;
-  content: unknown;
-  pointer?: Record<string, unknown>;
+type PromptProjectionRequest = {
+  groups: MemoryGroup[];
+  retainedPieces: Array<{
+    id: string;
+    groupId: string;
+    sourceKind: "user" | "assistant" | "tool";
+    previewText: string;
+    visibility: "inline" | "omittable";
+    createdSeq: number;
+  }>;
+  maxInlinePieces: number;
 };
 ```
 
 Response:
 
 ```ts
-type SourceChunkResponse = {
-  chunks: Array<
-    | { kind: "whole" }
-    | { kind: "line_range"; startLine: number; endLine: number }
-    | { kind: "object_path"; path: Array<string | number> }
-  >;
+type PromptProjectionResponse = {
+  inlinePieceIds: string[];
 };
 ```
 
-The proxy materializes exact pieces from the original source using these selectors.
+Validation rules:
+
+- every `inlinePieceIds` entry must exist in `retainedPieces`
+- `inlinePieceIds.length` must not exceed `maxInlinePieces`
+
+## `source_chunk_batch`
+
+Request:
+
+```ts
+type SourceChunkBatchRequest = {
+  sources: Array<{
+    sourceId: string;
+    sourceKind: "assistant" | "tool";
+    toolName?: string;
+    content: unknown;
+    pointer?: Record<string, unknown>;
+  }>;
+};
+```
+
+Response:
+
+```ts
+type SourceChunkBatchResponse = {
+  results: Array<{
+    sourceId: string;
+    selectors: Array<
+      | { kind: "whole" }
+      | { kind: "line_range"; startLine: number; endLine: number }
+      | { kind: "object_path"; path: Array<string | number> }
+    >;
+  }>;
+};
+```
+
+The proxy materializes exact pieces from the original source using these selectors. User messages
+are retained as whole pieces and do not go through `source_chunk_batch`.
 
 ## `context_get`
 
@@ -168,21 +246,25 @@ prompt and pieces already returned by earlier `context_get(...)` calls in the sa
 The rewritten prompt injects one synthetic developer message shaped like:
 
 ```xml
-<pando_task_memory>
-<tasks>
-- taskId=task:main status=open text=...
-</tasks>
+<pando_group_memory>
+<groups>
+- groupId=group_1 status=active label=repo-docs summary=Update README and REFERENCE to match current runtime
+</groups>
 <exact_pieces>
-<piece pieceId=piece_17 sourceKind=tool taskIds=task:main>
+<piece pieceId=piece_17 groupId=group_1 sourceKind=tool>
 ...
 </piece>
 </exact_pieces>
 <context_get>
 Use context_get({pieceIds:[...]}) when you know the needed piece ids.
 Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.
+If an exact value is already visible above, answer from it directly.
+Do not claim lack of access when the exact value is already visible above.
 </context_get>
-</pando_task_memory>
+</pando_group_memory>
 ```
+
+Only active groups are rendered in `<groups>`.
 
 ## Logging
 
@@ -190,6 +272,7 @@ Important log events:
 
 - `rewritten_context`
 - `structured_model_selected`
+- `structured_model_usage`
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
@@ -200,12 +283,15 @@ Important log events:
 
 `memory_round_decision` includes:
 
-- `taskIdsBefore`
-- `tasksAfter`
-- `pieceSelection`
-- `keptPieceTaskLinks`
+- `groupsBefore`
+- `groupsAfter`
+- `closedGroupIds`
+- `replacedGroupIds`
+- `pieceRetention`
+- `inlinePieceIds`
 - kept/dropped old-piece ids
 - kept/dropped new-piece ids
 
-`round_complete` includes the active task ids/count, piece ids/count, total stored piece bytes,
-processed source count, local fetch count, returned fetch ids, and any memory-update error.
+`round_complete` includes the current group ids/count, piece ids/count, total stored piece bytes,
+processed source count, inline piece ids/count, local fetch count, returned fetch ids, internal
+structured-model usage totals, aggregate usage totals, and any memory-update error.

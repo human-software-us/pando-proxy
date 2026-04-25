@@ -12,6 +12,15 @@ import {
 
 export type GroupIntentRequest = {
   groups: MemoryGroup[];
+  retainedGroupAnchors: Array<{
+    groupId: string;
+    pieceId: string;
+    sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
+    toolName?: string;
+    previewText: string;
+    createdSeq: number;
+  }>;
   newUserPieces: Array<{
     id: string;
     sourceId: string;
@@ -144,6 +153,15 @@ export async function applyGroupUpdate(
     () =>
       clients.groupIntent({
         groups: state.groups,
+        retainedGroupAnchors: retainedPieceAnchors(state.pieces).map((anchor) => ({
+          groupId: anchor.groupId,
+          pieceId: anchor.id,
+          sourceKind: anchor.sourceKind,
+          sourceId: anchor.sourceId,
+          ...(anchor.toolName ? { toolName: anchor.toolName } : {}),
+          previewText: anchor.previewText,
+          createdSeq: anchor.createdSeq,
+        })),
         newUserPieces: newPieces
           .filter((piece) => piece.sourceKind === "user")
           .map((piece) => ({
@@ -251,7 +269,9 @@ export async function applyGroupUpdate(
   };
 }
 
-function retainedPieceAnchors(pieces: MemoryPiece[]): PieceRetentionBatchRequest["retainedPieceAnchors"] {
+function retainedPieceAnchors(
+  pieces: MemoryPiece[],
+): PieceRetentionBatchRequest["retainedPieceAnchors"] {
   const byGroup = new Map<string, MemoryPiece[]>();
   for (const piece of chronologicalPieces(pieces)) {
     const groupPieces = byGroup.get(piece.groupId) ?? [];
@@ -320,9 +340,13 @@ function validateGroupIntent(response: GroupIntentResponse): string[] {
       errors.push(`group ${group.id} has invalid lastTouchedSeq`);
     }
   }
+  const groupsAfterIds = new Set(response.groupsAfter.map((group) => group.id));
   for (const groupId of [...response.closedGroupIds, ...response.replacedGroupIds]) {
     if (!groupId) {
       errors.push("closed/replaced group ids must be non-empty");
+    }
+    if (groupsAfterIds.has(groupId)) {
+      errors.push(`retired group ${groupId} must not also appear in groupsAfter`);
     }
   }
   return errors;
@@ -476,6 +500,8 @@ function coercePromptProjection(value: unknown): PromptProjectionResponse | null
   }
   const record = value as Record<string, unknown>;
   return {
-    inlinePieceIds: Array.isArray(record.inlinePieceIds) ? unique(record.inlinePieceIds.map(String)) : [],
+    inlinePieceIds: Array.isArray(record.inlinePieceIds)
+      ? unique(record.inlinePieceIds.map(String))
+      : [],
   };
 }
