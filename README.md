@@ -22,8 +22,6 @@ For the active-memory redesign in this repository:
 - validate with live E2E runs against the real backend
 - inspect logs and persisted state as the primary verification method
 
-See also [IGNORE-UNIT-TESTS-COMPLETELY.md](./IGNORE-UNIT-TESTS-COMPLETELY.md).
-
 ## Current Design
 
 The runtime is built around:
