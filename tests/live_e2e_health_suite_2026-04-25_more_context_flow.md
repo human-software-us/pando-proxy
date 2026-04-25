@@ -8,7 +8,7 @@ These were live backend E2E runs through `deno run -A src/main.ts ... exec` usin
 | --- | --- | ---: | --- | --- |
 | 1 | `019dc6aa-cf64-7f12-9f09-bbfca5c2a098` | 5 | pando-proxy docs/source, Downloads JPG/PDF metadata, Flask repo searches | Passed after one archive recall for old README bullet |
 | 2 | `019dc6ae-8d89-7690-b261-0d46111c3a86` | 5 | Downloads JPG/WAV/EXE, tiny JSON, large SRT, CSV and pipe-delimited text | Passed after one archive recall for older WAV fact |
-| 3 | `019dc6b1-2191-78a2-9e3e-b8c918ba5f1e` | 5 plus one retry | pando-extension metadata, large search output, PNG/SVG/TTF metadata, source searches | Passed; one outer Codex tool-loop stall was killed and retried |
+| 3 | `019dc6b1-2191-78a2-9e3e-b8c918ba5f1e`; rerun `019dc6cc-31ab-7d23-afdd-f57cb12c11ed` | 5 plus one retry; 5-round diagnostic rerun | pando-extension metadata, large search output, PNG/SVG/TTF metadata, source searches | Passed; original stall was isolated to a silent Codex child after proxy memory finalized, diagnostic rerun passed |
 | 4 | `019dc6ba-ccda-7d53-832a-34fe165d3fae` | 5 plus retries | gemini-cli metadata/search, dotnet-runtime metadata/search | Passed after fixes; no memory update errors in clean rerun |
 | 5 | `019dc6be-aa3b-7652-a1f7-1e1180ec1694` | 12 including corrective rounds | pando-proxy, Downloads binaries/images, Flask, pando-extension, large tables, dotnet-runtime, gemini-cli | Passed after fixing new-piece prune; final no-tool exact copy succeeded |
 
@@ -29,6 +29,7 @@ These were live backend E2E runs through `deno run -A src/main.ts ... exec` usin
 | 1 | `/tmp/pando-live-health2-t1/proxy.jsonl` | `/tmp/pando-live-health2-t1/state` | `/tmp/pando-live-health2-t1/r1.txt` through `r5.txt` |
 | 2 | `/tmp/pando-live-health2-t2/proxy.jsonl` | `/tmp/pando-live-health2-t2/state` | `/tmp/pando-live-health2-t2/r1.txt` through `r5.txt` |
 | 3 | `/tmp/pando-live-health2-t3/proxy.jsonl` | `/tmp/pando-live-health2-t3/state` | `/tmp/pando-live-health2-t3/r1.txt`, `r2.txt`, `r3b.txt`, `r4.txt`, `r5.txt` |
+| 3 diagnostic rerun | `/tmp/pando-live-health2-t3-rerun/proxy.jsonl` | `/tmp/pando-live-health2-t3-rerun/state` | `/tmp/pando-live-health2-t3-rerun/r1.txt` through `r5.txt` |
 | 4 first attempt | `/tmp/pando-live-health2-t4b/proxy.jsonl` | `/tmp/pando-live-health2-t4b/state` | Used only for failure investigation |
 | 4 clean rerun | `/tmp/pando-live-health2-t4c/proxy.jsonl` | `/tmp/pando-live-health2-t4c/state` | `/tmp/pando-live-health2-t4c/r1.txt`, `r2.txt`, `r2b.txt`, `r3.txt`, `r4.txt`, `r4b.txt`, `r5.txt` |
 | 5 | `/tmp/pando-live-health2-t5/proxy.jsonl` | `/tmp/pando-live-health2-t5/state` | `/tmp/pando-live-health2-t5/r1.txt` through `r12.txt`, with `r8b.txt` retry |
@@ -81,6 +82,24 @@ Final excerpt:
 
 ```json
 {"round4":{"activate":"132:export async function activate(context: vscode.ExtensionContext) {","pandoServiceClassMentions":46},"round3":{"media/icon.png":{"bytes":3260},"media/webview-codicon.ttf":{"bytes":80188}},"round1":{"version":"0.0.14"}}
+```
+
+Diagnostic rerun:
+
+- Original stalled request ID: `52e14550-392c-4159-8f05-358bbea53387`.
+- Original stalled thread: `019dc6b1-2191-78a2-9e3e-b8c918ba5f1e`.
+- Original evidence: the proxy logged `incoming_request`, `rewritten_context`, successful `upstream_response`, one successful `codex_exec_event` for `media/panel-icon.svg`, and then `round_complete` with `memoryUpdateError: null` and `pieceCount: 0`.
+- Original evidence: after that `round_complete`, there were no further `codex_exec_event` entries and no second upstream request before the wrapper was killed manually.
+- Conclusion from original logs: the memory manager and proxy request path finalized cleanly; the failure was an outer Codex child/tool-loop stall with stdout going silent after the first command.
+- Added diagnostics: `wrapper_codex_child_spawned`, `wrapper_exec_json_idle`, and `wrapper_exit` now report child `pid`, emitted stdout bytes, and idle log count for `exec --json` wrapper runs.
+- Rerun thread: `019dc6cc-31ab-7d23-afdd-f57cb12c11ed`.
+- Rerun result: all five rounds completed; no `wrapper_exec_json_idle` events fired, every `wrapper_exit` had `code: 0`, and every `round_complete` had `memoryUpdateError: null`.
+- Rerun memory stats: final no-tool round used one archive recall, returned `4764` archive bytes, and preserved package version `0.0.14`, `media/icon.png` bytes `3260`, `media/webview-codicon.ttf` bytes `80188`, and the round 4 source facts.
+
+Diagnostic rerun final excerpt:
+
+```json
+{"activateLine":"132:export async function activate(context: vscode.ExtensionContext) {","pandoServiceClassMentions":46,"workspaceRootsFirstThree":["113:    const workspaceRootsNow = this.resolveStartupWorkspaceRoots();","118:      workspaceRootsNow,","138:      workspaceRootsRaw: workspaceRootsNow,"],"mediaByteSizes":{"media/icon.png":3260,"media/webview-codicon.ttf":80188},"originalPackageVersion":"0.0.14"}
 ```
 
 ### Test 4 - gemini-cli to dotnet-runtime

@@ -1220,14 +1220,54 @@ async function runCodexExecJson(
       stderr: "inherit",
     });
     const child = command.spawn();
-    const stdout = pipeAndObserveExecStdout(child.stdout, observer);
+    let stdoutBytes = 0;
+    let lastStdoutAt = Date.now();
+    let lastJsonLineAt = Date.now();
+    let lastJsonLinePreview = "";
+    let idleLogCount = 0;
+    await logger.log("wrapper_codex_child_spawned", {
+      mode: "exec-json",
+      pid: child.pid,
+    });
+    const idleTimer = setInterval(() => {
+      const now = Date.now();
+      const stdoutIdleMs = now - lastStdoutAt;
+      const jsonLineIdleMs = now - lastJsonLineAt;
+      if (stdoutIdleMs < 30_000 && jsonLineIdleMs < 30_000) {
+        return;
+      }
+      idleLogCount += 1;
+      void logger.log("wrapper_exec_json_idle", {
+        pid: child.pid,
+        idleLogCount,
+        stdoutIdleMs,
+        jsonLineIdleMs,
+        stdoutBytes,
+        lastJsonLinePreview,
+      }).catch(() => {
+        // Avoid surfacing observability failures as wrapper failures.
+      });
+    }, 30_000);
+    const stdout = pipeAndObserveExecStdout(child.stdout, observer, {
+      onChunk: (bytes) => {
+        stdoutBytes += bytes;
+        lastStdoutAt = Date.now();
+      },
+      onLine: (line) => {
+        lastJsonLineAt = Date.now();
+        lastJsonLinePreview = line.length > 500 ? `${line.slice(0, 500)}...` : line;
+      },
+    });
     const status = await child.status;
+    clearInterval(idleTimer);
     await stdout;
     await logger.log("wrapper_exit", {
       mode: "exec-json",
       success: status.success,
       code: status.code,
       signal: status.signal,
+      stdoutBytes,
+      idleLogCount,
     });
     return status.code;
   } catch (error) {
@@ -1330,6 +1370,10 @@ async function runCodexForegroundDetailed(options: {
 async function pipeAndObserveExecStdout(
   stdout: ReadableStream<Uint8Array>,
   observer: CodexEventObserver,
+  diagnostics?: {
+    onChunk?: (bytes: number) => void;
+    onLine?: (line: string) => void;
+  },
 ): Promise<void> {
   const reader = stdout.getReader();
   const decoder = new TextDecoder();
@@ -1342,12 +1386,14 @@ async function pipeAndObserveExecStdout(
     }
 
     await Deno.stdout.write(value);
+    diagnostics?.onChunk?.(value.byteLength);
     buffer += decoder.decode(value, { stream: true });
-    buffer = await observeCompleteJsonLines(buffer, observer);
+    buffer = await observeCompleteJsonLines(buffer, observer, diagnostics);
   }
 
   buffer += decoder.decode();
   if (buffer.trim()) {
+    diagnostics?.onLine?.(buffer);
     await observer.observeExecJsonLine(buffer);
   }
 }
@@ -1355,10 +1401,14 @@ async function pipeAndObserveExecStdout(
 async function observeCompleteJsonLines(
   buffer: string,
   observer: CodexEventObserver,
+  diagnostics?: {
+    onLine?: (line: string) => void;
+  },
 ): Promise<string> {
   let nextNewline = buffer.indexOf("\n");
   while (nextNewline >= 0) {
     const line = buffer.slice(0, nextNewline);
+    diagnostics?.onLine?.(line);
     await observer.observeExecJsonLine(line);
     buffer = buffer.slice(nextNewline + 1);
     nextNewline = buffer.indexOf("\n");
