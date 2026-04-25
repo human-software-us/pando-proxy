@@ -1,4 +1,5 @@
 {
+  "historical_note": "Produced before the lossless task-and-piece memory-manager rewrite. Preserved for reference only until rerun on the current implementation.",
   "samples": 20,
   "totalRounds": 3807,
   "avgBaselineMin": 2069,

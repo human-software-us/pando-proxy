@@ -76,11 +76,19 @@ function config(): ProxyConfig {
     piecePreviewCharLimit: 80,
     maxIndexedPiecesPerTask: 8,
     maxLocalContextToolCalls: 3,
+    codexAutoCompactTokenLimit: 280_000,
   };
 }
 
 function stubClients(
-  sourceChunkResponse: { chunks: Array<{ kind: "whole" } | { kind: "line_range"; startLine: number; endLine: number } | { kind: "object_path"; path: Array<string | number> }> } = { chunks: [{ kind: "whole" }] },
+  sourceChunkResponse: {
+    chunks: Array<
+      { kind: "whole" } | { kind: "line_range"; startLine: number; endLine: number } | {
+        kind: "object_path";
+        path: Array<string | number>;
+      }
+    >;
+  } = { chunks: [{ kind: "whole" }] },
 ): StructuredClients {
   return {
     roundUpdate: async () => ({

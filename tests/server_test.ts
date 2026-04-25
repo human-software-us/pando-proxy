@@ -37,7 +37,11 @@ Deno.test("server rewrites with task memory and services context_get locally", a
     if (formatName === "source_chunk") {
       return jsonResponse({
         output_text: JSON.stringify({ chunks: [{ kind: "whole" }] }),
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ chunks: [{ kind: "whole" }] }) }] }],
+        output: [{
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: JSON.stringify({ chunks: [{ kind: "whole" }] }) }],
+        }],
       });
     }
     if (formatName === "round_update") {
@@ -92,23 +96,25 @@ Deno.test("server rewrites with task memory and services context_get locally", a
 
   try {
     const handler = createHandler(config, store);
-    const response = await handler(new Request("http://localhost/v1/responses", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: "Bearer test",
-        "x-pando-session-id": "session_1",
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        input: [{
-          id: "user_msg_1",
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: "Please inspect the proxy" }],
-        }],
+    const response = await handler(
+      new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test",
+          "x-pando-session-id": "session_1",
+        },
+        body: JSON.stringify({
+          model: "gpt-4.1-mini",
+          input: [{
+            id: "user_msg_1",
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Please inspect the proxy" }],
+          }],
+        }),
       }),
-    }));
+    );
 
     assertEquals(response.status, 200);
     const responseJson = await response.json();
@@ -118,8 +124,16 @@ Deno.test("server rewrites with task memory and services context_get locally", a
     const rewrittenInput = firstBody.input as Array<Record<string, unknown>>;
     const memoryMessage = rewrittenInput.find((item) => item.name === "pando_task_memory");
     assertEquals(Boolean(memoryMessage), true);
-    assertMatch(String((memoryMessage?.content as Array<Record<string, unknown>>)[0].text), /pieceId=piece_1/);
-    assertEquals(((firstBody.tools as Array<Record<string, unknown>>).some((tool) => tool.name === "context_get")), true);
+    assertMatch(
+      String((memoryMessage?.content as Array<Record<string, unknown>>)[0].text),
+      /pieceId=piece_1/,
+    );
+    assertEquals(
+      (firstBody.tools as Array<Record<string, unknown>>).some((tool) =>
+        tool.name === "context_get"
+      ),
+      true,
+    );
 
     const secondBody = seenBodies[1];
     assertEquals(secondBody.previous_response_id, "resp_1");

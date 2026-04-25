@@ -1,112 +1,97 @@
 # Design Principles
 
-## 1. Keep One Live Objective
+## 1. Groups, Not Objectives
 
-The durable abstraction of ongoing work is one compact `objective`, not a graph of interdependent tasks.
+Durable memory is organized around active groups.
 
-The objective should describe the live work plainly and minimally. If the work is finished, the objective should become `null`.
+There is no session-wide objective string and no synthetic semantic compression of prior work.
 
-## 2. Exact Chunks Only
+## 2. Exact Pieces Only
 
-All retained memory outside the objective is exact content:
+Prompt-side memory contains only exact retained pieces.
 
-- exact user chunks
-- exact assistant chunks
-- exact tool chunks
+No semantic summaries, embeddings, preview catalogs, or prose reconstructions belong in the prompt
+memory block.
 
-There are no previews, summaries, pointer catalogs, or prose memory digests in the durable state.
+## 3. Semantic Decisions Belong To The Manager
 
-## 3. Inline Payloads Only
+Every non-obviously-deterministic decision must come from a manager LLM call:
 
-Every retained chunk stores its original payload directly in state.
+- group lifecycle
+- group routing
+- keep/drop
+- supersession
+- inline projection
 
-The design does not use:
+Local code must not infer these semantics.
 
-- `payloadRef`
-- blob indirection
-- external payload files as the primary representation
+## 4. Batched, Small Manager Calls
 
-Simplicity matters more than storage optimization here.
+Do not cram unrelated evaluations into one giant prompt.
 
-## 4. End-Of-Round Working-Set Update
+Use a few small batched calls instead:
 
-Memory updates run once per completed round.
+- `group_intent`
+- `source_chunk_batch`
+- `piece_retention_batch`
+- `prompt_projection`
 
-Input to the update:
+Run independent calls in parallel when possible.
 
-- previous objective
-- previous kept chunks
-- exact new content from the completed round
+## 5. Deterministic Code Is Structural Only
 
-Output from the update:
+Allowed deterministic logic:
 
-- `objectiveAfter`
-- `keepOldChunkIds`
-- `keepNewChunkIds`
+- persistence
+- chunk materialization from selectors
+- payload spill/ref handling
+- exact chronological paging for `context_get`
+- applying manager outputs
+- structural fallback such as malformed chunk selectors falling back to `whole`
 
-Everything not explicitly kept is dropped.
+Not allowed:
 
-## 5. Minimal Working Set
+- phrase matching
+- local close/replace inference
+- semantic scoring
+- semantic inline ranking
+- semantic auto-linking
 
-The system should retain only exact evidence that still matters for continuing the work or answering likely follow-up questions.
+## 6. One-Shot Structured Outputs
 
-If the model ran five searches and only one exact result mattered, the other ninety-nine chunks should be dropped immediately.
+Manager calls should use strict structured output schemas.
 
-The intended bias is:
+Policy:
 
-- prefer dropping chunks
-- keep only exact evidence that is still useful
-- clear memory completely when the work is clearly over
+- make one call
+- validate locally
+- retry once if invalid
+- if still invalid, fail the memory update and keep prior state
 
-## 6. No Preview Index By Default
+## 7. Drop Aggressively, But By Manager Decision
 
-The default rewritten prompt should contain:
+The system should keep a minimal exact retained set.
 
-- the live objective
-- the exact retained chunks selected for inline inclusion
+But that drop bias must come from manager output, not from local semantic heuristics.
 
-It should not contain:
+## 8. Prompt Projection Is Manager-Owned
 
-- preview lists
-- piece indexes
-- selector metadata
-- pointer metadata
+Which retained pieces are inline is itself a semantic choice and should be manager output.
 
-## 7. Fallback Memory Is Exceptional
+Local code should only render the chosen `inlinePieceIds`.
 
-The main path is to attach the right exact chunks up front.
+## 9. `context_get` Is Exact Fallback Only
 
-An optional local `memory(offset, limit)` fallback may exist, but only as a recovery path when the default chunk selection was insufficient.
+`context_get` exists only to fetch exact retained omitted pieces.
 
-That fallback should:
+It must remain:
 
-- exclude chunks already in the prompt
-- return exact retained chunks only
-- use deterministic chronological ordering
-- stay transparent to the user
+- exact
+- chronological when paging
+- non-semantic
 
-## 8. Cheap By Default
+## 10. Live E2E Is The Source Of Truth
 
-The system should use cheap structured-output calls by default.
+Validation should focus on real backend behavior with persisted state and logs.
 
-The proxy should not add extra ranking, repair, or retrieval-planning loops unless they are strictly necessary.
-
-## 9. Clean User-Facing Finalization
-
-The work round and the user-facing answer are different products.
-
-The proxy may use a separate finalization pass with no tools so the user receives a clean answer shaped around their request rather than around internal fragments and tool chatter.
-
-## 10. Observable When Enabled
-
-When logging is enabled, the memory manager should be mechanically inspectable.
-
-At minimum the logs should show:
-
-- the rewritten request shape
-- structured model selection
-- newly observed sources
-- exact chunking output
-- explicit keep/drop decisions for old and new chunks
-- local `memory` requests and returned ids
-- end-of-round aggregate memory state
+Outdated unit tests are not the correctness source for the redesign.

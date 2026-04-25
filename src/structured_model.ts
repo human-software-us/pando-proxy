@@ -1,15 +1,20 @@
+import { ProxyConfig, resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import {
-  ProxyConfig,
-  resolveUpstreamBaseUrl,
-  responsesUrl,
-} from "./config.ts";
+  type GroupIntentRequest,
+  type GroupIntentResponse,
+  type PieceRetentionBatchRequest,
+  type PieceRetentionBatchResponse,
+  type PromptProjectionRequest,
+  type PromptProjectionResponse,
+  type SourceChunkBatchRequest,
+  type SourceChunkBatchResponse,
+} from "./group_manager.ts";
 import { extractJsonObject, stableJson } from "./json.ts";
 import { extractUsageMetrics, type UsageMetrics } from "./metrics.ts";
-import { ChunkSelector } from "./memory_state.ts";
-import { WorkingMemoryUpdateRequest, WorkingMemoryUpdateResponse } from "./round_update.ts";
+import { type ChunkSelector } from "./memory_state.ts";
 
 export type StructuredModelSelection = {
-  classifier: "working_memory_update" | "source_chunk";
+  classifier: "group_intent" | "source_chunk_batch" | "piece_retention_batch" | "prompt_projection";
   requestModel: string | null;
   estimatedInputTokens: number;
   chosenModel: string;
@@ -28,20 +33,13 @@ export type StructuredModelUsage = {
   totalTokens?: number;
 };
 
-export type SourceChunkRequest = {
-  sourceKind: "assistant" | "tool";
-  toolName?: string;
-  content: unknown;
-  pointer?: Record<string, unknown>;
-};
-
-export type SourceChunkResponse = {
-  chunks: ChunkSelector[];
-};
-
 export type StructuredClients = {
-  workingMemoryUpdate: (request: WorkingMemoryUpdateRequest) => Promise<WorkingMemoryUpdateResponse>;
-  sourceChunk: (request: SourceChunkRequest) => Promise<SourceChunkResponse>;
+  groupIntent: (request: GroupIntentRequest) => Promise<GroupIntentResponse>;
+  sourceChunkBatch: (request: SourceChunkBatchRequest) => Promise<SourceChunkBatchResponse>;
+  pieceRetentionBatch: (
+    request: PieceRetentionBatchRequest,
+  ) => Promise<PieceRetentionBatchResponse>;
+  promptProjection: (request: PromptProjectionRequest) => Promise<PromptProjectionResponse>;
 };
 
 const OUTPUT_TOKEN_RESERVE = 4_096;
@@ -63,58 +61,95 @@ export function createStructuredClients(
   onUsage?: (usage: StructuredModelUsage) => Promise<void> | void,
 ): StructuredClients {
   return {
-    workingMemoryUpdate: async (request) => {
-      const result = await callStructuredJson<WorkingMemoryUpdateResponse>(
+    groupIntent: async (request) => {
+      const result = await callStructuredJson<GroupIntentResponse>(
         config,
         requestModel,
         authHeader,
-        workingMemoryUpdateSystemPrompt,
+        groupIntentSystemPrompt,
         request,
-        workingMemoryUpdateJsonSchema,
-        "working_memory_update",
+        groupIntentJsonSchema,
+        "group_intent",
         onSelection,
       );
-      await onUsage?.({
-        classifier: result.selection.classifier,
-        requestModel: result.selection.requestModel,
-        chosenModel: result.selection.chosenModel,
-        estimatedInputTokens: result.selection.estimatedInputTokens,
-        selectionReason: result.selection.selectionReason,
-        inputTokens: result.usage?.inputTokens,
-        cachedInputTokens: result.usage?.cachedInputTokens,
-        outputTokens: result.usage?.outputTokens,
-        totalTokens: result.usage?.totalTokens,
-      });
+      await emitUsage(result, onUsage);
       return result.value;
     },
-    sourceChunk: async (request) => {
-      if (!canFitOverflowModel(config, sourceChunkSystemPrompt, request, sourceChunkJsonSchema)) {
-        return { chunks: [{ kind: "whole" }] };
+    sourceChunkBatch: async (request) => {
+      if (
+        !canFitOverflowModel(
+          config,
+          sourceChunkBatchSystemPrompt,
+          request,
+          sourceChunkBatchJsonSchema,
+        )
+      ) {
+        return {
+          results: request.sources.map((source) => ({
+            sourceId: source.sourceId,
+            selectors: [{ kind: "whole" } satisfies ChunkSelector],
+          })),
+        };
       }
-      const result = await callStructuredJson<SourceChunkResponse>(
+      const result = await callStructuredJson<SourceChunkBatchResponse>(
         config,
         requestModel,
         authHeader,
-        sourceChunkSystemPrompt,
+        sourceChunkBatchSystemPrompt,
         request,
-        sourceChunkJsonSchema,
-        "source_chunk",
+        sourceChunkBatchJsonSchema,
+        "source_chunk_batch",
         onSelection,
       );
-      await onUsage?.({
-        classifier: result.selection.classifier,
-        requestModel: result.selection.requestModel,
-        chosenModel: result.selection.chosenModel,
-        estimatedInputTokens: result.selection.estimatedInputTokens,
-        selectionReason: result.selection.selectionReason,
-        inputTokens: result.usage?.inputTokens,
-        cachedInputTokens: result.usage?.cachedInputTokens,
-        outputTokens: result.usage?.outputTokens,
-        totalTokens: result.usage?.totalTokens,
-      });
+      await emitUsage(result, onUsage);
+      return normalizeSourceChunkBatchResponse(request, result.value);
+    },
+    pieceRetentionBatch: async (request) => {
+      const result = await callStructuredJson<PieceRetentionBatchResponse>(
+        config,
+        requestModel,
+        authHeader,
+        pieceRetentionBatchSystemPrompt,
+        request,
+        pieceRetentionBatchJsonSchema,
+        "piece_retention_batch",
+        onSelection,
+      );
+      await emitUsage(result, onUsage);
+      return result.value;
+    },
+    promptProjection: async (request) => {
+      const result = await callStructuredJson<PromptProjectionResponse>(
+        config,
+        requestModel,
+        authHeader,
+        promptProjectionSystemPrompt,
+        request,
+        promptProjectionJsonSchema,
+        "prompt_projection",
+        onSelection,
+      );
+      await emitUsage(result, onUsage);
       return result.value;
     },
   };
+}
+
+async function emitUsage<T>(
+  result: StructuredJsonCallResult<T>,
+  onUsage?: (usage: StructuredModelUsage) => Promise<void> | void,
+): Promise<void> {
+  await onUsage?.({
+    classifier: result.selection.classifier,
+    requestModel: result.selection.requestModel,
+    chosenModel: result.selection.chosenModel,
+    estimatedInputTokens: result.selection.estimatedInputTokens,
+    selectionReason: result.selection.selectionReason,
+    inputTokens: result.usage?.inputTokens,
+    cachedInputTokens: result.usage?.cachedInputTokens,
+    outputTokens: result.usage?.outputTokens,
+    totalTokens: result.usage?.totalTokens,
+  });
 }
 
 export function canFitOverflowModel(
@@ -133,7 +168,8 @@ export function estimateStructuredInputTokens(
   schema: JsonSchema,
 ): number {
   return Math.ceil(
-    (system.length + stableJson(payload).length + stableJson(schema).length) / APPROX_CHARS_PER_TOKEN,
+    (system.length + stableJson(payload).length + stableJson(schema).length) /
+      APPROX_CHARS_PER_TOKEN,
   );
 }
 
@@ -148,10 +184,19 @@ async function callStructuredJson<T>(
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
 ): Promise<StructuredJsonCallResult<T>> {
   if (!authHeader) {
-    throw new Error("No Authorization header or OPENAI_API_KEY available for structured model calls");
+    throw new Error(
+      "No Authorization header or OPENAI_API_KEY available for structured model calls",
+    );
   }
 
-  const selection = chooseStructuredModel(config, requestModel, system, payload, schema, classifier);
+  const selection = chooseStructuredModel(
+    config,
+    requestModel,
+    system,
+    payload,
+    schema,
+    classifier,
+  );
   await onSelection?.(selection);
   const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
   const response = await fetch(url, {
@@ -268,7 +313,10 @@ function extractResponseTextFromSseText(streamText: string): string {
   return completedText || deltas.join("");
 }
 
-function extractUsageMetricsFromStructuredResponse(response: Response, bodyText: string): UsageMetrics | null {
+function extractUsageMetricsFromStructuredResponse(
+  response: Response,
+  bodyText: string,
+): UsageMetrics | null {
   if (isEventStream(response, bodyText)) {
     return extractUsageMetricsFromSseText(bodyText);
   }
@@ -401,76 +449,219 @@ const chunkSelectorSchema = {
   ],
 };
 
-const workingMemoryUpdateJsonSchema = {
+const groupSchema = {
   type: "object",
   properties: {
-    objectiveAfter: { anyOf: [{ type: "string" }, { type: "null" }] },
-    keepOldChunkIds: { type: "array", items: { type: "string" } },
-    keepNewChunkIds: { type: "array", items: { type: "string" } },
+    id: { type: "string" },
+    status: { type: "string", enum: ["active", "closed"] },
+    routingLabel: { type: "string" },
+    summary: { type: "string" },
+    lastTouchedSeq: { type: "integer", minimum: 0 },
   },
-  required: ["objectiveAfter", "keepOldChunkIds", "keepNewChunkIds"],
+  required: ["id", "status", "routingLabel", "summary", "lastTouchedSeq"],
   additionalProperties: false,
 };
 
-const sourceChunkJsonSchema = {
+const groupIntentJsonSchema = {
   type: "object",
   properties: {
-    chunks: { type: "array", items: chunkSelectorSchema },
+    groupsAfter: { type: "array", items: groupSchema },
+    closedGroupIds: { type: "array", items: { type: "string" } },
+    replacedGroupIds: { type: "array", items: { type: "string" } },
   },
-  required: ["chunks"],
+  required: ["groupsAfter", "closedGroupIds", "replacedGroupIds"],
   additionalProperties: false,
 };
 
-const workingMemoryUpdateSystemPrompt = `
-You maintain one live objective and a minimal exact working-memory set.
+const sourceChunkBatchJsonSchema = {
+  type: "object",
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          sourceId: { type: "string" },
+          selectors: { type: "array", items: chunkSelectorSchema },
+        },
+        required: ["sourceId", "selectors"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["results"],
+  additionalProperties: false,
+};
+
+const pieceRetentionBatchJsonSchema = {
+  type: "object",
+  properties: {
+    decisions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          pieceId: { type: "string" },
+          keep: { type: "boolean" },
+          groupId: {
+            anyOf: [
+              { type: "string" },
+              { type: "null" },
+            ],
+          },
+          supersedesPieceIds: { type: "array", items: { type: "string" } },
+          visibility: { type: "string", enum: ["inline", "omittable"] },
+        },
+        required: ["pieceId", "keep", "groupId", "supersedesPieceIds", "visibility"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["decisions"],
+  additionalProperties: false,
+};
+
+const promptProjectionJsonSchema = {
+  type: "object",
+  properties: {
+    inlinePieceIds: { type: "array", items: { type: "string" } },
+  },
+  required: ["inlinePieceIds"],
+  additionalProperties: false,
+};
+
+const groupIntentSystemPrompt = `
+You maintain durable active memory groups for a coding session.
 
 Return JSON matching the supplied schema.
 
 Rules:
-- You are given the current objective, the currently kept exact chunks, and the exact new chunks from the latest completed round.
-- objectiveAfter must be a compact description of the live work that still matters after this round, or null if the work is finished and no memory should remain.
-- objectiveAfter may include compact literal anchors such as exact identifiers, key/value pairs, quoted phrases, or short command names when that improves exact later reconstruction.
-- Keep objectiveAfter compact. Do not duplicate large blobs, long logs, or full tool outputs there when exact chunks can carry that evidence instead.
-- Existing objective stays live by default. Do not clear it unless the user clearly ended, abandoned, or replaced that work.
-- keepOldChunkIds must be the exact ids from the current kept set that should survive.
-- keepNewChunkIds must be the exact ids from the new chunk set that should survive.
-- Keep the working set minimal.
-- Prefer dropping chunks unless there is a clear reason they will matter later.
-- If many search results or exploratory outputs were observed and only one exact chunk mattered, keep only that one.
-- Keep enough exact evidence so a future memory({chunkIds:[...]}) or memory({offset, limit}) fallback is unlikely to be needed.
-- If the user clearly says exact values or content will be needed later, keep the exact supporting chunks.
-- If an older exact chunk still supports the live objective, keep it unless it is clearly obsolete.
-- Retained exact chunks can later be fetched again by chunk id, and pagination skips chunks already visible in prompt memory.
-- Do not replace original tool or user evidence with an assistant restatement when the original exact chunk is still available.
-- Do not keep user instruction text that only says to remember or recall something when the actual exact supporting chunk is already kept.
-- Do not keep assistant acknowledgements, chatter, or confirmations when the underlying exact evidence is already kept.
-- Prefer original tool outputs over user instructions and assistant restatements whenever both carry the same fact.
-- In a tool-driven recall flow, the ideal retained set is usually just the original exact tool chunk and nothing else.
-- If a retained exact chunk explicitly tells the model to call memory({chunkIds:[...]}) or memory({offset, limit}), and the user says that exact instruction will matter in a later turn, keep that instruction chunk together with the underlying exact evidence it is meant to retrieve.
-- In that special case, keep both the visible instruction chunk and the hidden exact evidence chunk so fallback can actually be exercised later.
-- If a user message is operational scaffolding such as "run this", "remember this", "reply exactly", or "without running any tool", drop it once the exact evidence it referred to is retained elsewhere.
-- Never keep a plain user question or request phrasing as retained memory unless that user chunk itself carries a durable exact fact that is not preserved elsewhere.
-- A user chunk carries a durable exact fact when it contains a literal token, identifier, quoted phrase, key/value pair, or other exact value that the user said must be recalled later. In that case keep the user chunk unless the exact same literal is stored verbatim in another kept chunk.
-- "Remember this exact string: X", "Preserve token X", or similar instructions that introduce a new literal X count as durable: keep the chunk that contains X unless X is preserved elsewhere.
-- If an assistant message only says "stored", "closed", repeats a value already present in a kept exact chunk, or wraps exact content in formatting, drop it.
-- Keep user-message chunks only when they contain durable facts that are not preserved in a kept exact tool or assistant chunk.
-- If the user clearly ends the work or says the memory is no longer needed, set objectiveAfter to null and keep no chunks.
-- Do not summarize or rewrite content. Only decide the live objective and exact keep/drop ids.
+- You are given the current groups and the new user pieces from the latest round.
+- groupsAfter must be the full post-round group list.
+- Keep groupsAfter small and concrete.
+- Continue a group when the user is still working on the same thing.
+- Replace or close obsolete groups when the user moves on.
+- routingLabel should be short and operational.
+- summary should say what exact evidence matters in that group.
+- Do not invent vague meta-groups.
 - Return JSON only.
 `.trim();
 
-const sourceChunkSystemPrompt = `
-You split one exact assistant or tool payload into exact retained pieces.
+const sourceChunkBatchSystemPrompt = `
+You split assistant/tool payloads into exact retained pieces.
 
 Return JSON matching the supplied schema.
 
 Rules:
+- Process all listed sources together.
 - Do not summarize, paraphrase, or rewrite content.
-- Only return exact selectors:
-  - whole: keep the entire payload as one piece
-  - line_range: for text payloads split by original 1-based line numbers
-  - object_path: for JSON/array payloads point at an exact nested value using path segments
+- Return exact selectors only:
+  - whole
+  - line_range using original 1-based lines
+  - object_path for exact JSON paths
 - Prefer a few meaningful exact pieces over many tiny fragments.
 - If splitting would be lossy or ambiguous, use whole.
 - Return JSON only.
 `.trim();
+
+const pieceRetentionBatchSystemPrompt = `
+You decide which exact new pieces should be retained in durable memory groups.
+
+Return JSON matching the supplied schema.
+
+Rules:
+- You are given post-round groups, retained anchor pieces, and all new exact pieces.
+- Return one decision for every new piece.
+- Keep only exact pieces that materially matter later.
+- Prefer original user literals and original tool results over assistant restatements.
+- groupId must be an active group when keep=true.
+- supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
+- visibility decides whether the exact piece should usually be inlined next round or can stay retrievable.
+- Return JSON only.
+`.trim();
+
+const promptProjectionSystemPrompt = `
+You choose which retained exact pieces should be inline in the next prompt.
+
+Return JSON matching the supplied schema.
+
+Rules:
+- You are given the current groups and all retained exact piece previews.
+- inlinePieceIds must be a subset of retained piece ids.
+- Prefer pieces that are most likely needed immediately next round.
+- Respect the provided maxInlinePieces budget.
+- If a visible exact piece already answers an obvious likely follow-up, include it.
+- Return JSON only.
+`.trim();
+
+function normalizeSourceChunkBatchResponse(
+  request: SourceChunkBatchRequest,
+  value: unknown,
+): SourceChunkBatchResponse {
+  if (!value || typeof value !== "object") {
+    return defaultSourceChunkBatchResponse(request);
+  }
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.results)) {
+    return defaultSourceChunkBatchResponse(request);
+  }
+  const requestedIds = new Set(request.sources.map((source) => source.sourceId));
+  const byId = new Map<string, ChunkSelector[]>();
+  for (const entry of record.results) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      continue;
+    }
+    const item = entry as Record<string, unknown>;
+    const sourceId = typeof item.sourceId === "string" ? item.sourceId : "";
+    if (!sourceId || !requestedIds.has(sourceId)) {
+      continue;
+    }
+    const selectors = Array.isArray(item.selectors)
+      ? item.selectors
+        .map(coerceChunkSelector)
+        .filter((selector: ChunkSelector | null): selector is ChunkSelector => Boolean(selector))
+      : [];
+    byId.set(sourceId, selectors.length > 0 ? selectors : [{ kind: "whole" }]);
+  }
+  return {
+    results: request.sources.map((source) => ({
+      sourceId: source.sourceId,
+      selectors: byId.get(source.sourceId) ?? [{ kind: "whole" }],
+    })),
+  };
+}
+
+function defaultSourceChunkBatchResponse(request: SourceChunkBatchRequest): SourceChunkBatchResponse {
+  return {
+    results: request.sources.map((source) => ({
+      sourceId: source.sourceId,
+      selectors: [{ kind: "whole" }],
+    })),
+  };
+}
+
+function coerceChunkSelector(value: unknown): ChunkSelector | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "whole") {
+    return { kind: "whole" };
+  }
+  if (
+    record.kind === "line_range" &&
+    typeof record.startLine === "number" &&
+    typeof record.endLine === "number"
+  ) {
+    return { kind: "line_range", startLine: record.startLine, endLine: record.endLine };
+  }
+  if (record.kind === "object_path" && Array.isArray(record.path)) {
+    return {
+      kind: "object_path",
+      path: record.path.filter((part): part is string | number =>
+        typeof part === "string" || typeof part === "number"
+      ),
+    };
+  }
+  return null;
+}

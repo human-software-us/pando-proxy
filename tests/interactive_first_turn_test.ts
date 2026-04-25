@@ -17,7 +17,7 @@ Deno.test("first streamed turn completes without deadlocking memory persistence"
         output: [{
           type: "message",
           role: "assistant",
-          content: [{ type: "output_text", text: "{\"chunks\":[{\"kind\":\"whole\"}]}" }],
+          content: [{ type: "output_text", text: '{"chunks":[{"kind":"whole"}]}' }],
         }],
       });
     }
@@ -29,7 +29,7 @@ Deno.test("first streamed turn completes without deadlocking memory persistence"
           role: "assistant",
           content: [{
             type: "output_text",
-            text: "{\"objectiveAfter\":null,\"keepOldChunkIds\":[],\"keepNewChunkIds\":[]}",
+            text: '{"objectiveAfter":null,"keepOldChunkIds":[],"keepNewChunkIds":[]}',
           }],
         }],
       });

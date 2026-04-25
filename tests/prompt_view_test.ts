@@ -6,15 +6,39 @@ import { rewriteRequestWithMemory } from "../src/prompt_view.ts";
 Deno.test("rewriteRequestWithMemory keeps instructions and current turn only", async () => {
   const body = {
     input: [
-      { type: "message", role: "developer", content: [{ type: "input_text", text: "Always be precise." }] },
-      { id: "old_user", type: "message", role: "user", content: [{ type: "input_text", text: "old request" }] },
-      { id: "old_assistant", type: "message", role: "assistant", content: [{ type: "output_text", text: "old answer" }] },
-      { id: "new_user", type: "message", role: "user", content: [{ type: "input_text", text: "new request" }] },
+      {
+        type: "message",
+        role: "developer",
+        content: [{ type: "input_text", text: "Always be precise." }],
+      },
+      {
+        id: "old_user",
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "old request" }],
+      },
+      {
+        id: "old_assistant",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "old answer" }],
+      },
+      {
+        id: "new_user",
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "new request" }],
+      },
     ],
   };
   const memory = {
     roundSeq: 3,
-    tasks: [{ id: "task_1", text: "Inspect the proxy", status: "open" as const, kind: "do" as const }],
+    tasks: [{
+      id: "task_1",
+      text: "Inspect the proxy",
+      status: "open" as const,
+      kind: "do" as const,
+    }],
     pieces: [{
       id: "piece_1",
       sourceKind: "tool" as const,
@@ -37,14 +61,24 @@ Deno.test("rewriteRequestWithMemory keeps instructions and current turn only", a
   assertEquals(items.length, 3);
   assertEquals(items[0].role, "developer");
   assertEquals(items[2].id, "new_user");
-  assertMatch(String(((items[1].content as Array<Record<string, unknown>>)[0].text)), /<pando_task_memory>/);
+  assertMatch(
+    String((items[1].content as Array<Record<string, unknown>>)[0].text),
+    /<pando_task_memory>/,
+  );
   assert(!rewritten.diff.keptInputIds.includes("old_user"));
   assertEquals(Array.isArray(rewritten.body.tools), true);
 });
 
 Deno.test("rewriteRequestWithMemory injects piece ids for context_get lookup", async () => {
   const rewritten = await rewriteRequestWithMemory(
-    { input: [{ id: "user_1", type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }] },
+    {
+      input: [{
+        id: "user_1",
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hi" }],
+      }],
+    },
     {
       roundSeq: 1,
       tasks: [{ id: "task_1", text: "Inspect", status: "open", kind: "do" }],
@@ -65,7 +99,7 @@ Deno.test("rewriteRequestWithMemory injects piece ids for context_get lookup", a
   );
 
   const memoryItem = (rewritten.body.input as Array<Record<string, unknown>>)[0];
-  const text = String(((memoryItem.content as Array<Record<string, unknown>>)[0]).text);
+  const text = String((memoryItem.content as Array<Record<string, unknown>>)[0].text);
   assertMatch(text, /pieceId=piece_1/);
   assertMatch(text, /context_get/);
 });

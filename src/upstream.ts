@@ -3,11 +3,15 @@ import { resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import { stableJson } from "./json.ts";
 import type { ProxyLogger } from "./logger.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
-import { chronologicalChunks, type ChunkRecord, type MemoryState } from "./memory_state.ts";
-import { isRecord } from "./memory_state.ts";
-import { buildDerivedPrompt, makeWorkingMemoryItem } from "./prompt_view.ts";
+import {
+  chronologicalPieces,
+  isRecord,
+  type MemoryState,
+} from "./memory_state.ts";
+import { buildDerivedPrompt, makeGroupMemoryItem } from "./prompt_view.ts";
+import type { ExactPiece } from "./store.ts";
 import type { RoundSource } from "./tool_results.ts";
-import { extractAssistantSourcesFromResponse } from "./tool_results.ts";
+import { extractAssistantSourcesFromResponse, inputItems } from "./tool_results.ts";
 
 const hopByHopHeaders = new Set([
   "connection",
@@ -29,9 +33,11 @@ export type UpstreamOptions = {
 export type LocalContextFetch = {
   offset: number;
   limit: number;
-  requestedChunkIds?: string[];
-  returnedChunkIds: string[];
+  requestedPieceIds?: string[];
+  returnedPieceIds: string[];
 };
+
+export type ResolveExactPieces = (pieceIds: string[]) => Promise<ExactPiece[]>;
 
 export type UpstreamLoopResult =
   | {
@@ -95,25 +101,35 @@ export async function runResponsesLoop(
   config: ProxyConfig,
   options: UpstreamOptions,
   memory: MemoryState,
-  inlineChunkIds: string[],
+  inlinePieceIds: string[],
+  resolveExactPieces: ResolveExactPieces,
   sessionKey?: string,
 ): Promise<UpstreamLoopResult> {
-  let requestBody: Record<string, unknown> = { ...options.body, stream: true, store: false };
   const fetches: LocalContextFetch[] = [];
   const assistantSources: RoundSource[] = [];
-  const visibleChunkIds = new Set(inlineChunkIds);
+  const visiblePieceIds = new Set(inlinePieceIds);
   const loopOutputs: Record<string, unknown>[] = [];
 
   for (let iteration = 0; iteration <= config.maxLocalContextToolCalls; iteration += 1) {
-    requestBody = await rebuildLoopRequestBody(options.body, memory, visibleChunkIds, loopOutputs);
-    const upstream = await postResponsesJson(config, options.authHeader, requestBody, options.logger);
+    const requestBody = await rebuildLoopRequestBody(
+      options.body,
+      memory,
+      visiblePieceIds,
+      loopOutputs,
+    );
+    const upstream = await postResponsesJson(
+      config,
+      options.authHeader,
+      requestBody,
+      options.logger,
+    );
     if (!upstream.ok) {
       return { ok: false, response: upstream.response, fetches };
     }
 
     const responseBody = upstream.body;
     assistantSources.push(...await extractAssistantSourcesFromResponse(responseBody));
-    const localCalls = parseMemoryCalls(responseBody);
+    const localCalls = parseContextGetCalls(responseBody);
     if (localCalls.length === 0) {
       return {
         ok: true,
@@ -124,42 +140,149 @@ export async function runResponsesLoop(
       };
     }
     if (iteration === config.maxLocalContextToolCalls) {
-      throw new Error("Exceeded max local memory tool calls");
+      throw new Error("Exceeded max local context_get calls");
     }
 
-    const outputs: Array<Record<string, unknown>> = [];
     for (const call of localCalls) {
-      const items = resolveMemoryCallItems(memory, visibleChunkIds, call)
-        .map((chunk) => ({ id: chunk.id, content: chunk.payload }));
-      for (const item of items) {
-        visibleChunkIds.add(item.id);
+      const exactPieces = await resolvePiecesForCall(
+        memory,
+        visiblePieceIds,
+        call,
+        resolveExactPieces,
+      );
+      for (const piece of exactPieces) {
+        visiblePieceIds.add(piece.id);
       }
       fetches.push({
         offset: call.offset,
         limit: call.limit,
-        ...(call.chunkIds.length > 0 ? { requestedChunkIds: call.chunkIds } : {}),
-        returnedChunkIds: items.map((item) => item.id),
+        ...(call.pieceIds.length > 0 ? { requestedPieceIds: call.pieceIds } : {}),
+        returnedPieceIds: exactPieces.map((piece) => piece.id),
       });
-      await options.logger?.log("memory_fetch", {
+      await options.logger?.log("context_get_fetch", {
         sessionKey,
         offset: call.offset,
         limit: call.limit,
-        ...(call.chunkIds.length > 0 ? { requestedChunkIds: call.chunkIds } : {}),
-        returnedChunkIds: items.map((item) => item.id),
+        ...(call.pieceIds.length > 0 ? { requestedPieceIds: call.pieceIds } : {}),
+        returnedPieceIds: exactPieces.map((piece) => piece.id),
       });
-      outputs.push(call.item);
-      outputs.push({
+      loopOutputs.push(call.item);
+      loopOutputs.push({
         type: "function_call_output",
         call_id: call.callId,
         output: stableJson({
-          items,
+          items: exactPieces.map((piece) => ({ id: piece.id, payload: piece.payload })),
         }),
       });
     }
-    loopOutputs.push(...outputs);
   }
 
   throw new Error("Unreachable local tool loop state");
+}
+
+async function rebuildLoopRequestBody(
+  originalBody: Record<string, unknown>,
+  memory: MemoryState,
+  visiblePieceIds: Set<string>,
+  loopOutputs: Record<string, unknown>[],
+): Promise<Record<string, unknown>> {
+  const ordered = chronologicalPieces(memory.pieces);
+  const inlinePieces = ordered.filter((piece) => visiblePieceIds.has(piece.id));
+  const memoryItem = makeGroupMemoryItem(memory, inlinePieces);
+  const derived = await buildDerivedPrompt(
+    [...inputItems(originalBody.input), ...loopOutputs],
+    memoryItem,
+  );
+  return {
+    ...baseLoopRequestBody(originalBody),
+    input: derived.input,
+    stream: true,
+    store: false,
+  };
+}
+
+async function resolvePiecesForCall(
+  memory: MemoryState,
+  visiblePieceIds: Set<string>,
+  call: { offset: number; limit: number; pieceIds: string[] },
+  resolveExactPieces: ResolveExactPieces,
+): Promise<ExactPiece[]> {
+  const available = chronologicalPieces(memory.pieces).filter((piece) =>
+    !visiblePieceIds.has(piece.id)
+  );
+  const selectedIds = call.pieceIds.length > 0
+    ? call.pieceIds.filter((id) => available.some((piece) => piece.id === id))
+    : available.slice(call.offset, call.offset + call.limit).map((piece) => piece.id);
+  return await resolveExactPieces(selectedIds);
+}
+
+function parseContextGetCalls(
+  responseBody: Record<string, unknown>,
+): Array<
+  {
+    callId: string;
+    offset: number;
+    limit: number;
+    pieceIds: string[];
+    item: Record<string, unknown>;
+  }
+> {
+  const output = Array.isArray(responseBody.output) ? responseBody.output : [];
+  const out: Array<
+    {
+      callId: string;
+      offset: number;
+      limit: number;
+      pieceIds: string[];
+      item: Record<string, unknown>;
+    }
+  > = [];
+  for (const item of output) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    if (
+      item.type !== "function_call" || item.name !== "context_get" ||
+      typeof item.call_id !== "string"
+    ) {
+      continue;
+    }
+    const parsed = parseContextGetArguments(item.arguments);
+    out.push({
+      callId: item.call_id,
+      offset: parsed.offset,
+      limit: parsed.limit,
+      pieceIds: parsed.pieceIds,
+      item,
+    });
+  }
+  return out;
+}
+
+function parseContextGetArguments(
+  argumentsValue: unknown,
+): { offset: number; limit: number; pieceIds: string[] } {
+  let parsed: unknown = argumentsValue;
+  if (typeof argumentsValue === "string") {
+    parsed = JSON.parse(argumentsValue);
+  }
+  if (!isRecord(parsed)) {
+    return { offset: 0, limit: 10, pieceIds: [] };
+  }
+  const pieceIds = Array.isArray(parsed.pieceIds)
+    ? parsed.pieceIds.filter((value): value is string =>
+      typeof value === "string" && value.trim().length > 0
+    )
+    : [];
+  const offset =
+    typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0
+      ? parsed.offset
+      : 0;
+  const rawLimit = typeof parsed.limit === "number" && Number.isInteger(parsed.limit)
+    ? parsed.limit
+    : 10;
+  const limit = Math.max(1, Math.min(50, rawLimit));
+  return { offset, limit, pieceIds };
 }
 
 function baseLoopRequestBody(body: Record<string, unknown>): Record<string, unknown> {
@@ -169,10 +292,6 @@ function baseLoopRequestBody(body: Record<string, unknown>): Record<string, unkn
   delete next.stream;
   delete next.store;
   return next;
-}
-
-function inputItems(input: unknown): unknown[] {
-  return Array.isArray(input) ? [...input] : [];
 }
 
 async function postResponsesJson(
@@ -224,51 +343,6 @@ async function postResponsesJson(
   return { ok: true, body: parsed, response };
 }
 
-function parseMemoryCalls(
-  responseBody: Record<string, unknown>,
-): Array<{ callId: string; offset: number; limit: number; chunkIds: string[]; item: Record<string, unknown> }> {
-  const output = Array.isArray(responseBody.output) ? responseBody.output : [];
-  const out: Array<{ callId: string; offset: number; limit: number; chunkIds: string[]; item: Record<string, unknown> }> = [];
-  for (const item of output) {
-    if (!isRecord(item)) {
-      continue;
-    }
-    const type = typeof item.type === "string" ? item.type : "";
-    const name = typeof item.name === "string" ? item.name : "";
-    if (type !== "function_call" || name !== "memory" || typeof item.call_id !== "string") {
-      continue;
-    }
-    const parsed = parseMemoryArguments(item.arguments);
-    out.push({
-      callId: item.call_id,
-      offset: parsed.offset,
-      limit: parsed.limit,
-      chunkIds: parsed.chunkIds,
-      item,
-    });
-  }
-  return out;
-}
-
-function parseMemoryArguments(argumentsValue: unknown): { offset: number; limit: number; chunkIds: string[] } {
-  let parsed: unknown = argumentsValue;
-  if (typeof argumentsValue === "string") {
-    parsed = JSON.parse(argumentsValue);
-  }
-  if (!isRecord(parsed)) {
-    return { offset: 0, limit: 10, chunkIds: [] };
-  }
-  const chunkIds = Array.isArray(parsed.chunkIds)
-    ? parsed.chunkIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    : [];
-  const offset = typeof parsed.offset === "number" && Number.isInteger(parsed.offset) && parsed.offset >= 0
-    ? parsed.offset
-    : 0;
-  const rawLimit = typeof parsed.limit === "number" && Number.isInteger(parsed.limit) ? parsed.limit : 10;
-  const limit = Math.max(1, Math.min(50, rawLimit));
-  return { offset, limit, chunkIds };
-}
-
 function responseForClient(body: Record<string, unknown>, stream: boolean): Response {
   if (!stream) {
     return new Response(JSON.stringify(body), {
@@ -296,8 +370,7 @@ function responseForClient(body: Record<string, unknown>, stream: boolean): Resp
     response: body,
   }));
   events.push("data: [DONE]\n\n");
-  const text = events.join("");
-  return new Response(text, {
+  return new Response(events.join(""), {
     status: 200,
     headers: {
       "content-type": "text/event-stream",
@@ -333,7 +406,6 @@ function extractResponseFromSseText(streamText: string): Record<string, unknown>
     if (!data || data === "[DONE]") {
       continue;
     }
-
     let parsed: unknown;
     try {
       parsed = JSON.parse(data);
@@ -341,14 +413,18 @@ function extractResponseFromSseText(streamText: string): Record<string, unknown>
       continue;
     }
 
-    const candidate = responseObjectFromEvent(parsed);
-    if (candidate) {
-      latestResponse = candidate;
+    if (!isRecord(parsed)) {
+      continue;
     }
 
-    const itemEvent = outputItemFromEvent(parsed);
-    if (itemEvent) {
-      outputItems.set(itemEvent.outputIndex, itemEvent.item);
+    if (isRecord(parsed.response)) {
+      latestResponse = parsed.response;
+    } else if (Array.isArray(parsed.output) || typeof parsed.output_text === "string") {
+      latestResponse = parsed;
+    }
+
+    if (typeof parsed.output_index === "number" && "item" in parsed) {
+      outputItems.set(parsed.output_index, parsed.item);
     }
   }
 
@@ -363,71 +439,6 @@ function extractResponseFromSseText(streamText: string): Record<string, unknown>
   return latestResponse;
 }
 
-function responseObjectFromEvent(value: unknown): Record<string, unknown> | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  if (isRecord(value.response)) {
-    return value.response;
-  }
-  if (Array.isArray(value.output) || typeof value.output_text === "string") {
-    return value;
-  }
-  return null;
-}
-
-function outputItemFromEvent(value: unknown): { outputIndex: number; item: unknown } | null {
-  if (!isRecord(value) || typeof value.output_index !== "number" || !("item" in value)) {
-    return null;
-  }
-  return {
-    outputIndex: value.output_index,
-    item: value.item,
-  };
-}
-
 function sseEvent(event: string, payload: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
-}
-
-function buildAvailableMemoryChunks(memory: MemoryState, inlineChunkIds: string[]): ChunkRecord[] {
-  const inlineIds = new Set(inlineChunkIds);
-  return chronologicalChunks(memory.chunks).filter((chunk) => !inlineIds.has(chunk.id));
-}
-
-function resolveMemoryCallItems(
-  memory: MemoryState,
-  visibleChunkIds: Set<string>,
-  call: { offset: number; limit: number; chunkIds: string[] },
-): ChunkRecord[] {
-  const availableChunks = chronologicalChunks(memory.chunks)
-    .filter((chunk) => !visibleChunkIds.has(chunk.id));
-  if (call.chunkIds.length > 0) {
-    const byId = new Map(availableChunks.map((chunk) => [chunk.id, chunk] as const));
-    return call.chunkIds
-      .map((chunkId) => byId.get(chunkId))
-      .filter((chunk): chunk is ChunkRecord => Boolean(chunk));
-  }
-  return availableChunks.slice(call.offset, call.offset + call.limit);
-}
-
-async function rebuildLoopRequestBody(
-  originalBody: Record<string, unknown>,
-  memory: MemoryState,
-  visibleChunkIds: Set<string>,
-  loopOutputs: Record<string, unknown>[],
-): Promise<Record<string, unknown>> {
-  const ordered = chronologicalChunks(memory.chunks);
-  const inlineChunks = ordered.filter((chunk) => visibleChunkIds.has(chunk.id));
-  const memoryItem = makeWorkingMemoryItem(memory, inlineChunks);
-  const derived = await buildDerivedPrompt(
-    [...inputItems(originalBody.input), ...loopOutputs],
-    memoryItem,
-  );
-  return {
-    ...baseLoopRequestBody(originalBody),
-    input: derived.input,
-    stream: true,
-    store: false,
-  };
 }

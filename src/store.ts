@@ -4,25 +4,28 @@ import {
   assertMemoryInvariant,
   emptySessionRecord,
   isRecord,
-  type ChunkRecord,
+  type MemoryPiece,
+  pruneMemoryState,
   type SessionRecord,
 } from "./memory_state.ts";
 
-export type ExactChunk = {
+export type ExactPiece = {
   id: string;
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  selector: ChunkRecord["selector"];
+  selector: MemoryPiece["selector"];
   payload: unknown;
 };
 
 export class SessionStore {
   #root: string;
+  #inlinePieceByteLimit: number;
   #locks = new Map<string, Promise<void>>();
 
-  constructor(root: string, _inlinePieceByteLimit = Number.POSITIVE_INFINITY) {
+  constructor(root: string, inlinePieceByteLimit = Number.POSITIVE_INFINITY) {
     this.#root = expandHome(root);
+    this.#inlinePieceByteLimit = inlinePieceByteLimit;
   }
 
   async load(sessionKey: string): Promise<SessionRecord> {
@@ -34,6 +37,7 @@ export class SessionStore {
         return emptySessionRecord();
       }
       const record = parsed as SessionRecord;
+      record.memory = pruneMemoryState(record.memory);
       assertMemoryInvariant(record.memory);
       return record;
     } catch (error) {
@@ -45,27 +49,42 @@ export class SessionStore {
   }
 
   async save(sessionKey: string, record: SessionRecord): Promise<void> {
-    assertMemoryInvariant(record.memory);
     const dir = await this.#sessionDir(sessionKey);
-    await atomicWriteText(`${dir}/state.json`, `${JSON.stringify(record, null, 2)}\n`);
+    const payloadDir = `${dir}/payloads`;
+    const memory = pruneMemoryState(structuredClone(record.memory));
+
+    for (const piece of memory.pieces) {
+      if (piece.payloadInline === undefined || piece.byteSize <= this.#inlinePieceByteLimit) {
+        continue;
+      }
+      const payloadRef = piece.payloadRef ?? await this.#payloadRefForPiece(piece.id);
+      await Deno.mkdir(payloadDir, { recursive: true });
+      await atomicWriteText(`${dir}/${payloadRef}`, `${JSON.stringify(piece.payloadInline)}\n`);
+      delete piece.payloadInline;
+      piece.payloadRef = payloadRef;
+    }
+
+    assertMemoryInvariant(memory);
+    await atomicWriteText(`${dir}/state.json`, `${JSON.stringify({ memory }, null, 2)}\n`);
   }
 
-  async getExactChunks(sessionKey: string, chunkIds: string[]): Promise<ExactChunk[]> {
+  async getExactPieces(sessionKey: string, pieceIds: string[]): Promise<ExactPiece[]> {
+    const dir = await this.#sessionDir(sessionKey);
     const record = await this.load(sessionKey);
-    const byId = new Map(record.memory.chunks.map((chunk) => [chunk.id, chunk] as const));
-    const out: ExactChunk[] = [];
-    for (const chunkId of chunkIds) {
-      const chunk = byId.get(chunkId);
-      if (!chunk) {
+    const byId = new Map(record.memory.pieces.map((piece) => [piece.id, piece] as const));
+    const out: ExactPiece[] = [];
+    for (const pieceId of pieceIds) {
+      const piece = byId.get(pieceId);
+      if (!piece) {
         continue;
       }
       out.push({
-        id: chunk.id,
-        sourceKind: chunk.sourceKind,
-        sourceId: chunk.sourceId,
-        ...(chunk.toolName ? { toolName: chunk.toolName } : {}),
-        selector: chunk.selector,
-        payload: chunk.payload,
+        id: piece.id,
+        sourceKind: piece.sourceKind,
+        sourceId: piece.sourceId,
+        ...(piece.toolName ? { toolName: piece.toolName } : {}),
+        selector: piece.selector,
+        payload: await this.#readPiecePayload(dir, piece),
       });
     }
     return out;
@@ -88,6 +107,20 @@ export class SessionStore {
         this.#locks.delete(sessionKey);
       }
     }
+  }
+
+  async #readPiecePayload(dir: string, piece: MemoryPiece): Promise<unknown> {
+    if (piece.payloadInline !== undefined) {
+      return piece.payloadInline;
+    }
+    if (!piece.payloadRef) {
+      return null;
+    }
+    return JSON.parse(await Deno.readTextFile(`${dir}/${piece.payloadRef}`));
+  }
+
+  async #payloadRefForPiece(pieceId: string): Promise<string> {
+    return `payloads/${await shortHash(pieceId, 16)}.json`;
   }
 
   async #sessionDir(sessionKey: string): Promise<string> {

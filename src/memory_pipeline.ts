@@ -1,9 +1,9 @@
 import type { ProxyConfig } from "./config.ts";
 import { chunkRoundSources } from "./chunking.ts";
+import { applyGroupUpdate } from "./group_manager.ts";
 import type { ProxyLogger } from "./logger.ts";
 import { memoryStateMetrics } from "./metrics.ts";
 import type { MemoryState } from "./memory_state.ts";
-import { applyRoundUpdate } from "./round_update.ts";
 import type { StructuredClients } from "./structured_model.ts";
 import {
   extractAssistantSourcesFromResponse,
@@ -20,8 +20,8 @@ export type MemoryLogContext = {
 export type CompletedRoundMemoryResult = {
   memory: MemoryState;
   changed: boolean;
-  newChunkIds: string[];
-  droppedChunkIds: string[];
+  newPieceIds: string[];
+  droppedPieceIds: string[];
 };
 
 export async function updateMemoryForCompletedRound(
@@ -45,7 +45,7 @@ export async function updateMemoryForCompletedRound(
   await logContext.logger?.log("memory_round_sources", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    objectiveBefore: previous.objective,
+    groupIdsBefore: previous.groups.map((group) => group.id),
     sources: sources.map((source) => ({
       sourceId: source.sourceId,
       sourceKind: source.sourceKind,
@@ -63,19 +63,19 @@ export async function updateMemoryForCompletedRound(
     return {
       memory: previous,
       changed: false,
-      newChunkIds: [],
-      droppedChunkIds: [],
+      newPieceIds: [],
+      droppedPieceIds: [],
     };
   }
 
-  const beforeChunkIds = new Set(previous.chunks.map((chunk) => chunk.id));
+  const beforePieceIds = new Set(previous.pieces.map((piece) => piece.id));
   const chunked = await chunkRoundSources(sources, config, clients);
 
   await logContext.logger?.log("memory_round_chunked", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    chunkCount: chunked.length,
-    chunks: chunked.map((piece) => ({
+    pieceCount: chunked.length,
+    pieces: chunked.map((piece) => ({
       id: piece.id,
       sourceId: piece.sourceId,
       sourceKind: piece.sourceKind,
@@ -86,40 +86,46 @@ export async function updateMemoryForCompletedRound(
     })),
   });
 
-  const applied = await applyRoundUpdate(previous, chunked, clients.workingMemoryUpdate);
+  const applied = await applyGroupUpdate(
+    previous,
+    chunked,
+    clients,
+    config.maxInlinePieces,
+  );
   const next = applied.memory;
-  const afterChunkIds = new Set(next.chunks.map((chunk) => chunk.id));
+  const afterPieceIds = new Set(next.pieces.map((piece) => piece.id));
 
-  const newChunkIds = [...afterChunkIds].filter((chunkId) => !beforeChunkIds.has(chunkId));
-  const droppedChunkIds = [...beforeChunkIds].filter((chunkId) => !afterChunkIds.has(chunkId));
+  const newPieceIds = [...afterPieceIds].filter((pieceId) => !beforePieceIds.has(pieceId));
+  const droppedPieceIds = [...beforePieceIds].filter((pieceId) => !afterPieceIds.has(pieceId));
 
   await logContext.logger?.log("memory_round_decision", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    objectiveBefore: previous.objective,
-    objectiveAfter: applied.response.objectiveAfter,
-    keptOldChunkIds: applied.keptOldChunkIds,
-    droppedOldChunkIds: applied.droppedOldChunkIds,
-    keptNewChunkIds: applied.keptNewChunkIds,
-    droppedNewChunkIds: applied.droppedNewChunkIds,
-    forcedKeepOldChunkIds: applied.forcedKeepOldChunkIds,
-    forcedKeepNewChunkIds: applied.forcedKeepNewChunkIds,
-    forcedKeepReasons: applied.forcedKeepReasons,
+    groupsBefore: previous.groups,
+    groupsAfter: applied.groupIntent.groupsAfter,
+    closedGroupIds: applied.groupIntent.closedGroupIds,
+    replacedGroupIds: applied.groupIntent.replacedGroupIds,
+    pieceRetention: applied.pieceRetention.decisions,
+    inlinePieceIds: applied.promptProjection.inlinePieceIds,
+    keptOldPieceIds: applied.keptOldPieceIds,
+    droppedOldPieceIds: applied.droppedOldPieceIds,
+    keptNewPieceIds: applied.keptNewPieceIds,
+    droppedNewPieceIds: applied.droppedNewPieceIds,
   });
 
   await logContext.logger?.log("memory_round_updated", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    newChunkIds,
-    droppedChunkIds,
+    newPieceIds,
+    droppedPieceIds,
     ...memoryStateMetrics(next),
   });
 
   return {
     memory: next,
     changed: true,
-    newChunkIds,
-    droppedChunkIds,
+    newPieceIds,
+    droppedPieceIds,
   };
 }
 

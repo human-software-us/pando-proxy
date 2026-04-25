@@ -1,5 +1,6 @@
 {
   "name": "swebench_verified_devstral_top20_stub_vs_real_llm",
+  "historical_note": "Produced before the lossless task-and-piece memory-manager rewrite. The embedded stub aggregate is historical and does not match benchmarks/results/devstral_verified_top20_stub.json.",
   "dataset": "pankajmathur/devstral-24b-swebench-verified-traj",
   "dataset_url": "https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj",
   "selection_method": "top 10 by rounds, then top 10 additional by raw transcript bytes",

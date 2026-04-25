@@ -1,97 +1,107 @@
 # Context Memory Design
 
+This document describes the target groups-based memory design.
+
 ## Overview
 
-The proxy keeps context memory as:
+The proxy keeps memory as:
 
-- one live `objective`
-- exact retained chunks that still matter to that objective
+- active groups for semantic routing and lifecycle
+- exact retained pieces linked to one group each
+- a persisted inline projection for prompt inclusion
 
-It does not use preview catalogs or task-index indirection.
+The main model sees exact pieces only plus a compact list of active groups.
 
 ## Prompt-Side Representation
 
-The rewritten upstream prompt contains a deterministic memory block:
-
 ```xml
-<pando_working_memory>
-<objective>
-Find the exact deployment facts and answer the user's follow-up questions.
-</objective>
-<exact_chunks>
-<chunk id="chunk_17">
-deploy_port=9091
-</chunk>
-<chunk id="chunk_18">
-admin_email=ops@example.com
-</chunk>
-</exact_chunks>
-<memory_fallback>
-If the attached exact chunks are insufficient, call memory(offset, limit).
-This returns additional exact retained chunks not already included above.
-</memory_fallback>
-</pando_working_memory>
+<pando_group_memory>
+<groups>
+- groupId=group:token status=active label=remember-token summary=Preserve exact token BLUE-...
+</groups>
+<exact_pieces>
+<piece pieceId=piece_17 groupId=group:token sourceKind=user>
+remember this exact token: BLUE-123
+</piece>
+</exact_pieces>
+<context_get>
+Use context_get({pieceIds:[...]}) when you know the ids.
+Use context_get({offset,limit}) to browse omitted retained exact pieces.
+If the exact answer is already visible above, answer from it directly.
+</context_get>
+</pando_group_memory>
 ```
 
-This block is not a summary. It is the compact live working set.
+This block is exact memory, not a summary.
 
-## Why This Shape
+## Persisted Representation
 
-The prior design made correctness harder to reason about because the system had multiple overlapping abstractions:
+The manager persists:
 
-- raw history replay
-- live task lists
-- piece indexes with previews
-- exact-fetch by id
+- `groups`
+- `pieces`
+- `inlinePieceIds`
+- `processedSourceIds`
 
-The current design removes those layers from the default path.
+Groups are control-plane state. Pieces are exact evidence. Inline projection is a manager-chosen
+prompt projection, not a local heuristic.
 
-## End-Of-Round Update
+## Manager Responsibilities
 
-After a round completes, the proxy:
+All semantic evaluation must be done by manager LLM calls:
 
-1. extracts newly observed content from that round
-2. chunks that content into exact chunks
-3. runs `working_memory_update`
-4. stores only explicitly kept old and new chunks
-5. clears memory completely when the objective ends
+- group lifecycle: continue / redirect / replace / close / start new
+- piece retention: keep / drop / assign group / supersede / visibility
+- prompt projection: which retained exact pieces should be inline
 
-This means retention decisions are based on the full finished round, including assistant output, rather than on a partial pre-response guess.
+Deterministic local code must not infer those semantics.
 
-## Fallback Memory
+## End-Of-Round Pipeline
 
-If the default inline working set is insufficient, the model may issue:
+1. collect new round sources
+2. run `group_intent` on new user-piece previews
+3. run `source_chunk_batch` on assistant/tool sources
+4. materialize exact pieces
+5. run `piece_retention_batch` on all new pieces
+6. deterministically apply the manager outputs
+7. run `prompt_projection`
+8. persist the resulting state
 
-```json
-{ "offset": 0, "limit": 10 }
-```
+`group_intent` and `source_chunk_batch` should run in parallel.
 
-The proxy intercepts `memory` locally and returns the next chronological slice of exact retained chunks that:
+## Failure Policy
 
-- are still live
-- were not already included in the prompt
+Manager calls are strict-schema one-shot calls.
 
-This is a recovery path, not the main retrieval mechanism.
+For each manager call:
 
-## Finalization
+1. parse
+2. validate
+3. retry once if invalid
+4. if still invalid, fail the memory update and keep prior memory unchanged
 
-The model that does the work is not required to emit the final user-facing answer directly.
+There is no semantic local fallback.
 
-The recommended flow is:
+## `context_get`
 
-1. work round
-2. working-memory update
-3. final no-tool answer pass based on the exact work results
+`context_get` is a local exact retrieval fallback only.
 
-That keeps user-facing output aligned with the request rather than with internal memory fragments.
+It may fetch:
 
-## Observability
+- known exact piece ids
+- chronological pages of retained omitted pieces
 
-When logging is enabled, the memory flow around this design should make it obvious:
+It must not:
 
-- which new sources were observed
-- how they were chunked into exact chunks
-- which old and new chunks were explicitly kept or dropped
-- what the current objective became
-- which exact ids were fetched through `memory`
-- what the aggregate stored memory looked like at round end
+- rank semantically
+- search fuzzily
+- synthesize summaries
+
+## Design Intent
+
+The design is intentionally split into:
+
+- semantic control-plane decisions by manager LLM calls
+- deterministic exact-data handling by local code
+
+That keeps prompts small, keeps memory exact, and avoids local semantic heuristics.

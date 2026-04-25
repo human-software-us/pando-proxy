@@ -8,11 +8,7 @@
 //     [--real-llm --auth-from-codex]
 
 import { parseArgs } from "jsr:@std/cli/parse-args";
-import {
-  replayRollout,
-  type ReplayTurnResult,
-  type StubPolicy,
-} from "../src/replay.ts";
+import { replayRollout, type ReplayTurnResult, type StubPolicy } from "../src/replay.ts";
 import type { StructuredModelUsage } from "../src/structured_model.ts";
 
 type CliArgs = {
@@ -83,18 +79,16 @@ async function main() {
   const realLlm = Boolean(args["real-llm"]);
   let authHeader: string | undefined;
   if (realLlm) {
-    authHeader = args["auth-from-codex"]
-      ? await resolveAuthFromCodex()
-      : (() => {
-        const k = Deno.env.get("OPENAI_API_KEY") ?? "";
-        if (!k) {
-          console.error(
-            "--real-llm requires --auth-from-codex or OPENAI_API_KEY in env",
-          );
-          Deno.exit(2);
-        }
-        return `Bearer ${k}`;
-      })();
+    authHeader = args["auth-from-codex"] ? await resolveAuthFromCodex() : (() => {
+      const k = Deno.env.get("OPENAI_API_KEY") ?? "";
+      if (!k) {
+        console.error(
+          "--real-llm requires --auth-from-codex or OPENAI_API_KEY in env",
+        );
+        Deno.exit(2);
+      }
+      return `Bearer ${k}`;
+    })();
   }
 
   const label = realLlm ? `real-llm` : `policy=${policy}`;
@@ -110,7 +104,7 @@ async function main() {
   const onProgress = async (t: ReplayTurnResult) => {
     await Deno.writeTextFile(progressPath, JSON.stringify(t) + "\n", { append: true });
     console.error(
-      `  turn ${t.turn}: baseline=${t.baselineApproxInputTokens} pando=${t.pandoApproxInputTokens} chunks=${t.pandoChunkCount} bytes=${t.pandoChunkBytes}`,
+      `  turn ${t.turn}: baseline=${t.baselineApproxInputTokens} pando=${t.pandoApproxInputTokens} pieces=${t.pandoPieceCount} bytes=${t.pandoPieceBytes}`,
     );
   };
   const onManagerUsage = async (u: StructuredModelUsage) => {
@@ -138,7 +132,8 @@ async function main() {
   await Deno.writeTextFile(perTurnPath, turnsJsonl);
   await Deno.writeTextFile(statsPath, JSON.stringify(stats, null, 2) + "\n");
 
-  const header = "turn,user_preview,baseline_approx,pando_approx,recorded_input,pando_chunks,pando_bytes\n";
+  const header =
+    "turn,user_preview,baseline_approx,pando_approx,recorded_input,pando_pieces,pando_bytes\n";
   const rows = turns.map((t) =>
     [
       t.turn,
@@ -146,8 +141,8 @@ async function main() {
       t.baselineApproxInputTokens,
       t.pandoApproxInputTokens,
       t.recordedInputTokens ?? "",
-      t.pandoChunkCount,
-      t.pandoChunkBytes,
+      t.pandoPieceCount,
+      t.pandoPieceBytes,
     ].join(",")
   ).join("\n") + "\n";
   await Deno.writeTextFile(csvPath, header + rows);

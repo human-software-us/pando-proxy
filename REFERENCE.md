@@ -1,20 +1,39 @@
 # Reference
 
-## Chunk
+This document describes the current shipped runtime schema and maintenance contracts.
+
+## `Task`
 
 ```ts
-type ChunkRecord = {
+type Task = {
+  id: string;
+  text: string;
+  status: "open" | "closed";
+  kind: "do";
+};
+```
+
+## `Piece`
+
+```ts
+type ChunkSelector =
+  | { kind: "whole" }
+  | { kind: "line_range"; startLine: number; endLine: number }
+  | { kind: "object_path"; path: Array<string | number> };
+
+type PieceRecord = {
   id: string;
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  payload: unknown;
+  taskIds: string[];
+  payloadInline?: unknown;
+  payloadRef?: string;
+  previewText?: string;
+  pointer?: Record<string, unknown>;
   byteSize: number;
   createdSeq: number;
-  selector:
-    | { kind: "whole" }
-    | { kind: "line_range"; startLine: number; endLine: number }
-    | { kind: "object_path"; path: Array<string | number> };
+  selector: ChunkSelector;
 };
 ```
 
@@ -23,30 +42,38 @@ type ChunkRecord = {
 ```ts
 type MemoryState = {
   roundSeq: number;
-  objective: string | null;
-  chunks: ChunkRecord[];
+  tasks: Task[];
+  pieces: PieceRecord[];
   processedSourceIds: string[];
 };
 ```
 
-## `working_memory_update`
+Large piece payloads may be written to per-session payload files and referenced through
+`payloadRef`. Retrieval still returns the exact original payload.
+
+## `round_update`
 
 Request:
 
 ```ts
-type WorkingMemoryUpdateRequest = {
-  objective: string | null;
-  chunks: Array<{
+type RoundUpdateRequest = {
+  tasks: Task[];
+  retainedPieces: Array<{
     id: string;
     sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
     toolName?: string;
     content: unknown;
+    pointer?: Record<string, unknown>;
+    taskIds: string[];
   }>;
-  newChunks: Array<{
+  newPieces: Array<{
     id: string;
     sourceKind: "user" | "assistant" | "tool";
+    sourceId: string;
     toolName?: string;
     content: unknown;
+    pointer?: Record<string, unknown>;
   }>;
 };
 ```
@@ -54,20 +81,30 @@ type WorkingMemoryUpdateRequest = {
 Response:
 
 ```ts
-type WorkingMemoryUpdateResponse = {
-  objectiveAfter: string | null;
-  keepOldChunkIds: string[];
-  keepNewChunkIds: string[];
+type PieceSelection =
+  | { mode: "keep_all" }
+  | { mode: "drop_all" }
+  | { mode: "keep_only"; ids: string[] }
+  | { mode: "drop_only"; ids: string[] };
+
+type RoundUpdateResponse = {
+  tasksAfter: Task[];
+  pieceSelection: PieceSelection;
+  keptPieceTaskLinks: Array<{
+    id: string;
+    taskIds: string[];
+  }>;
 };
 ```
 
 Validation rules:
 
-- every kept old id must exist in the prior kept set
-- every kept new id must exist in the new chunk set
-- duplicate ids are invalid
-- if `objectiveAfter` is `null`, both keep lists should usually be empty
-- anything not explicitly kept is dropped
+- every `tasksAfter` entry must have `id`, `text`, `status`, and `kind`
+- `pieceSelection` applies to `newPieces`
+- every kept new piece id must exist in `newPieces`
+- every kept new piece must appear in `keptPieceTaskLinks`
+- every linked task id in `keptPieceTaskLinks` must exist in `tasksAfter`
+- older retained pieces remain only if their linked task ids still exist after cleanup
 
 ## `source_chunk`
 
@@ -94,19 +131,20 @@ type SourceChunkResponse = {
 };
 ```
 
-The proxy materializes exact chunks from the original source using these selectors.
+The proxy materializes exact pieces from the original source using these selectors.
 
-## `memory`
+## `context_get`
 
 Tool schema:
 
 ```json
 {
-  "name": "memory",
+  "name": "context_get",
   "parameters": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
-      "chunkIds": {
+      "pieceIds": {
         "type": "array",
         "items": { "type": "string" }
       },
@@ -117,33 +155,34 @@ Tool schema:
 }
 ```
 
-`memory` supports two retrieval modes:
+`context_get` supports two retrieval modes:
 
-- `chunkIds`: fetch exact retained chunks by id
-- `offset` + `limit`: page through hidden retained chunks in deterministic chronological order
+- `pieceIds`: fetch exact retained pieces by id
+- `offset` + `limit`: page through hidden retained pieces in deterministic chronological order
 
-The response contains exact stored payloads only. It skips chunks already included in the rewritten
-prompt and chunks already returned by earlier `memory(...)` calls in the same round.
+The response contains exact stored payloads only. It skips pieces already included in the rewritten
+prompt and pieces already returned by earlier `context_get(...)` calls in the same round.
 
-## Wrapper Notes
+## Prompt Memory Block
 
-**Important:** if `pando-proxy` or an aliased `codex` appears frozen before the proxy receives any
-request, Codex may be waiting on its own update chooser. Run `npx -y pando-proxy --run-codex-direct`
-or `codex --run-codex-direct` to launch raw Codex directly and make the choice there.
+The rewritten prompt injects one synthetic developer message shaped like:
 
-Alias removal:
-
-```sh
-npx -y pando-proxy --uninstall-codex-alias
-# or, if `codex` is still aliased to pando-proxy in the current shell:
-codex --uninstall-codex-alias
+```xml
+<pando_task_memory>
+<tasks>
+- taskId=task:main status=open text=...
+</tasks>
+<exact_pieces>
+<piece pieceId=piece_17 sourceKind=tool taskIds=task:main>
+...
+</piece>
+</exact_pieces>
+<context_get>
+Use context_get({pieceIds:[...]}) when you know the needed piece ids.
+Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.
+</context_get>
+</pando_task_memory>
 ```
-
-Default native Codex compaction threshold injected by the wrapper:
-
-- `--proxy-codex-auto-compact-token-limit 280000`
-
-That default is about 70% of GPT-5's documented `400000` token context window.
 
 ## Logging
 
@@ -154,14 +193,19 @@ Important log events:
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `memory_fetch`
+- `context_get_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
 - `round_complete`
 
-`memory_round_decision` includes the normal kept/dropped ids plus any deterministic override fields
-such as `forcedKeepOldChunkIds`, `forcedKeepNewChunkIds`, and `forcedKeepReasons`.
+`memory_round_decision` includes:
 
-`round_complete` is the round-level aggregate record. It should include the current objective, chunk
-ids/count, total stored chunk bytes, processed source count, local fetch count, returned fetch ids,
-and any memory-update error.
+- `taskIdsBefore`
+- `tasksAfter`
+- `pieceSelection`
+- `keptPieceTaskLinks`
+- kept/dropped old-piece ids
+- kept/dropped new-piece ids
+
+`round_complete` includes the active task ids/count, piece ids/count, total stored piece bytes,
+processed source count, local fetch count, returned fetch ids, and any memory-update error.

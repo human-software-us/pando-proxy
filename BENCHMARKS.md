@@ -3,30 +3,146 @@
 Public source links, related research, and candidate next benchmark inputs are collected in
 [`benchmarks/SOURCES.md`](./benchmarks/SOURCES.md).
 
-These benchmark numbers were produced with the real replay path:
+This file now distinguishes two categories explicitly:
+
+- current reruns on the shipped lossless task-and-piece memory manager
+- older historical measurements kept for comparison until they are rerun
+
+The current public reruns in this file use the deterministic stub replay path:
+
+```sh
+python3 scripts/run_replay_batch.py \
+  --rollout-dir <dir-of-rollout-jsonl-files> \
+  --out-dir <out-dir> \
+  --workers 4 \
+  --policy drop-tools
+```
+
+That means replay used the current request rewrite and current task/piece memory pipeline in
+`src/replay.ts`, but used deterministic retention decisions instead of live structured-model calls.
+
+## Current public reruns
+
+### SWE-bench Verified devstral trajectory batch (stub replay)
+
+To get a full-corpus pass over a real public SWE-bench Verified trajectory set, I fetched all
+currently exposed `.traj.json` files from:
+
+- <https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj>
+
+The committed aggregate for the current rerun lives at:
+
+- [`benchmarks/results/devstral_verified_drop_tools_batch.json`](./benchmarks/results/devstral_verified_drop_tools_batch.json)
+
+The raw fetched corpus was stored only locally during replay and is intentionally not checked in.
+
+Reproduction:
+
+```sh
+python3 scripts/fetch_hf_traj_json_dataset.py \
+  --dataset pankajmathur/devstral-24b-swebench-verified-traj \
+  --out-dir /tmp/pando-devstral-verified-all
+
+python3 scripts/run_replay_batch.py \
+  --rollout-dir /tmp/pando-devstral-verified-all/converted \
+  --out-dir tmp/replay-devstral-verified-batch-current \
+  --workers 4 \
+  --policy drop-tools
+
+python3 scripts/aggregate_replay_stats.py \
+  --stats-dir tmp/replay-devstral-verified-batch-current \
+  --suffix __drop-tools__stats.json \
+  --out tmp/replay-devstral-verified-batch-current.aggregate.json
+```
+
+Aggregate across all `345` fetched trajectories:
+
+| Set                                             | Samples | Rounds | Policy       | Avg baseline min | Avg pando min | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Avg avg savings | Avg max savings | Aggregate avg reduction | Aggregate peak reduction |
+| ----------------------------------------------- | ------: | -----: | ------------ | ---------------: | ------------: | ---------------: | ------------: | ---------------: | ------------: | --------------: | --------------: | ----------------------: | -----------------------: |
+| SWE-bench Verified devstral public trajectories |     345 | 21,709 | `drop-tools` |            1,402 |         1,305 |           15,199 |         3,063 |           33,636 |        10,023 |          12,136 |          23,613 |                   79.8% |                    70.2% |
+
+Additional distribution notes:
+
+- 71.3% of traces had positive average-token savings
+- 71.3% of traces had positive peak-token savings
+- mean per-trace average reduction was 75.1%
+- mean per-trace peak reduction was 72.1%
+- median per-trace average reduction was 76.3%
+- median per-trace peak reduction was 74.6%
+
+### SWE-bench Verified devstral top-20 public sample (stub replay)
+
+I also reran the public `20`-trace sample from that same devstral Verified dataset using this
+deterministic rule:
+
+- top `10` by replay round count
+- plus top `10` additional trajectories by raw fetched transcript bytes
+
+The committed selection and aggregate results live at:
+
+- [`benchmarks/results/devstral_verified_top20_selection.json`](./benchmarks/results/devstral_verified_top20_selection.json)
+- [`benchmarks/results/devstral_verified_top20_stub.json`](./benchmarks/results/devstral_verified_top20_stub.json)
+
+That sample contains `3,807` total rounds.
+
+Reproduction:
+
+```sh
+python3 scripts/fetch_hf_traj_json_dataset.py \
+  --dataset pankajmathur/devstral-24b-swebench-verified-traj \
+  --out-dir /tmp/pando-devstral-verified-all
+
+python3 scripts/materialize_rollout_subset.py \
+  --selection-json benchmarks/results/devstral_verified_top20_selection.json \
+  --source-dir /tmp/pando-devstral-verified-all \
+  --out-dir /tmp/pando-devstral-top20
+
+python3 scripts/run_replay_batch.py \
+  --rollout-dir /tmp/pando-devstral-top20/converted \
+  --out-dir tmp/replay-devstral-top20-stub-current \
+  --workers 4 \
+  --policy drop-tools
+
+python3 scripts/aggregate_replay_stats.py \
+  --stats-dir tmp/replay-devstral-top20-stub-current \
+  --suffix __drop-tools__stats.json \
+  --out tmp/replay-devstral-top20-stub-current.aggregate.json
+```
+
+Aggregate across that selected top-20 set:
+
+| Set                                | Samples | Rounds | Mode         | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Aggregate avg reduction | Aggregate peak reduction | Mean per-trace avg reduction | Mean per-trace peak reduction |
+| ---------------------------------- | ------: | -----: | ------------ | ---------------: | ------------: | ---------------: | ------------: | ----------------------: | -----------------------: | ---------------------------: | ----------------------------: |
+| SWE-bench Verified devstral top-20 |      20 |  3,807 | `drop-tools` |           43,924 |         5,202 |          142,623 |        64,692 |                   88.2% |                    54.6% |                        84.8% |                         66.4% |
+
+Notes:
+
+- All `20` selected traces had positive average-token savings.
+- All `20` selected traces had positive peak-token savings.
+- Median per-trace average reduction was 91.4%.
+- Median per-trace peak reduction was 89.0%.
+
+## Historical real-LLM and one-off runs
+
+The sections below are preserved for context, but they were produced before the lossless
+task-and-piece memory-manager rewrite and have not yet been rerun on the current implementation.
+
+### One-off benchmark set
+
+These were produced with the older real replay path:
 
 ```sh
 deno run --allow-read --allow-write --allow-env --allow-net \
   bin/replay.ts --rollout <path.jsonl> --real-llm --auth-from-codex --out-dir tmp/replay-real
 ```
 
-That means replay used the actual structured maintenance pipeline in `src/replay.ts`:
+| Set                     | Source              | Rollout                                                                  |   Avg reduction |  Peak reduction | Baseline avg approx tokens | Pando avg approx tokens | Baseline peak approx tokens | Pando peak approx tokens | Rounds |
+| ----------------------- | ------------------- | ------------------------------------------------------------------------ | --------------: | --------------: | -------------------------: | ----------------------: | --------------------------: | -----------------------: | -----: |
+| Local `exec`            | local Codex session | `rollout-2026-04-22T18-14-05-019db7e6-bde6-70f1-b7c1-c21a6069e8d3.jsonl` |   2,479 (32.3%) |   5,443 (41.1%) |                      7,674 |                   5,195 |                      13,231 |                    7,788 |      8 |
+| Local `cli` interactive | local Codex session | `rollout-2026-04-21T22-06-28-019db2f0-55d1-7a21-86d4-53dfbc695f99.jsonl` | 133,433 (68.8%) | 199,021 (69.4%) |                    193,840 |                  60,407 |                     286,898 |                   87,877 |      9 |
+| Public open log         | GitHub Gist         | `cirosantilli-rollout-2026-02-11.jsonl`                                  |     407 (31.5%) |     418 (27.8%) |                      1,292 |                     885 |                       1,502 |                    1,084 |      2 |
 
-- real `source_chunk` calls
-- real `working_memory_update` calls
-- normal small/overflow model selection from `src/structured_model.ts`
-
-It did not use the deterministic stub retention policies.
-
-## One-off benchmark set
-
-| Set                     | Source              | Rollout                                                                  |   Avg reduction |   Max reduction | Baseline avg approx tokens | Pando avg approx tokens | Baseline max approx tokens | Pando max approx tokens | Rounds |
-| ----------------------- | ------------------- | ------------------------------------------------------------------------ | --------------: | --------------: | -------------------------: | ----------------------: | -------------------------: | ----------------------: | -----: |
-| Local `exec`            | local Codex session | `rollout-2026-04-22T18-14-05-019db7e6-bde6-70f1-b7c1-c21a6069e8d3.jsonl` |   2,479 (32.3%) |   5,443 (41.1%) |                      7,674 |                   5,195 |                     13,231 |                   7,788 |      8 |
-| Local `cli` interactive | local Codex session | `rollout-2026-04-21T22-06-28-019db2f0-55d1-7a21-86d4-53dfbc695f99.jsonl` | 133,433 (68.8%) | 199,021 (69.4%) |                    193,840 |                  60,407 |                    286,898 |                  87,877 |      9 |
-| Public open log         | GitHub Gist         | `cirosantilli-rollout-2026-02-11.jsonl`                                  |     407 (31.5%) |     418 (27.8%) |                      1,292 |                     885 |                      1,502 |                   1,084 |      2 |
-
-## SWE-PolyBench submission replay batch
+### SWE-PolyBench submission replay batch
 
 The SWE-PolyBench submission branch is public at
 <https://github.com/amazon-science/SWE-PolyBench/tree/submission>.
@@ -55,126 +171,35 @@ Aggregate across those 69 converted submission traces:
 | SWE-PolyBench `iswe_agent` editing |      69 |            6,657 |         1,756 |            8,331 |         4,464 |           10,046 |         7,385 |           3,867 |           2,661 |
 
 The mean per-trace reduction across this full batch was 43.3% on average prompt size and 15.9% on
-max prompt size.
+peak prompt size.
 
 One long trace (`apache__dubbo-5356`) hit a structured-output parse hiccup during one memory update,
 but replay continued and still emitted complete turn stats.
 
-## SWE-bench Verified devstral trajectory batch (stub replay)
+### Historical top-20 real-LLM sample
 
-To get a cheap full-corpus pass over a real public SWE-bench Verified trajectory set, I fetched all
-currently exposed `.traj.json` files from:
+The older real-LLM pass on the same top-20 selection is preserved here for reference only:
 
-- <https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj>
-
-The committed aggregate for that run lives at:
-
-- [`benchmarks/results/devstral_verified_drop_tools_batch.json`](./benchmarks/results/devstral_verified_drop_tools_batch.json)
-
-The raw fetched corpus was stored only locally during replay and is intentionally not checked in.
-
-Reproduction:
-
-```sh
-python3 scripts/fetch_hf_traj_json_dataset.py \
-  --dataset pankajmathur/devstral-24b-swebench-verified-traj \
-  --out-dir /tmp/pando-devstral-verified-all
-
-python3 scripts/run_replay_batch.py \
-  --rollout-dir /tmp/pando-devstral-verified-all/converted \
-  --out-dir tmp/replay-devstral-verified-batch \
-  --workers 4 \
-  --policy drop-tools
-
-python3 scripts/aggregate_replay_stats.py \
-  --stats-dir tmp/replay-devstral-verified-batch \
-  --suffix __drop-tools__stats.json \
-  --out benchmarks/results/devstral_verified_drop_tools_batch.json
-```
-
-This pass used the default stub maintenance policy (`drop-tools`), not `--real-llm`.
-
-Aggregate across all `345` fetched trajectories:
-
-| Set                                             | Samples | Rounds | Policy       | Avg baseline min | Avg pando min | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Avg avg savings | Avg max savings | Aggregate avg reduction | Aggregate max reduction |
-| ----------------------------------------------- | ------: | -----: | ------------ | ---------------: | ------------: | ---------------: | ------------: | ---------------: | ------------: | --------------: | --------------: | ----------------------: | ----------------------: |
-| SWE-bench Verified devstral public trajectories |     345 | 21,709 | `drop-tools` |            1,402 |         1,404 |           15,199 |         7,508 |           33,636 |        14,651 |           7,690 |          18,985 |                   50.6% |                   56.4% |
-
-Additional distribution notes:
-
-- 71.3% of traces had positive average-token savings
-- 71.3% of traces had positive max-token savings
-- mean per-trace average reduction was 30.8%
-- mean per-trace max reduction was 39.6%
-- median per-trace average reduction was 33.2%
-- median per-trace max reduction was 47.6%
-
-## SWE-bench Verified devstral top-20 public sample (real LLM, full `gpt-5.4`)
-
-To get a slower but higher-signal public sample on the real maintenance path, I took `20`
-trajectories from the same public devstral Verified dataset using this deterministic rule:
-
-- top `10` by replay round count
-- plus top `10` additional trajectories by raw fetched transcript bytes
-
-The committed selection and aggregate results live at:
-
-- [`benchmarks/results/devstral_verified_top20_selection.json`](./benchmarks/results/devstral_verified_top20_selection.json)
-- [`benchmarks/results/devstral_verified_top20_stub.json`](./benchmarks/results/devstral_verified_top20_stub.json)
 - [`benchmarks/results/devstral_verified_top20_real_llm_gpt54.json`](./benchmarks/results/devstral_verified_top20_real_llm_gpt54.json)
 - [`benchmarks/results/devstral_verified_top20_stub_vs_real_llm_gpt54.json`](./benchmarks/results/devstral_verified_top20_stub_vs_real_llm_gpt54.json)
 
-That sample contains `3,807` total rounds.
-
-For the real-LLM pass, both structured-model slots were pinned to `gpt-5.4`:
-
-```sh
-env \
-  PANDO_PROXY_SMALL_STRUCTURED_MODEL=gpt-5.4 \
-  PANDO_PROXY_OVERFLOW_STRUCTURED_MODEL=gpt-5.4 \
-  python3 scripts/run_replay_batch.py \
-    --rollout-dir /tmp/pando-devstral-top20/converted \
-    --out-dir tmp/replay-devstral-top20-real-llm-gpt54 \
-    --workers 4 \
-    --real-llm
-```
-
-Replay itself does not expose a separate reasoning-effort flag. This run used the non-mini `gpt-5.4`
-path with no fast model override; OpenAI's Responses API docs describe GPT-5 models before `gpt-5.1`
-as defaulting to medium reasoning effort:
-<https://platform.openai.com/docs/api-reference/responses/compact?api-mode=responses>
-
-Aggregate comparison on that same top-20 selection:
-
-| Set                                | Samples | Rounds | Mode                  | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Aggregate avg reduction | Aggregate max reduction | Mean per-trace avg reduction | Mean per-trace max reduction |
-| ---------------------------------- | ------: | -----: | --------------------- | ---------------: | ------------: | ---------------: | ------------: | ----------------------: | ----------------------: | ---------------------------: | ---------------------------: |
-| SWE-bench Verified devstral top-20 |      20 |  3,807 | `drop-tools`          |           43,924 |        12,575 |          142,623 |        72,664 |                   71.4% |                   49.1% |                        64.2% |                        60.7% |
-| SWE-bench Verified devstral top-20 |      20 |  3,807 | `real-llm`, `gpt-5.4` |           43,924 |         5,714 |          142,623 |        65,005 |                   87.0% |                   54.4% |                        85.6% |                        65.6% |
-
-Notes:
-
-- Both stub and real-LLM runs had positive average-token savings on all `20` selected traces.
-- Both stub and real-LLM runs had positive max-token savings on all `20` selected traces.
-- Median per-trace average reduction improved from 71.2% in stub replay to 89.1% on the real
-  `gpt-5.4` maintenance path.
-- Median per-trace max reduction improved from 79.8% in stub replay to 81.3% on the real `gpt-5.4`
-  maintenance path.
+| Set                                | Samples | Rounds | Mode                  | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Aggregate avg reduction | Aggregate peak reduction | Mean per-trace avg reduction | Mean per-trace peak reduction |
+| ---------------------------------- | ------: | -----: | --------------------- | ---------------: | ------------: | ---------------: | ------------: | ----------------------: | -----------------------: | ---------------------------: | ----------------------------: |
+| SWE-bench Verified devstral top-20 |      20 |  3,807 | `real-llm`, `gpt-5.4` |           43,924 |         5,714 |          142,623 |        65,005 |                   87.0% |                    54.4% |                        85.6% |                         65.6% |
 
 ## Set summary
 
-Set-level summary across the current benchmark groups:
+Set-level summary across the current public reruns plus the preserved historical groups:
 
-| Set                                | Samples | Avg baseline min | Avg pando min | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Avg avg savings | Avg max savings |
-| ---------------------------------- | ------: | ---------------: | ------------: | ---------------: | ------------: | ---------------: | ------------: | --------------: | --------------: |
-| Local `exec` one-off               |       1 |            1,421 |         1,352 |            7,674 |         5,195 |           13,231 |         7,788 |           2,479 |           5,443 |
-| Local `cli` one-off                |       1 |            2,988 |         1,842 |          193,840 |        60,407 |          286,898 |        87,877 |         133,433 |         199,021 |
-| Public open one-off                |       1 |            1,081 |           686 |            1,292 |           885 |            1,502 |         1,084 |             407 |             418 |
-| SWE-PolyBench `iswe_agent` editing |      69 |            6,657 |         1,756 |            8,331 |         4,464 |           10,046 |         7,385 |           3,867 |           2,661 |
-| SWE-bench Verified devstral top-20 |      20 |            2,069 |           536 |           43,924 |         5,714 |          142,623 |        65,005 |          38,210 |          77,617 |
-
-The table above is restricted to the current real-LLM replay groups. The 345-trace devstral Verified
-corpus is intentionally kept separate because it used the cheap stub maintenance policy rather than
-`--real-llm`.
+| Set                                               | Samples | Avg baseline min | Avg pando min | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Avg avg savings | Avg max savings |
+| ------------------------------------------------- | ------: | ---------------: | ------------: | ---------------: | ------------: | ---------------: | ------------: | --------------: | --------------: |
+| SWE-bench Verified devstral full corpus           |     345 |            1,402 |         1,305 |           15,199 |         3,063 |           33,636 |        10,023 |          12,136 |          23,613 |
+| SWE-bench Verified devstral top-20                |      20 |            2,069 |         1,936 |           43,924 |         5,202 |          142,623 |        64,692 |          38,723 |          77,931 |
+| Local `exec` one-off                              |       1 |            1,421 |         1,352 |            7,674 |         5,195 |           13,231 |         7,788 |           2,479 |           5,443 |
+| Local `cli` one-off                               |       1 |            2,988 |         1,842 |          193,840 |        60,407 |          286,898 |        87,877 |         133,433 |         199,021 |
+| Public open one-off                               |       1 |            1,081 |           686 |            1,292 |           885 |            1,502 |         1,084 |             407 |             418 |
+| SWE-PolyBench `iswe_agent` editing                |      69 |            6,657 |         1,756 |            8,331 |         4,464 |           10,046 |         7,385 |           3,867 |           2,661 |
+| SWE-bench Verified devstral top-20 historical LLM |      20 |            2,069 |           536 |           43,924 |         5,714 |          142,623 |        65,005 |          38,210 |          77,617 |
 
 ## Largest local Codex logs plus SWE-PolyBench batch
 
@@ -204,7 +229,7 @@ public SWE-PolyBench batch aggregate from the converted `iswe_agent` submission 
 - `baseline` is the replay estimate for the usual Codex behavior: carry the accumulated request
   history forward and send it again on the next turn.
 - `pando` is the replay estimate after `rewriteRequestWithMemory(...)` rebuilds the request using
-  the compact objective plus exact retained chunks.
+  the current task-and-piece memory block.
 - These values are `approxInputTokens` from `src/metrics.ts`. They are the right metric for relative
   prompt-size comparisons inside this repo.
 - `recorded.input_tokens` from raw Codex logs can be much larger than replay's
@@ -223,7 +248,8 @@ public SWE-PolyBench batch aggregate from the converted `iswe_agent` submission 
   cheap and fast. It should not be compared directly to the real-LLM rows above as if the
   maintenance method were the same.
 - The top-20 devstral sample above uses the same public dataset, but on a deterministic
-  high-round/high-byte selection with the real maintenance path pinned to full `gpt-5.4`.
+  high-round/high-byte selection. The current rerun in this file is the stub path; the real-LLM row
+  is kept as a historical pre-lossless-redesign reference.
 
 ## Artifact files
 
@@ -233,9 +259,11 @@ The runs above emitted:
 - `tmp/replay-real/*__turns.jsonl`
 - `tmp/replay-real/*__series.csv`
 - `tmp/replay-real/*__manager-usage.jsonl`
+- `tmp/replay-devstral-verified-batch-current/*__stats.json`
+- `tmp/replay-devstral-top20-stub-current/*__stats.json`
 
-Those files let you audit both the per-turn prompt estimates and the maintenance-model usage for
-each replay.
+Those files let you audit both the per-turn prompt estimates and, for the real-LLM runs, the
+maintenance-model usage for each replay.
 
 Committed aggregate result files used by the benchmark docs live under
 [`benchmarks/results`](./benchmarks/results).

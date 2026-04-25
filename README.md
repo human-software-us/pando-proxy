@@ -4,61 +4,58 @@
 
 `pando-proxy` is a thin local wrapper around [Codex](https://github.com/openai/codex) that inserts
 an OpenAI Responses-compatible proxy between Codex and the upstream model. The proxy maintains a
-small, mechanical working memory so multi-round Codex sessions stay within context without replaying
-the whole history.
+small, mechanical task-and-piece memory so multi-round Codex sessions stay within context without
+replaying the whole history.
 
 ## Measured replay benchmarks
 
-Real replay runs are summarized in [`QUICK_BENCHMARKS.md`](./QUICK_BENCHMARKS.md) and documented in
-full in [`BENCHMARKS.md`](./BENCHMARKS.md). Public source links and related research are indexed in
-[`benchmarks/SOURCES.md`](./benchmarks/SOURCES.md). These numbers come from
-`bin/replay.ts --real-llm --auth-from-codex`, so the replay path used the real structured chunking
-and working-memory-update calls instead of the deterministic stub policy.
+Current benchmark reruns are summarized in [`QUICK_BENCHMARKS.md`](./QUICK_BENCHMARKS.md) and
+documented in full in [`BENCHMARKS.md`](./BENCHMARKS.md). Public source links and related research
+are indexed in [`benchmarks/SOURCES.md`](./benchmarks/SOURCES.md).
 
 `bin/replay.ts` replays a saved rollout turn by turn and compares two prompt shapes: the naive
 baseline (`without proxy`), which keeps sending the accumulated conversation history each round, and
-the Pando rewrite (`with proxy`), which sends the compact working-memory prompt instead.
+the Pando rewrite (`with proxy`), which sends the compact task-and-piece memory prompt instead.
 
-Without `--real-llm`, replay uses a deterministic stand-in for retention decisions, which is useful
-for fast local checks but not for headline numbers. With `--real-llm`, replay makes the actual
-chunking and working-memory-update model calls, so the benchmark reflects the real proxy path rather
-than a simplified approximation.
+The current public reruns on the shipped lossless memory manager use deterministic stub replay
+(`--policy drop-tools`), which makes them cheap to reproduce locally while still exercising the
+current prompt rewrite and replay path.
 
-| Case                               | Avg reduction | Max reduction | Baseline avg approx tokens | Pando avg approx tokens | Baseline max approx tokens | Pando max approx tokens | Rounds |
-| ---------------------------------- | ------------: | ------------: | -------------------------: | ----------------------: | -------------------------: | ----------------------: | -----: |
-| Local `exec` stress log            |         32.3% |         41.1% |                      7,674 |                   5,195 |                     13,231 |                   7,788 |      8 |
-| Local `cli` interactive log        |         68.8% |         69.4% |                    193,840 |                  60,407 |                    286,898 |                  87,877 |      9 |
-| Public open log (GitHub Gist)      |         31.5% |         27.8% |                      1,292 |                     885 |                      1,502 |                   1,084 |      2 |
-| SWE-PolyBench `iswe_agent` editing |         46.4% |         26.5% |                      8,331 |                   4,464 |                     10,046 |                   7,385 |     69 |
+| Case                                             | Avg reduction | Peak reduction | Baseline avg approx tokens | Pando avg approx tokens | Baseline peak approx tokens | Pando peak approx tokens | Rounds |
+| ------------------------------------------------ | ------------: | -------------: | -------------------------: | ----------------------: | --------------------------: | -----------------------: | -----: |
+| SWE-bench Verified devstral full corpus (345)    |         79.8% |          70.2% |                     15,199 |                   3,063 |                      33,636 |                   10,023 | 21,709 |
+| SWE-bench Verified devstral top-20 public sample |         88.2% |          54.6% |                     43,924 |                   5,202 |                     142,623 |                   64,692 |  3,807 |
 
-The proxy helps most once a session has real history to carry forward. On short 1-2 turn runs the
-win can be small or mixed, but on long interactive sessions the baseline keeps replaying old context
-while Pando stays bounded by the compact working set.
+The full-corpus `345`-trace rerun is the main public “all replays” data point for the current
+implementation. Historical one-off and real-LLM numbers are still preserved in
+[`BENCHMARKS.md`](./BENCHMARKS.md), but the table above is the current headline view.
 
-Artifacts from these runs live under `tmp/replay-real/` as `*_stats.json`, `*_turns.jsonl`,
-`*_series.csv`, and `*_manager-usage.jsonl`.
+Artifacts from the current public reruns live under `tmp/replay-devstral-verified-batch-current/`
+and `tmp/replay-devstral-top20-stub-current/` as `*_stats.json`, `*_turns.jsonl`, and
+`*_series.csv`. Historical real-LLM artifacts also live under `tmp/replay-real/` as
+`*_manager-usage.jsonl`.
 
 Public benchmark expansions are also documented in [`BENCHMARKS.md`](./BENCHMARKS.md). The current
 public results include:
 
 - a cheap full-corpus stub pass over all `345` currently exposed trajectories from the public
   `pankajmathur/devstral-24b-swebench-verified-traj` dataset
-- a slower real-LLM sample over `20` trajectories from that same dataset, selected as top `10` by
-  round count plus top `10` additional by raw transcript size
+- a rerun of the public top-20 sample from that same dataset, selected as top `10` by round count
+  plus top `10` additional by raw transcript size
 
-On that public top-20 sample, pinning the maintenance path to full `gpt-5.4` reduced average prompt
-size from `43,924` to `5,714` tokens and average max prompt size from `142,623` to `65,005` tokens.
+On the current full-corpus rerun, the average prompt dropped from `15,199` to `3,063` tokens and the
+average peak prompt dropped from `33,636` to `10,023` tokens.
 
 ## Why this exists
 
 Long Codex sessions blow up the prompt with raw tool output and prior rounds. `pando-proxy` replaces
 that approach with:
 
-- one compact live `objective` per session
-- exact retained chunks only (no prose summaries, no preview catalogs, no embeddings)
-- aggressive end-of-turn pruning
-- an optional local `memory(offset, limit)` tool the model can call to pull remaining exact chunks
-  on demand
+- a small task list per session
+- exact retained pieces only (no prose summaries, no preview catalogs, no embeddings)
+- aggressive end-of-turn pruning of new material through `round_update`
+- an optional local `context_get({pieceIds:[...]})` or `context_get({offset,limit})` fallback the
+  model can call to pull remaining exact pieces on demand
 - a separate clean finalization pass for the user-facing answer
 
 The package is designed to be invoked with one `npx` command and is otherwise invisible to Codex.
@@ -94,33 +91,33 @@ on POST /v1/responses:
   sessionKey    = derivedFromHeadersOrBody(request, body)
   waitForAnyPendingFinalization(sessionKey)
 
-  record        = store.load(sessionKey)          # objective + kept chunks + processedSourceIds
+  record        = store.load(sessionKey)          # tasks + kept pieces + processedSourceIds
   rewritten     = rewriteRequestWithMemory(body, record.memory)
     # drops prior-round items not needed
-    # inserts <pando_working_memory> developer block with objective + selected exact chunks
-    # injects memory(offset, limit) tool if any retained chunks were omitted from prompt
+    # inserts <pando_task_memory> developer block with tasks + selected exact pieces
+    # injects context_get if retained pieces were omitted from prompt
 
   response, fetches, assistantSources = runResponsesLoop(rewritten)
-    # streams upstream; intercepts memory(...) tool calls locally
-    # memory(offset, limit) returns the next chronological slice of retained chunks
+    # streams upstream; intercepts context_get(...) tool calls locally
+    # context_get(offset, limit) returns the next chronological slice of retained pieces
     # that weren't already inline in the prompt
 
   scheduleOrRunFinalization:
-    newChunks = chunkNewSources(requestBody, loopFinalBody, assistantSources)
-      # user messages  -> whole chunk
-      # assistant/tool -> structured chunker (small model)
+    newPieces = chunkNewSources(requestBody, loopFinalBody, assistantSources)
+      # user messages  -> whole piece
+      # assistant/tool -> structured piece chunker (small model)
       # pando outputs  -> deterministic splitter
 
-    update = working_memory_update(
-      objective     = record.memory.objective,
-      keptChunks    = record.memory.chunks,
-      newChunks     = newChunks,
+    update = round_update(
+      tasks          = record.memory.tasks,
+      retainedPieces = record.memory.pieces,
+      newPieces      = newPieces,
     )
-    # returns: { objectiveAfter, keepOldChunkIds, keepNewChunkIds }
+    # returns: { tasksAfter, pieceSelection, keptPieceTaskLinks }
 
     store.save(sessionKey, {
-      objective:          update.objectiveAfter,
-      chunks:             keep(old + new, update.keep*Ids),
+      tasks:              update.tasksAfter,
+      pieces:             keep(active old pieces + selected new pieces),
       processedSourceIds: record.processedSourceIds ∪ sourcesSeenThisRound,
     })
 
@@ -131,16 +128,18 @@ on POST /v1/responses:
 
 ```
 [ leading_instructions_from_request ]
-<pando_working_memory>
-  <objective>…current live objective…</objective>
-  <exact_chunks>
-    <chunk id="chunk_17">…exact payload…</chunk>
+<pando_task_memory>
+  <tasks>
+    - taskId=task:main status=open text=…current active task…
+  </tasks>
+  <exact_pieces>
+    <piece pieceId="piece_17" sourceKind="tool" taskIds="task:main">…exact payload…</piece>
     …
-  </exact_chunks>
-  <memory_fallback>
-    If the attached exact chunks are insufficient, call memory(offset, limit).
-  </memory_fallback>
-</pando_working_memory>
+  </exact_pieces>
+  <context_get>
+    If the attached exact pieces are insufficient, call context_get({offset,limit}).
+  </context_get>
+</pando_task_memory>
 [ current_round_tail ]
 ```
 
@@ -298,8 +297,8 @@ Every wrapper/serve flag has an equivalent env var. CLI flags win; env vars fall
 | `PANDO_PROXY_LOG_FILE`                           | `--log-file`                                       |
 | `PANDO_PROXY_INLINE_PIECE_BYTE_LIMIT`            | inline payload cap (bytes)                         |
 | `PANDO_PROXY_PIECE_PREVIEW_CHAR_LIMIT`           | internal preview cap                               |
-| `PANDO_PROXY_MAX_INDEXED_PIECES_PER_TASK`        | max inline chunks per prompt                       |
-| `PANDO_PROXY_MAX_LOCAL_CONTEXT_TOOL_CALLS`       | per-round cap on `memory(...)` calls               |
+| `PANDO_PROXY_MAX_INDEXED_PIECES_PER_TASK`        | max inline pieces per prompt                       |
+| `PANDO_PROXY_MAX_LOCAL_CONTEXT_TOOL_CALLS`       | per-round cap on `context_get(...)` calls          |
 | `PANDO_PROXY_CODEX_AUTO_COMPACT_TOKEN_LIMIT`     | `--codex-auto-compact-token-limit`                 |
 | `OPENAI_API_KEY`                                 | fallback `Authorization` if Codex doesn't send one |
 
@@ -307,42 +306,44 @@ Every wrapper/serve flag has an equivalent env var. CLI flags win; env vars fall
 
 Durable per-session state is just:
 
-- `objective` (one compact string or `null`)
-- `chunks` (array of exact retained chunks, inline payloads)
+- `tasks` (a small list of active durable tasks)
+- `pieces` (array of exact retained pieces, usually inline payloads, optionally spilled to payload
+  refs when they exceed the inline byte limit)
 - `processedSourceIds`
 
-There are no blob refs, no payload indirection, no summaries. See `REFERENCE.md` for the exact
-types.
+The runtime stays exact: no summaries, no semantic rewrites, and no embedding store. Large payloads
+may be spilled to per-session payload files while preserving exact retrieval. See `REFERENCE.md` for
+the exact types.
 
-At the end of each completed round, the proxy runs one structured `working_memory_update` call with:
+At the end of each completed round, the proxy runs one structured `round_update` call with:
 
-- the previous objective
-- the previous kept chunks
-- the new exact chunks observed during the round
+- the previous tasks
+- the previously retained pieces
+- the new exact pieces observed during the round
 
-It returns `{ objectiveAfter, keepOldChunkIds, keepNewChunkIds }`. Everything not explicitly kept is
-dropped.
+It returns `{ tasksAfter, pieceSelection, keptPieceTaskLinks }`. New pieces are retained only when
+explicitly linked to still-active tasks. Older pieces remain while their task ids remain active.
 
 ## Prompt rewrite
 
 Each upstream request is rebuilt from:
 
 - the leading instructions in the original request
-- a single developer-role `<pando_working_memory>` block containing the objective and the inline
-  exact chunks selected for this turn
+- a single developer-role `<pando_task_memory>` block containing the active tasks and the inline
+  exact pieces selected for this turn
 - the current round tail (the live user message and in-flight tool results)
 
-If retained chunks exist that weren't selected for inline inclusion, the proxy also injects a
-`memory(offset, limit)` tool the model can call to read them. The tool returns exact stored payloads
-in chronological order, excluding anything already in the prompt. It is a fallback, not the main
-retrieval path.
+If retained pieces exist that weren't selected for inline inclusion, the proxy also injects a
+`context_get` tool the model can call to read them. The tool returns exact stored payloads by
+specific piece id or in chronological order, excluding anything already in the prompt. It is a
+fallback, not the main retrieval path.
 
 ## Finalization
 
 Work and final answer are decoupled:
 
 1. Work pass: tools and intermediate steps allowed.
-2. Memory update: keep/drop exact chunks.
+2. Memory update: keep/drop exact pieces and update the active task set.
 3. Finalization pass: no tools, produce the user-facing answer from exact work results.
 
 The final answer should match the user's request, not the proxy's internal fragments.
@@ -353,15 +354,15 @@ Logging is off unless `--proxy-log` or `--proxy-log-file` (or `PANDO_PROXY_LOG_F
 
 When enabled, every round emits JSONL events: `incoming_request`, `rewritten_context`,
 `structured_model_selected`, `memory_round_sources`, `memory_round_chunked`,
-`memory_round_decision`, `memory_fetch`, `memory_round_updated`, `memory_state_saved`,
+`memory_round_decision`, `context_get_fetch`, `memory_round_updated`, `memory_state_saved`,
 `round_complete`.
 
-`round_complete` is the round-level aggregate: current objective, chunk ids/count, total stored
-bytes, processed source count, local fetch count and returned ids, token usage, and any
+`round_complete` is the round-level aggregate: current task ids/count, piece ids/count, total stored
+piece bytes, processed source count, local fetch count and returned ids, token usage, and any
 memory-update error.
 
-`memory_round_decision` also records deterministic forced-keep overrides, including pinned user
-constraints retained mechanically even when the model tried to drop them.
+`memory_round_decision` records the task set before and after the round, the new-piece selection,
+the new kept-piece task links, and the explicit kept/dropped ids for that round.
 
 ## Local development
 
@@ -391,9 +392,9 @@ Core implementation:
 - `src/main.ts` — CLI dispatch (wrapper / `serve` / `doctor`)
 - `src/wrapper.ts` — Codex child-process wrapper + per-run proxy lifecycle
 - `src/server.ts` — HTTP proxy for `/v1/responses`
-- `src/upstream.ts` — upstream call + local `memory(...)` interception
+- `src/upstream.ts` — upstream call + local `context_get(...)` interception
 - `src/prompt_view.ts` — request rewrite with working memory
-- `src/memory_pipeline.ts`, `src/round_update.ts` — end-of-round update
+- `src/memory_pipeline.ts`, `src/round_update.ts` — end-of-round task/piece update
 - `src/chunking.ts`, `src/tool_results.ts` — source chunking
 - `src/store.ts`, `src/memory_state.ts` — session state on disk
 - `src/structured_model.ts` — small/overflow structured-model clients

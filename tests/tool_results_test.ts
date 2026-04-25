@@ -1,12 +1,25 @@
 import { assertEquals } from "jsr:@std/assert";
 
-import { extractAssistantSourcesFromResponse, extractNewRequestSources } from "../src/tool_results.ts";
+import {
+  extractAssistantSourcesFromResponse,
+  extractNewRequestSources,
+} from "../src/tool_results.ts";
 
 Deno.test("extractNewRequestSources keeps user messages whole and skips synthetic task memory", async () => {
   const sources = await extractNewRequestSources({
     input: [
-      { type: "message", role: "developer", name: "pando_task_memory", content: [{ type: "input_text", text: "<pando_task_memory />" }] },
-      { id: "user_1", type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] },
+      {
+        type: "message",
+        role: "developer",
+        name: "pando_task_memory",
+        content: [{ type: "input_text", text: "<pando_task_memory />" }],
+      },
+      {
+        id: "user_1",
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hi" }],
+      },
     ],
   }, new Set());
 
@@ -18,7 +31,12 @@ Deno.test("extractNewRequestSources keeps user messages whole and skips syntheti
 Deno.test("extractNewRequestSources maps tool outputs to tool sources", async () => {
   const sources = await extractNewRequestSources({
     input: [
-      { type: "function_call", call_id: "call_1", name: "mcp__pando__.find_nodes", arguments: "{}" },
+      {
+        type: "function_call",
+        call_id: "call_1",
+        name: "mcp__pando__.find_nodes",
+        arguments: "{}",
+      },
       { id: "tool_out_1", type: "function_call_output", call_id: "call_1", output: { ok: true } },
     ],
   }, new Set());

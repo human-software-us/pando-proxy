@@ -1,7 +1,11 @@
 import { assertEquals, assertThrows } from "jsr:@std/assert";
 
 import { emptyMemoryState } from "../src/memory_state.ts";
-import { applyRoundUpdate, parseAndValidateRoundUpdate, resolveKeptPieceIds } from "../src/round_update.ts";
+import {
+  applyRoundUpdate,
+  parseAndValidateRoundUpdate,
+  resolveKeptPieceIds,
+} from "../src/round_update.ts";
 
 Deno.test("resolveKeptPieceIds enforces explicit keep/drop selection", () => {
   assertEquals(
@@ -22,7 +26,14 @@ Deno.test("parseAndValidateRoundUpdate rejects implicit keep sets", () => {
       keptPieceTaskLinks: [],
     },
     emptyMemoryState(),
-    [{ id: "piece_1", sourceKind: "user", sourceId: "user_1", payloadInline: "hi", byteSize: 2, selector: { kind: "whole" } }],
+    [{
+      id: "piece_1",
+      sourceKind: "user",
+      sourceId: "user_1",
+      payloadInline: "hi",
+      byteSize: 2,
+      selector: { kind: "whole" },
+    }],
   );
 
   assertEquals(parsed.ok, false);
@@ -35,8 +46,22 @@ Deno.test("applyRoundUpdate persists only explicitly kept pieces", async () => {
       tasks: [{ id: "task_1", text: "Inspect", status: "open", kind: "do" }],
     },
     [
-      { id: "piece_1", sourceKind: "user", sourceId: "user_1", payloadInline: "a", byteSize: 1, selector: { kind: "whole" } },
-      { id: "piece_2", sourceKind: "assistant", sourceId: "assistant_1", payloadInline: "b", byteSize: 1, selector: { kind: "whole" } },
+      {
+        id: "piece_1",
+        sourceKind: "user",
+        sourceId: "user_1",
+        payloadInline: "a",
+        byteSize: 1,
+        selector: { kind: "whole" },
+      },
+      {
+        id: "piece_2",
+        sourceKind: "assistant",
+        sourceId: "assistant_1",
+        payloadInline: "b",
+        byteSize: 1,
+        selector: { kind: "whole" },
+      },
     ],
     async () => ({
       tasksAfter: [{ id: "task_1", text: "Inspect", status: "open", kind: "do" }],
@@ -53,7 +78,14 @@ Deno.test("applyRoundUpdate fails closed on invalid round output", async () => {
     () =>
       applyRoundUpdate(
         emptyMemoryState(),
-        [{ id: "piece_1", sourceKind: "user", sourceId: "user_1", payloadInline: "a", byteSize: 1, selector: { kind: "whole" } }],
+        [{
+          id: "piece_1",
+          sourceKind: "user",
+          sourceId: "user_1",
+          payloadInline: "a",
+          byteSize: 1,
+          selector: { kind: "whole" },
+        }],
         async () => ({
           tasksAfter: [{ id: "task_1", text: "Inspect", status: "open", kind: "do" }],
           pieceSelection: { mode: "keep_all" },

@@ -1,171 +1,120 @@
 # Memory Operations
 
-## Wrapper Notes
+This document describes the target groups-based memory flow.
 
-**Important:** if `npx -y pando-proxy` or an aliased `codex` appears to freeze before the proxy sees
-any request, Codex may actually be waiting on its own update chooser. Run
-`npx -y pando-proxy --run-codex-direct` or `codex --run-codex-direct` to launch raw Codex with full
-stdio, make the choice directly in Codex, then rerun the proxied command. Put `--run-codex-direct`
-before any Codex args; everything after it is passed straight to raw `codex`.
+## 1. Load State
 
-To remove the installed shell alias later:
+Load:
 
-```sh
-npx -y pando-proxy --uninstall-codex-alias
-# or, if the alias is still active in the current shell:
-codex --uninstall-codex-alias
-```
+- active groups
+- retained exact pieces
+- persisted `inlinePieceIds`
+- processed source ids
 
-Wrapper default: `--proxy-codex-auto-compact-token-limit 280000`.
+## 2. Rewrite Request
 
-That default is intentionally more generous than the older `50000` / `200000` testing thresholds.
-`280000` is about 70% of GPT-5's documented `400000` token context window, so Pando gets room to
-keep normal long sessions below native Codex compaction while still leaving compaction available as
-a late fallback.
+Rewrite the request using persisted manager output only.
 
-## Round Lifecycle
-
-### 1. Load State
-
-The proxy loads the current session state:
-
-- `objective`
-- kept `chunks`
-- `processedSourceIds`
-
-### 2. Rewrite Request
-
-Before the upstream call, the proxy rewrites the request from existing memory only.
-
-It keeps:
+Keep:
 
 - leading instructions
-- the current round tail
+- current round tail
 
-It inserts:
+Insert:
 
-- a developer memory block containing the current objective
-- the exact retained chunks selected for inline inclusion
-- optionally, the local `memory` tool definition when retained chunks exist outside the inline set
+- one developer memory block containing active groups and the exact inline pieces named by
+  `inlinePieceIds`
+- the local `context_get` tool only when omitted retained pieces exist
 
-It does not replay older raw history by default.
+Do not:
 
-### 3. Execute The Round
+- replay full old history
+- inject semantic summaries
+- locally rank which pieces should be inline
 
-The proxy runs the upstream request.
+## 3. Execute The Round
 
-If the model emits `memory(offset, limit)`, the proxy:
+Run upstream.
 
-- computes the retained chunk stream that is still live but not already in the prompt
-- orders it chronologically
-- slices it by `offset` and `limit`
-- returns the exact stored payloads locally
-- continues the upstream loop
+If the model emits `context_get`, return exact retained omitted pieces locally and continue the
+loop.
 
-### 4. Collect New Round Content
+## 4. Collect Round Sources
 
-At the end of the round, the proxy collects newly observed content:
+Collect newly observed:
 
-- new user messages from the request
-- new tool outputs present in the request
-- assistant messages produced during the upstream/local-tool loop
+- user messages
+- assistant messages
+- tool outputs
 
-Already processed source ids are ignored.
+Skip already-processed source ids.
 
-### 5. Chunk The New Content
+## 5. Run Batched Manager Calls
 
-Chunking rules:
+At end of round:
 
-- user messages: whole exact chunk
-- assistant outputs: structured-output chunker
-- non-Pando tool outputs: structured-output chunker
-- Pando tool outputs: deterministic in-code splitter
+1. run `group_intent` on new user-piece previews
+2. run `source_chunk_batch` on assistant/tool sources
 
-The chunker returns selectors, and the proxy materializes exact chunks from the original payload.
+Those two calls should run in parallel.
 
-### 6. Run `working_memory_update`
+Then:
 
-`working_memory_update` receives:
+3. materialize exact pieces
+4. run `piece_retention_batch` on all new pieces
+5. run `prompt_projection` on the resulting retained set
 
-- current objective
-- current kept chunks
-- exact new chunks
+## 6. Apply Results Deterministically
 
-It returns:
+Local deterministic application should:
 
-- `objectiveAfter`
-- `keepOldChunkIds`
-- `keepNewChunkIds`
+- drop pieces in closed/replaced groups
+- drop superseded pieces
+- keep exactly the new pieces marked `keep=true`
+- assign `groupId` exactly as returned
+- persist exactly the returned `inlinePieceIds`
 
-Validation is mechanical and strict.
+No local semantic override belongs here.
 
-### 7. Persist
+## 7. Persist
 
-For kept chunks:
+Persist:
 
-- store the exact payload inline in state
+- `groups`
+- retained `pieces`
+- `inlinePieceIds`
+- `processedSourceIds`
 
-For dropped chunks:
+Small exact payloads stay inline. Larger ones spill to `payloadRef`.
 
-- remove them from state
+## 8. Failure Policy
 
-There is no payload indirection layer in the current design.
+For each manager call:
 
-### 8. Finalize
+1. parse
+2. validate
+3. retry once if invalid
+4. if invalid again, fail the memory update and keep prior memory unchanged
 
-After the work round completes and memory is updated, the proxy may run a final no-tool pass that
-turns the exact work results into the best user-facing answer for the original request.
+The proxy must log which manager call failed and why.
 
-## Persistence Layout
+## 9. Logging
 
-Per session:
-
-- `state.json`
-
-State keeps only the latest session snapshot. There is no append-only summary history and no
-external payload blob store in the intended design.
-
-## Logging
-
-When logging is enabled, each completed round should leave behind enough information to debug the
-memory manager without reconstructing state by hand.
-
-Key events:
+Key events should include:
 
 - `rewritten_context`
-- `structured_model_selected`
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `memory_fetch`
+- `context_get_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
 - `round_complete`
 
-`round_complete` is the compact aggregate checkpoint for the round. It should record:
+`memory_round_decision` should expose:
 
-- the current objective
-- chunk ids and chunk count
-- total stored chunk bytes
-- processed source count
-- local memory fetch count and returned ids
-- any memory-update error for that round
-
-`memory_round_decision` should also expose any deterministic retention overrides, including
-`forcedKeepOldChunkIds`, `forcedKeepNewChunkIds`, and stable `forcedKeepReasons`.
-
-## `memory(offset, limit)`
-
-`memory` accepts:
-
-```json
-{ "offset": 0, "limit": 10 }
-```
-
-and returns:
-
-- exact retained payloads
-- in deterministic chronological order
-- excluding any retained chunks already present in the prompt
-
-No previews, selector dumps, ranking, or fuzzy lookup exist in this design.
+- groups before and after
+- per-piece keep/drop decisions
+- group assignment
+- superseded piece ids
+- inline projection ids

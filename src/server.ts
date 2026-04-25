@@ -102,7 +102,10 @@ export function createHandler(
   config: ProxyConfig,
   store = new SessionStore(config.stateDir, config.inlinePieceByteLimit),
   fallbackSessionKeyForRequest?: () => string | null | undefined,
-  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>,
+  observedRoundSourcesForSession?: (
+    sessionKey: string,
+    timeoutMs: number,
+  ) => Promise<RoundSource[]>,
 ) {
   const logger = createLogger(config.logFile);
   const usageTracker = new TokenUsageTracker();
@@ -201,8 +204,8 @@ export function createHandler(
           droppedInputIds: rewrite.diff.droppedInputIds,
           keptInputIds: rewrite.diff.keptInputIds,
           insertedMemory: rewrite.diff.insertedMemory,
-          inlineChunkCount: rewrite.diff.inlineChunkCount,
-          omittedChunkCount: rewrite.diff.omittedChunkCount,
+          inlinePieceCount: rewrite.diff.inlinePieceCount,
+          omittedPieceCount: rewrite.diff.omittedPieceCount,
           ...requestContextMetrics(rewrite.body),
         });
         contextWindowStats.recordWithProxy(sessionKey, estimateBytesForValue(rewrite.body));
@@ -211,7 +214,8 @@ export function createHandler(
           config,
           { authHeader, body: rewrite.body, logger },
           record.memory,
-          rewrite.inlineChunkIds,
+          rewrite.inlinePieceIds,
+          (pieceIds) => store.getExactPieces(sessionKey, pieceIds),
           sessionKey,
         );
         if (!loop.ok) {
@@ -286,9 +290,9 @@ export function createHandler(
             requestId,
             sessionKey,
             memoryUpdateError,
-            localMemoryFetchCount: loop.fetches.length,
-            localMemoryFetches: loop.fetches,
-            returnedMemoryChunkIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedChunkIds))],
+            localContextFetchCount: loop.fetches.length,
+            localContextFetches: loop.fetches,
+            returnedPieceIds: [...new Set(loop.fetches.flatMap((fetch) => fetch.returnedPieceIds))],
             ...memoryStateMetrics(finalMemory),
             ...(usageTotals ? usageTotals : {}),
           });
@@ -313,7 +317,10 @@ export function createHandler(
 export function startServer(
   config: ProxyConfig,
   fallbackSessionKeyForRequest?: () => string | null | undefined,
-  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>,
+  observedRoundSourcesForSession?: (
+    sessionKey: string,
+    timeoutMs: number,
+  ) => Promise<RoundSource[]>,
 ): StartedProxyServer {
   const { handler, awaitIdle, contextStats } = createHandler(
     config,
@@ -329,7 +336,9 @@ export function startServer(
   return { server, awaitIdle, contextStats };
 }
 
-function snapshotContextWindowStats(value: MutableContextWindowStats | undefined): ContextWindowStats | null {
+function snapshotContextWindowStats(
+  value: MutableContextWindowStats | undefined,
+): ContextWindowStats | null {
   if (!value || value.samples === 0) {
     return null;
   }
@@ -377,7 +386,10 @@ type FinalizeRoundOptions = {
   assistantSources: RoundSource[];
   fetches: LocalContextFetch[];
   authHeader: string | null;
-  observedRoundSourcesForSession?: (sessionKey: string, timeoutMs: number) => Promise<RoundSource[]>;
+  observedRoundSourcesForSession?: (
+    sessionKey: string,
+    timeoutMs: number,
+  ) => Promise<RoundSource[]>;
   saveWithinExistingLock?: boolean;
 };
 
@@ -472,8 +484,8 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
       await logger.log("memory_state_saved", {
         requestId,
         sessionKey,
-        newChunkIds: memoryUpdate.newChunkIds,
-        droppedChunkIds: memoryUpdate.droppedChunkIds,
+        newPieceIds: memoryUpdate.newPieceIds,
+        droppedPieceIds: memoryUpdate.droppedPieceIds,
         ...memoryStateMetrics(memoryUpdate.memory),
       });
     }
@@ -499,9 +511,9 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     requestId,
     sessionKey,
     memoryUpdateError,
-    localMemoryFetchCount: fetches.length,
-    localMemoryFetches: fetches,
-    returnedMemoryChunkIds: [...new Set(fetches.flatMap((fetch) => fetch.returnedChunkIds))],
+    localContextFetchCount: fetches.length,
+    localContextFetches: fetches,
+    returnedPieceIds: [...new Set(fetches.flatMap((fetch) => fetch.returnedPieceIds))],
     internalManagerInputTokens: structuredUsageTotals.inputTokens,
     internalManagerCachedInputTokens: structuredUsageTotals.cachedInputTokens,
     internalManagerOutputTokens: structuredUsageTotals.outputTokens,
@@ -510,7 +522,8 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     ...(usageTotals
       ? {
         allInInputTokens: usageTotals.inputTokens + structuredUsageTotals.inputTokens,
-        allInCachedInputTokens: usageTotals.cachedInputTokens + structuredUsageTotals.cachedInputTokens,
+        allInCachedInputTokens: usageTotals.cachedInputTokens +
+          structuredUsageTotals.cachedInputTokens,
         allInOutputTokens: usageTotals.outputTokens + structuredUsageTotals.outputTokens,
         allInTotalTokens: usageTotals.totalTokens + structuredUsageTotals.totalTokens,
       }

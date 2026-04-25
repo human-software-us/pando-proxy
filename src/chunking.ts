@@ -1,6 +1,6 @@
 import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
-import type { ChunkDraft, ChunkSelector } from "./memory_state.ts";
+import type { ChunkSelector, PieceDraft } from "./memory_state.ts";
 import type { StructuredClients } from "./structured_model.ts";
 import type { RoundSource } from "./tool_results.ts";
 
@@ -18,22 +18,28 @@ export async function chunkRoundSources(
   sources: RoundSource[],
   config: ProxyConfig,
   clients: StructuredClients,
-): Promise<ChunkDraft[]> {
-  const out: ChunkDraft[] = [];
+): Promise<PieceDraft[]> {
+  const out: PieceDraft[] = [];
+  const batchedSources = sources.filter((source) =>
+    source.sourceKind !== "user" &&
+    !(source.sourceKind === "tool" && isPandoToolName(source.toolName))
+  );
+  const batchedSelectors = batchedSources.length > 0
+    ? await chunkBatchWithModel(batchedSources, config, clients)
+    : new Map<string, ChunkSelector[]>();
+
   for (const source of sources) {
-    const drafts = source.sourceKind === "user"
-      ? chunkWholeSource(source, config)
+    const selectors = source.sourceKind === "user"
+      ? [{ kind: "whole" } satisfies ChunkSelector]
       : source.sourceKind === "tool" && isPandoToolName(source.toolName)
-      ? chunkPandoSource(source, config)
-      : await chunkWithModel(source, config, clients);
-    out.push(...drafts);
+      ? deterministicPandoSelectors(source.payload)
+      : batchedSelectors.get(source.sourceId) ?? [{ kind: "whole" } satisfies ChunkSelector];
+    const pieces = materializeSourceSelectors(source, selectors, config);
+    out.push(...(pieces.length > 0
+      ? pieces
+      : materializeSourceSelectors(source, [{ kind: "whole" }], config)));
   }
   return out;
-}
-
-export function chunkPandoSource(source: RoundSource, config: ProxyConfig): ChunkDraft[] {
-  const selectors = deterministicPandoSelectors(source.payload);
-  return materializeSourceSelectors(source, selectors, config);
 }
 
 export function isPandoToolName(toolName: string | undefined): boolean {
@@ -46,14 +52,13 @@ export function deterministicPandoSelectors(payload: unknown): ChunkSelector[] {
     return payload.map((_, index) => ({ kind: "object_path", path: [index] }));
   }
 
-  const arrayPath = findCandidateArrayPath(payload);
-  if (arrayPath) {
-    const arrayValue = readObjectPath(payload, arrayPath);
-    if (Array.isArray(arrayValue)) {
-      return arrayValue.map((_, index) => ({
-        kind: "object_path",
-        path: [...arrayPath, index],
-      }));
+  for (const prefix of [[], ["data"]]) {
+    for (const key of PANDO_ARRAY_KEYS) {
+      const path = [...prefix, key];
+      const value = readObjectPath(payload, path);
+      if (Array.isArray(value) && value.length > 0) {
+        return value.map((_, index) => ({ kind: "object_path", path: [...path, index] }));
+      }
     }
   }
 
@@ -64,21 +69,30 @@ export function materializeSourceSelectors(
   source: RoundSource,
   selectors: ChunkSelector[],
   _config: Pick<ProxyConfig, "piecePreviewCharLimit">,
-): ChunkDraft[] {
-  return selectors.map((selector, index) => {
-    const payload = materializeSelector(source.payload, selector);
+): PieceDraft[] {
+  const out: PieceDraft[] = [];
+  for (const [index, selector] of selectors.entries()) {
+    const payloadInline = materializeSelector(source.payload, selector);
+    if (payloadInline === undefined) {
+      continue;
+    }
     const pointer = buildPointer(source, selector);
-    return {
+    const draft: PieceDraft = {
       id: `${source.sourceId}:${index}`,
       sourceKind: source.sourceKind,
       sourceId: source.sourceId,
       ...(source.toolName ? { toolName: source.toolName } : {}),
-      payload,
+      payloadInline,
+      previewText: previewText(payloadInline),
       ...(pointer ? { pointer } : {}),
-      byteSize: byteSize(payload),
+      byteSize: byteSize(payloadInline),
       selector,
     };
-  });
+    if (draft.byteSize > 0) {
+      out.push(draft);
+    }
+  }
+  return out;
 }
 
 export function materializeSelector(payload: unknown, selector: ChunkSelector): unknown {
@@ -95,54 +109,41 @@ export function materializeSelector(payload: unknown, selector: ChunkSelector): 
   return readObjectPath(payload, selector.path);
 }
 
-async function chunkWithModel(
-  source: RoundSource,
+async function chunkBatchWithModel(
+  sources: RoundSource[],
   config: ProxyConfig,
   clients: StructuredClients,
-): Promise<ChunkDraft[]> {
-  const response = await clients.sourceChunk({
-    sourceKind: source.sourceKind as "assistant" | "tool",
-    ...(source.toolName ? { toolName: source.toolName } : {}),
-    content: source.payload,
+): Promise<Map<string, ChunkSelector[]>> {
+  const response = await clients.sourceChunkBatch({
+    sources: sources.map((source) => ({
+      sourceId: source.sourceId,
+      sourceKind: source.sourceKind as "assistant" | "tool",
+      ...(source.toolName ? { toolName: source.toolName } : {}),
+      content: source.payload,
+      ...(source.pointer ? { pointer: source.pointer } : {}),
+    })),
   });
-  const selectors = response.chunks.length > 0
-    ? response.chunks
-    : [{ kind: "whole" } satisfies ChunkSelector];
-  const drafts = materializeSourceSelectors(source, selectors, config).filter((draft) =>
-    draft.payload !== undefined && draft.byteSize > 0
-  );
-  if (drafts.length > 0) {
-    return drafts;
+  const byId = new Map<string, ChunkSelector[]>();
+  for (const entry of response.results ?? []) {
+    byId.set(
+      entry.sourceId,
+      Array.isArray(entry.selectors) && entry.selectors.length > 0
+        ? entry.selectors
+        : [{ kind: "whole" }],
+    );
   }
-  return materializeSourceSelectors(source, [{ kind: "whole" }], config);
+  return byId;
 }
 
-function buildPointer(source: RoundSource, selector: ChunkSelector): Record<string, unknown> | null {
+function buildPointer(
+  source: RoundSource,
+  selector: ChunkSelector,
+): Record<string, unknown> | null {
   const pointer: Record<string, unknown> = {
     ...(source.pointer ?? {}),
     selector,
   };
   return Object.keys(pointer).length > 0 ? pointer : null;
-}
-
-function chunkWholeSource(
-  source: RoundSource,
-  config: Pick<ProxyConfig, "piecePreviewCharLimit">,
-): ChunkDraft[] {
-  return materializeSourceSelectors(source, [{ kind: "whole" }], config);
-}
-
-function findCandidateArrayPath(payload: unknown): Array<string | number> | null {
-  for (const prefix of [[], ["data"]]) {
-    for (const key of PANDO_ARRAY_KEYS) {
-      const path = [...prefix, key];
-      const value = readObjectPath(payload, path);
-      if (Array.isArray(value) && value.length > 0) {
-        return path;
-      }
-    }
-  }
-  return null;
 }
 
 function readObjectPath(payload: unknown, path: Array<string | number>): unknown {
@@ -164,7 +165,10 @@ function readObjectPath(payload: unknown, path: Array<string | number>): unknown
 }
 
 function byteSize(value: unknown): number {
-  return new TextEncoder().encode(
-    typeof value === "string" ? value : stableJson(value),
-  ).length;
+  return new TextEncoder().encode(typeof value === "string" ? value : stableJson(value)).length;
+}
+
+function previewText(value: unknown): string {
+  const text = typeof value === "string" ? value : stableJson(value);
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }

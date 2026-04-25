@@ -21,7 +21,7 @@ Deno.test("updateMemoryForCompletedRound stores new request and assistant conten
       id: "assistant_msg_1",
       type: "message",
       role: "assistant",
-      content: [{ type: "output_text", text: "{\"ok\":true}" }],
+      content: [{ type: "output_text", text: '{"ok":true}' }],
     }],
   };
 
@@ -97,7 +97,10 @@ function clients(
         return {
           tasksAfter: response.tasksAfter,
           pieceSelection: { mode: "keep_all" },
-          keptPieceTaskLinks: request.newPieces.map((piece) => ({ id: piece.id, taskIds: ["task_1"] })),
+          keptPieceTaskLinks: request.newPieces.map((piece) => ({
+            id: piece.id,
+            taskIds: ["task_1"],
+          })),
         };
       }
       return response;

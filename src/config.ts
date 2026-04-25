@@ -13,7 +13,7 @@ export type ProxyConfig = {
   logFile: string | null;
   inlinePieceByteLimit: number;
   piecePreviewCharLimit: number;
-  maxIndexedPiecesPerTask: number;
+  maxInlinePieces: number;
   maxLocalContextToolCalls: number;
   codexAutoCompactTokenLimit: number;
 };
@@ -43,7 +43,7 @@ export const DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW = 1_000_000;
 export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
 export const DEFAULT_INLINE_PIECE_BYTE_LIMIT = 16_384;
 export const DEFAULT_PIECE_PREVIEW_CHAR_LIMIT = 96;
-export const DEFAULT_MAX_INDEXED_PIECES_PER_TASK = 12;
+export const DEFAULT_MAX_INLINE_PIECES = 12;
 export const DEFAULT_MAX_LOCAL_CONTEXT_TOOL_CALLS = 4;
 export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 280_000;
 
@@ -91,9 +91,9 @@ export function loadConfig(options: CliOptions = {}): ProxyConfig {
       Deno.env.get("PANDO_PROXY_PIECE_PREVIEW_CHAR_LIMIT"),
       DEFAULT_PIECE_PREVIEW_CHAR_LIMIT,
     ),
-    maxIndexedPiecesPerTask: parsePositiveInt(
-      Deno.env.get("PANDO_PROXY_MAX_INDEXED_PIECES_PER_TASK"),
-      DEFAULT_MAX_INDEXED_PIECES_PER_TASK,
+    maxInlinePieces: parsePositiveInt(
+      Deno.env.get("PANDO_PROXY_MAX_INLINE_PIECES"),
+      DEFAULT_MAX_INLINE_PIECES,
     ),
     maxLocalContextToolCalls: parsePositiveInt(
       Deno.env.get("PANDO_PROXY_MAX_LOCAL_CONTEXT_TOOL_CALLS"),
@@ -152,7 +152,10 @@ export function parseCliOptions(args: string[]): { command: string | null; optio
       continue;
     }
     if (arg === "--codex-auto-compact-token-limit") {
-      options.codexAutoCompactTokenLimit = parseRequiredPositiveInt(requireValue(args, ++index, arg), arg);
+      options.codexAutoCompactTokenLimit = parseRequiredPositiveInt(
+        requireValue(args, ++index, arg),
+        arg,
+      );
       continue;
     }
     if (arg === "--help" || arg === "-h") {

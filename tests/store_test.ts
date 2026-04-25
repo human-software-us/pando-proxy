@@ -30,5 +30,8 @@ Deno.test("SessionStore externalizes large payloads and context_get returns exac
 
   const exact = await store.getExactPieces("session_1", ["piece_1"]);
   assertEquals(exact.length, 1);
-  assertEquals((exact[0].payload as Record<string, unknown>).text, "this payload is definitely larger than ten bytes");
+  assertEquals(
+    (exact[0].payload as Record<string, unknown>).text,
+    "this payload is definitely larger than ten bytes",
+  );
 });

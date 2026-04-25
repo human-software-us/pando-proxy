@@ -46,7 +46,9 @@ export async function extractNewRequestSources(
   return out;
 }
 
-export async function extractAssistantSourcesFromResponse(response: unknown): Promise<RoundSource[]> {
+export async function extractAssistantSourcesFromResponse(
+  response: unknown,
+): Promise<RoundSource[]> {
   if (!isRecord(response)) {
     return [];
   }
@@ -244,11 +246,11 @@ function isSyntheticMemoryItem(item: unknown): boolean {
   if (!isRecord(item) || item.type !== "message" || item.role !== "developer") {
     return false;
   }
-  if (typeof item.name === "string" && item.name === "pando_working_memory") {
+  if (typeof item.name === "string" && item.name === "pando_group_memory") {
     return true;
   }
   const text = extractInlineText(item);
-  return text.includes("<pando_working_memory>");
+  return text.includes("<pando_group_memory>");
 }
 
 function extractInlineText(item: Record<string, unknown>): string {

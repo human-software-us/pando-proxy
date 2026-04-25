@@ -1,41 +1,20 @@
-// Replay a Codex rollout JSONL through the memory pipeline.
-//
-// For each user turn in the rollout we reconstruct the request body Codex would
-// have sent, then measure:
-//   baseline: approxInputTokens on the raw accumulated body
-//   pando:    approxInputTokens after rewriteRequestWithMemory
-//
-// By default the memory manager's LLM calls are stubbed with a deterministic
-// policy so replay never talks to a real model. When opts.realLlm is provided,
-// replay uses the real structured-model path for source chunking and working
-// memory updates while still sourcing assistant/tool outputs from the rollout.
-
-import { chunkRoundSources } from "./chunking.ts";
 import { loadConfig, type ProxyConfig } from "./config.ts";
+import type {
+  GroupIntentRequest,
+  GroupIntentResponse,
+  PieceRetentionBatchRequest,
+  PieceRetentionBatchResponse,
+  PromptProjectionRequest,
+  PromptProjectionResponse,
+  SourceChunkBatchRequest,
+  SourceChunkBatchResponse,
+} from "./group_manager.ts";
 import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
 import { estimateTokensForValue, requestContextMetrics } from "./metrics.ts";
-import {
-  type ChunkDraft,
-  type ChunkRecord,
-  dedupeChunks,
-  emptyMemoryState,
-  type MemoryState,
-  unique,
-} from "./memory_state.ts";
+import { emptyMemoryState, type MemoryGroup, type MemoryState } from "./memory_state.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
 import {
-  extractAssistantSourcesFromResponse,
-  extractNewRequestSources,
-  type RoundSource,
-} from "./tool_results.ts";
-import type {
-  WorkingMemoryUpdateRequest,
-  WorkingMemoryUpdateResponse,
-} from "./round_update.ts";
-import {
   createStructuredClients,
-  type SourceChunkRequest,
-  type SourceChunkResponse,
   type StructuredClients,
   type StructuredModelUsage,
 } from "./structured_model.ts";
@@ -54,10 +33,6 @@ type Round = {
   recordedInputTokens: number | null;
   recordedOutputTokens: number | null;
   recordedCachedInputTokens: number | null;
-  // If a compaction event arrived just before this round, the replay should
-  // reset the baseline accumulator to this replacement history (it's what
-  // Codex itself sent as the next request input). Pando replay keeps its own
-  // memory state across the boundary.
   compactionReplacement: Record<string, unknown>[] | null;
 };
 
@@ -69,11 +44,11 @@ export type ReplayTurnResult = {
   baselineInputItemCount: number;
   pandoApproxInputTokens: number;
   pandoInputItemCount: number;
-  pandoInlineChunkCount: number;
-  pandoOmittedChunkCount: number;
-  pandoObjective: string | null;
-  pandoChunkCount: number;
-  pandoChunkBytes: number;
+  pandoInlinePieceCount: number;
+  pandoOmittedPieceCount: number;
+  pandoGroupCount: number;
+  pandoPieceCount: number;
+  pandoPieceBytes: number;
   recordedInputTokens: number | null;
   recordedOutputTokens: number | null;
   recordedCachedInputTokens: number | null;
@@ -112,28 +87,29 @@ export type StubPolicy =
   | "keep-none"
   | "cap-bytes";
 
+export type RealLlmOpts = {
+  authHeader: string;
+  requestModel?: string;
+  onProgress?: (turn: ReplayTurnResult) => void | Promise<void>;
+  onManagerUsage?: (usage: StructuredModelUsage) => void | Promise<void>;
+};
+
 export function parseRollout(text: string): RolloutEvent[] {
   const out: RolloutEvent[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed) {
+      continue;
+    }
     try {
       out.push(JSON.parse(trimmed));
     } catch {
-      // skip malformed lines
+      // Skip malformed lines.
     }
   }
   return out;
 }
 
-// Segment rollout into user-initiated rounds. Each round owns:
-//   - the leading user input item (message/role=user)
-//   - all subsequent response_items up to (but not including) the next user round
-//   - the last recorded token_count event within that round (for baseline cross-check)
-//
-// Developer/system/user-with-environment_context items before the first user turn
-// are kept as "prefix" items so they flow into every round's body, matching how
-// Codex keeps system prompts in place across turns.
 export function segmentRounds(
   events: RolloutEvent[],
 ): { prefixItems: Record<string, unknown>[]; rounds: Round[] } {
@@ -143,24 +119,23 @@ export function segmentRounds(
   let sawFirstUser = false;
   let pendingReplacement: Record<string, unknown>[] | null = null;
 
-  for (const ev of events) {
-    if (ev.type === "compacted" && ev.payload && typeof ev.payload === "object") {
-      const p = ev.payload as Record<string, unknown>;
-      const rh = p.replacement_history;
-      if (Array.isArray(rh)) {
-        pendingReplacement = rh.filter((x) => x && typeof x === "object") as Record<
-          string,
-          unknown
-        >[];
+  for (const event of events) {
+    if (event.type === "compacted" && event.payload && typeof event.payload === "object") {
+      const replacementHistory = (event.payload as Record<string, unknown>).replacement_history;
+      if (Array.isArray(replacementHistory)) {
+        pendingReplacement = replacementHistory.filter((item) =>
+          item && typeof item === "object"
+        ) as Record<string, unknown>[];
       }
       continue;
     }
-    if (ev.type === "response_item" && ev.payload && typeof ev.payload === "object") {
-      const item = ev.payload as Record<string, unknown>;
-      const itype = typeof item.type === "string" ? item.type : "";
+
+    if (event.type === "response_item" && event.payload && typeof event.payload === "object") {
+      const item = event.payload as Record<string, unknown>;
+      const type = typeof item.type === "string" ? item.type : "";
       const role = typeof item.role === "string" ? item.role : "";
 
-      if (itype === "message" && role === "user" && isLikelyUserPrompt(item)) {
+      if (type === "message" && role === "user" && isLikelyUserPrompt(item)) {
         sawFirstUser = true;
         current = {
           index: rounds.length,
@@ -184,171 +159,39 @@ export function segmentRounds(
 
       if (current) {
         current.assistantItems.push(item);
-      } else {
-        prefixItems.push(item);
       }
-    } else if (ev.type === "event_msg" && ev.payload && typeof ev.payload === "object") {
-      const p = ev.payload as Record<string, unknown>;
-      if (p.type === "token_count" && current) {
-        const info = (p.info as Record<string, unknown>) ?? {};
-        const lastUsage = (info.last_token_usage as Record<string, unknown>) ?? {};
-        const input = numberOrNull(lastUsage.input_tokens);
-        const cached = numberOrNull(lastUsage.cached_input_tokens);
-        const output = numberOrNull(lastUsage.output_tokens);
-        // Keep the MAX input tokens observed during the round (peak context).
-        if (input !== null) {
-          current.recordedInputTokens = Math.max(current.recordedInputTokens ?? 0, input);
-        }
-        if (output !== null) {
-          current.recordedOutputTokens = (current.recordedOutputTokens ?? 0) + output;
-        }
-        if (cached !== null) {
-          current.recordedCachedInputTokens = Math.max(
-            current.recordedCachedInputTokens ?? 0,
-            cached,
-          );
-        }
+      continue;
+    }
+
+    if (
+      event.type === "event_msg" && event.payload && typeof event.payload === "object" && current
+    ) {
+      const payload = event.payload as Record<string, unknown>;
+      if (payload.type !== "token_count") {
+        continue;
+      }
+      const info = (payload.info as Record<string, unknown>) ?? {};
+      const lastUsage = (info.last_token_usage as Record<string, unknown>) ?? {};
+      const input = numberOrNull(lastUsage.input_tokens);
+      const cached = numberOrNull(lastUsage.cached_input_tokens);
+      const output = numberOrNull(lastUsage.output_tokens);
+      if (input !== null) {
+        current.recordedInputTokens = Math.max(current.recordedInputTokens ?? 0, input);
+      }
+      if (output !== null) {
+        current.recordedOutputTokens = (current.recordedOutputTokens ?? 0) + output;
+      }
+      if (cached !== null) {
+        current.recordedCachedInputTokens = Math.max(
+          current.recordedCachedInputTokens ?? 0,
+          cached,
+        );
       }
     }
   }
 
   return { prefixItems, rounds };
 }
-
-function numberOrNull(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  return null;
-}
-
-function isLikelyUserPrompt(item: Record<string, unknown>): boolean {
-  // Codex injects an <environment_context> user message at session start; skip it.
-  const text = extractUserText(item);
-  if (!text) return false;
-  if (text.startsWith("<environment_context>")) return false;
-  // Codex adds <turn_aborted> / <system-reminder> sentinel messages; not real prompts.
-  if (text.startsWith("<turn_aborted>")) return false;
-  if (text.trim().startsWith("<user_interrupt>")) return false;
-  return true;
-}
-
-function extractUserText(item: Record<string, unknown>): string {
-  const c = item.content;
-  if (typeof c === "string") return c;
-  if (!Array.isArray(c)) return "";
-  return c.map((entry) => {
-    if (typeof entry === "string") return entry;
-    if (entry && typeof entry === "object") {
-      const e = entry as Record<string, unknown>;
-      if (typeof e.text === "string") return e.text;
-      if (typeof e.input_text === "string") return e.input_text;
-    }
-    return "";
-  }).join("\n");
-}
-
-function buildStubClients(policy: StubPolicy): StructuredClients {
-  return {
-    workingMemoryUpdate: (request: WorkingMemoryUpdateRequest) => {
-      return Promise.resolve(applyStubPolicy(policy, request));
-    },
-    sourceChunk: (_req: SourceChunkRequest): Promise<SourceChunkResponse> => {
-      return Promise.resolve({ chunks: [{ kind: "whole" }] });
-    },
-  };
-}
-
-function applyStubPolicy(
-  policy: StubPolicy,
-  request: WorkingMemoryUpdateRequest,
-): WorkingMemoryUpdateResponse {
-  const objective = request.objective ?? firstLineOfNewUserText(request);
-  switch (policy) {
-    case "retain-all":
-      return {
-        objectiveAfter: objective,
-        keepOldChunkIds: request.chunks.map((c) => c.id),
-        keepNewChunkIds: request.newChunks.map((c) => c.id),
-      };
-    case "drop-tools": {
-      const keepOld = request.chunks.filter((c) => c.sourceKind !== "tool").map((c) => c.id);
-      const keepNew = request.newChunks.filter((c) => c.sourceKind !== "tool").map((c) => c.id);
-      return { objectiveAfter: objective, keepOldChunkIds: keepOld, keepNewChunkIds: keepNew };
-    }
-    case "retain-recent": {
-      // Simulate a realistic "bounded working set": keep at most 12 chunks total,
-      // preferring the most recent new chunks.
-      const maxTotal = 12;
-      const keepNewIds = request.newChunks.slice(-maxTotal).map((c) => c.id);
-      const remaining = Math.max(0, maxTotal - keepNewIds.length);
-      const keepOldIds = request.chunks.slice(-remaining).map((c) => c.id);
-      return { objectiveAfter: objective, keepOldChunkIds: keepOldIds, keepNewChunkIds: keepNewIds };
-    }
-    case "keep-none":
-      return { objectiveAfter: objective, keepOldChunkIds: [], keepNewChunkIds: [] };
-    case "cap-bytes": {
-      // Keep chunks so that total bytes <= 32KB. Prefer new chunks first (most
-      // recent), then walk old chunks newest-first until cap is hit.
-      const cap = 32_768;
-      let used = 0;
-      const keepNewIds: string[] = [];
-      for (const c of [...request.newChunks].reverse()) {
-        const bytes = approxBytes(c.content);
-        if (used + bytes > cap) continue;
-        used += bytes;
-        keepNewIds.push(c.id);
-      }
-      const keepOldIds: string[] = [];
-      for (const c of [...request.chunks].reverse()) {
-        const bytes = approxBytes(c.content);
-        if (used + bytes > cap) continue;
-        used += bytes;
-        keepOldIds.push(c.id);
-      }
-      return { objectiveAfter: objective, keepOldChunkIds: keepOldIds, keepNewChunkIds: keepNewIds };
-    }
-  }
-}
-
-function approxBytes(v: unknown): number {
-  try {
-    return JSON.stringify(v).length;
-  } catch {
-    return 0;
-  }
-}
-
-function firstLineOfNewUserText(request: WorkingMemoryUpdateRequest): string | null {
-  const userNew = request.newChunks.find((c) => c.sourceKind === "user");
-  if (!userNew) return null;
-  const payload = userNew.content;
-  if (typeof payload === "string") return payload.split("\n")[0]?.slice(0, 120) ?? null;
-  if (payload && typeof payload === "object") {
-    // message item
-    const item = payload as Record<string, unknown>;
-    const c = item.content;
-    if (Array.isArray(c)) {
-      for (const entry of c) {
-        if (entry && typeof entry === "object") {
-          const e = entry as Record<string, unknown>;
-          const t = typeof e.text === "string"
-            ? e.text
-            : typeof e.input_text === "string"
-            ? e.input_text
-            : "";
-          if (t) return t.split("\n")[0].slice(0, 120);
-        }
-      }
-    }
-  }
-  return null;
-}
-
-export type RealLlmOpts = {
-  authHeader: string;
-  requestModel?: string;
-  onProgress?: (turn: ReplayTurnResult) => void | Promise<void>;
-  onManagerUsage?: (usage: StructuredModelUsage) => void | Promise<void>;
-};
 
 export async function replayRollout(
   path: string,
@@ -359,13 +202,14 @@ export async function replayRollout(
     realLlm?: RealLlmOpts;
   } = {},
 ): Promise<{ stats: ReplayStats; turns: ReplayTurnResult[] }> {
-  const policy: StubPolicy = opts.policy ?? "drop-tools";
+  const policy = opts.policy ?? "drop-tools";
   const effectivePolicy = opts.realLlm ? "real-llm" : policy;
   const text = await Deno.readTextFile(path);
   const events = parseRollout(text);
   const { prefixItems, rounds } = segmentRounds(events);
+  const roundsToRun = typeof opts.maxRounds === "number" ? rounds.slice(0, opts.maxRounds) : rounds;
   const config = opts.config ?? loadConfig({ memoryEnabled: true });
-  const clients: StructuredClients = opts.realLlm
+  const clients = opts.realLlm
     ? createStructuredClients(
       config,
       opts.realLlm.requestModel ?? "gpt-5.4",
@@ -375,95 +219,61 @@ export async function replayRollout(
     )
     : buildStubClients(policy);
 
-  // Accumulated response_items Codex would carry turn-to-turn (baseline path).
-  // This includes: prefix items, then for each round the user item + all
-  // assistant items (messages, function_calls, function_call_outputs, reasoning).
-  const accumulated: Record<string, unknown>[] = [...prefixItems];
-
-  let memory: MemoryState = emptyMemoryState();
+  const accumulated = [...prefixItems];
   const turns: ReplayTurnResult[] = [];
-
-  const roundsToRun = opts.maxRounds ? rounds.slice(0, opts.maxRounds) : rounds;
+  let memory: MemoryState = emptyMemoryState();
 
   for (const round of roundsToRun) {
-    if (!round.userItem) continue;
+    if (!round.userItem) {
+      continue;
+    }
 
-    // If Codex compacted just before this round, reset the accumulator to the
-    // replacement history Codex actually sent.
     if (round.compactionReplacement) {
       accumulated.length = 0;
       accumulated.push(...prefixItems);
       accumulated.push(...round.compactionReplacement);
     }
 
-    // BEFORE sending this turn, Codex's body includes everything accumulated
-    // plus the user message for this round. We add it now:
     accumulated.push(round.userItem);
 
-    // Build the body as it would appear to the proxy right now.
     const baselineBody: Record<string, unknown> = {
       model: "gpt-5.4",
-      input: accumulated.map((i) => i),
+      input: accumulated.map((item) => item),
       stream: true,
     };
 
-    // Baseline = what Codex would send without Pando.
     const baselineMetrics = requestContextMetrics(baselineBody);
-    const baselineApprox = baselineMetrics.approxInputTokens as number;
-    const baselineItemCount = baselineMetrics.inputItemCount as number;
-
-    // Pando rewrite:
     const rewrite = await rewriteRequestWithMemory(baselineBody, memory, config);
     const pandoMetrics = requestContextMetrics(rewrite.body);
-    const pandoApprox = pandoMetrics.approxInputTokens as number;
-    const pandoItemCount = pandoMetrics.inputItemCount as number;
-
-    // Fake response object built from the round's assistantItems, shaped so that
-    // extractAssistantSourcesFromResponse() finds message + tool outputs.
-    const fakeResponse: Record<string, unknown> = {
+    const fakeResponse = {
       id: `replay_${round.index}`,
       output: round.assistantItems,
     };
 
-    try {
-      if (opts.realLlm) {
-        const updated = await updateMemoryForCompletedRound(
-          baselineBody,
-          memory,
-          fakeResponse,
-          [],
-          clients,
-          config,
-          { sessionKey: `replay_${round.index}`, requestId: `replay_${round.index}` },
-        );
-        memory = updated.memory;
-      } else {
-        memory = await directMemoryUpdate(
-          baselineBody,
-          memory,
-          fakeResponse,
-          clients,
-          config,
-          policy,
-        );
-      }
-    } catch (err) {
-      console.error(`round ${round.index} memory update failed:`, err);
-    }
+    const updated = await updateMemoryForCompletedRound(
+      baselineBody,
+      memory,
+      fakeResponse,
+      [],
+      clients,
+      config,
+      { sessionKey: `replay_${round.index}`, requestId: `replay_${round.index}` },
+    );
+    memory = updated.memory;
 
     const turnResult: ReplayTurnResult = {
       turn: round.index,
       userPreview: round.userText.split("\n")[0].slice(0, 80),
       compactionBefore: Boolean(round.compactionReplacement),
-      baselineApproxInputTokens: baselineApprox,
-      baselineInputItemCount: baselineItemCount,
-      pandoApproxInputTokens: pandoApprox,
-      pandoInputItemCount: pandoItemCount,
-      pandoInlineChunkCount: rewrite.diff.inlineChunkCount,
-      pandoOmittedChunkCount: rewrite.diff.omittedChunkCount,
-      pandoObjective: memory.objective,
-      pandoChunkCount: memory.chunks.length,
-      pandoChunkBytes: memory.chunks.reduce((acc, c) => acc + c.byteSize, 0),
+      baselineApproxInputTokens: baselineMetrics.approxInputTokens as number,
+      baselineInputItemCount: baselineMetrics.inputItemCount as number,
+      pandoApproxInputTokens: pandoMetrics.approxInputTokens as number,
+      pandoInputItemCount: pandoMetrics.inputItemCount as number,
+      pandoInlinePieceCount: rewrite.diff.inlinePieceCount,
+      pandoOmittedPieceCount: rewrite.diff.omittedPieceCount,
+      pandoGroupCount: memory.groups.length,
+      pandoPieceCount: memory.pieces.length,
+      pandoPieceBytes: memory.pieces.reduce((total, piece) => total + piece.byteSize, 0),
       recordedInputTokens: round.recordedInputTokens,
       recordedOutputTokens: round.recordedOutputTokens,
       recordedCachedInputTokens: round.recordedCachedInputTokens,
@@ -473,152 +283,252 @@ export async function replayRollout(
       await opts.realLlm.onProgress(turnResult);
     }
 
-    // After the round, add assistant items to accumulated so the next round sees
-    // the same conversation state Codex would have seen.
-    for (const item of round.assistantItems) {
-      accumulated.push(item);
-    }
+    accumulated.push(...round.assistantItems);
   }
 
-  const baselineSeries = turns.map((t) => t.baselineApproxInputTokens);
-  const pandoSeries = turns.map((t) => t.pandoApproxInputTokens);
-  const recordedSeries = turns.map((t) => t.recordedInputTokens).filter(
-    (v): v is number => typeof v === "number",
+  const baselineSeries = turns.map((turn) => turn.baselineApproxInputTokens);
+  const pandoSeries = turns.map((turn) => turn.pandoApproxInputTokens);
+  const recordedSeries = turns.map((turn) => turn.recordedInputTokens).filter(
+    (value): value is number => typeof value === "number",
   );
 
-  const stats: ReplayStats = {
-    rollout: path,
-    rounds: turns.length,
-    compactions: turns.filter((t) => t.compactionBefore).length,
-    baseline: {
-      min: minOf(baselineSeries),
-      avg: avgOf(baselineSeries),
-      max: maxOf(baselineSeries),
-      totalApprox: sumOf(baselineSeries),
-    },
-    pando: {
-      min: minOf(pandoSeries),
-      avg: avgOf(pandoSeries),
-      max: maxOf(pandoSeries),
-      totalApprox: sumOf(pandoSeries),
-    },
-    recorded: {
-      min: recordedSeries.length ? minOf(recordedSeries) : null,
-      avg: recordedSeries.length ? avgOf(recordedSeries) : null,
-      max: recordedSeries.length ? maxOf(recordedSeries) : null,
-    },
-    savingsAvgTokens: avgOf(baselineSeries) - avgOf(pandoSeries),
-    savingsMaxTokens: maxOf(baselineSeries) - maxOf(pandoSeries),
-    policy: effectivePolicy,
-  };
-
-  return { stats, turns };
-}
-
-// Bypass updateMemoryForCompletedRound's structured-model path. We still use
-// chunkRoundSources (with a whole-chunk stub) to get realistic chunk shapes,
-// then apply the policy directly to build the next MemoryState.
-async function directMemoryUpdate(
-  body: Record<string, unknown>,
-  previous: MemoryState,
-  response: unknown,
-  clients: StructuredClients,
-  config: ProxyConfig,
-  policy: StubPolicy,
-): Promise<MemoryState> {
-  const processed = new Set(previous.processedSourceIds);
-  const requestSources = await extractNewRequestSources(body, processed);
-  const assistantSources = await extractAssistantSourcesFromResponse(response);
-  const newSources: RoundSource[] = [...requestSources, ...assistantSources].filter((s) =>
-    !processed.has(s.sourceId)
-  );
-  if (newSources.length === 0) {
-    return previous;
-  }
-  const drafts: ChunkDraft[] = await chunkRoundSources(newSources, config, clients);
-  const kept = buildKeptChunks(policy, previous.chunks, drafts);
-  const nextSeq = previous.roundSeq + 1;
-  const newRecords: ChunkRecord[] = kept.newKeeps.map((c) => ({
-    ...c,
-    createdSeq: nextSeq,
-  }));
-  const combined = dedupeChunks([...kept.oldKeeps, ...newRecords]);
-  const objectiveAfter = previous.objective ?? fallbackObjective(newSources);
   return {
-    roundSeq: nextSeq,
-    objective: objectiveAfter,
-    chunks: objectiveAfter ? combined : [],
-    processedSourceIds: unique([
-      ...previous.processedSourceIds,
-      ...drafts.map((d) => d.sourceId),
-    ]),
+    stats: {
+      rollout: path,
+      rounds: turns.length,
+      compactions: turns.filter((turn) => turn.compactionBefore).length,
+      baseline: {
+        min: minOf(baselineSeries),
+        avg: avgOf(baselineSeries),
+        max: maxOf(baselineSeries),
+        totalApprox: sumOf(baselineSeries),
+      },
+      pando: {
+        min: minOf(pandoSeries),
+        avg: avgOf(pandoSeries),
+        max: maxOf(pandoSeries),
+        totalApprox: sumOf(pandoSeries),
+      },
+      recorded: {
+        min: recordedSeries.length > 0 ? minOf(recordedSeries) : null,
+        avg: recordedSeries.length > 0 ? avgOf(recordedSeries) : null,
+        max: recordedSeries.length > 0 ? maxOf(recordedSeries) : null,
+      },
+      savingsAvgTokens: avgOf(baselineSeries) - avgOf(pandoSeries),
+      savingsMaxTokens: maxOf(baselineSeries) - maxOf(pandoSeries),
+      policy: effectivePolicy,
+    },
+    turns,
   };
 }
 
-function buildKeptChunks(
+function buildStubClients(policy: StubPolicy): StructuredClients {
+  return {
+    groupIntent: async (request: GroupIntentRequest) => applyStubGroupIntent(request),
+    sourceChunkBatch: async (
+      request: SourceChunkBatchRequest,
+    ): Promise<SourceChunkBatchResponse> =>
+      Promise.resolve({
+        results: request.sources.map((source) => ({
+          sourceId: source.sourceId,
+          selectors: [{ kind: "whole" }],
+        })),
+      }),
+    pieceRetentionBatch: async (
+      request: PieceRetentionBatchRequest,
+    ): Promise<PieceRetentionBatchResponse> => applyStubRetentionPolicy(policy, request),
+    promptProjection: async (
+      request: PromptProjectionRequest,
+    ): Promise<PromptProjectionResponse> => ({
+      inlinePieceIds: request.retainedPieces
+        .filter((piece) => piece.visibility === "inline")
+        .slice(-Math.max(0, request.maxInlinePieces))
+        .map((piece) => piece.id),
+    }),
+  };
+}
+
+function applyStubGroupIntent(request: GroupIntentRequest): GroupIntentResponse {
+  const activeGroup = request.groups.find((group) => group.status === "active");
+  const group = activeGroup ?? deriveGroupFromRequest(request);
+  return {
+    groupsAfter: group ? [group] : [],
+    closedGroupIds: [],
+    replacedGroupIds: [],
+  };
+}
+
+function applyStubRetentionPolicy(
   policy: StubPolicy,
-  oldChunks: ChunkRecord[],
-  newDrafts: ChunkDraft[],
-): { oldKeeps: ChunkRecord[]; newKeeps: ChunkDraft[] } {
+  request: PieceRetentionBatchRequest,
+): PieceRetentionBatchResponse {
+  const activeGroupId = request.groups.find((group) => group.status === "active")?.id ?? "group_1";
+  const keepIds = selectKeptNewPieceIds(policy, request);
+  return {
+    decisions: request.newPieces.map((piece) => ({
+      pieceId: piece.id,
+      keep: keepIds.includes(piece.id),
+      ...(keepIds.includes(piece.id) ? { groupId: activeGroupId } : {}),
+      supersedesPieceIds: [],
+      visibility: piece.sourceKind === "user" ? "inline" : "omittable",
+    })),
+  };
+}
+
+function selectKeptNewPieceIds(policy: StubPolicy, request: PieceRetentionBatchRequest): string[] {
   switch (policy) {
     case "retain-all":
-      return { oldKeeps: oldChunks, newKeeps: newDrafts };
+      return request.newPieces.map((piece) => piece.id);
     case "drop-tools":
-      return {
-        oldKeeps: oldChunks.filter((c) => c.sourceKind !== "tool"),
-        newKeeps: newDrafts.filter((c) => c.sourceKind !== "tool"),
-      };
-    case "retain-recent": {
-      const maxTotal = 12;
-      const newKeeps = newDrafts.slice(-maxTotal);
-      const remaining = Math.max(0, maxTotal - newKeeps.length);
-      const oldKeeps = oldChunks.slice(-remaining);
-      return { oldKeeps, newKeeps };
-    }
+      return request.newPieces.filter((piece) => piece.sourceKind !== "tool").map((piece) =>
+        piece.id
+      );
+    case "retain-recent":
+      return request.newPieces.slice(-12).map((piece) => piece.id);
     case "keep-none":
-      return { oldKeeps: [], newKeeps: [] };
+      return [];
     case "cap-bytes": {
-      const cap = 32_768;
+      const keepIds: string[] = [];
       let used = 0;
-      const newKeeps: ChunkDraft[] = [];
-      for (const c of [...newDrafts].reverse()) {
-        if (used + c.byteSize > cap) continue;
-        used += c.byteSize;
-        newKeeps.unshift(c);
+      for (const piece of [...request.newPieces].reverse()) {
+        const bytes = approxBytes(piece.content);
+        if (used + bytes > 32_768) {
+          continue;
+        }
+        used += bytes;
+        keepIds.unshift(piece.id);
       }
-      const oldKeeps: ChunkRecord[] = [];
-      for (const c of [...oldChunks].reverse()) {
-        if (used + c.byteSize > cap) continue;
-        used += c.byteSize;
-        oldKeeps.unshift(c);
-      }
-      return { oldKeeps, newKeeps };
+      return keepIds;
     }
   }
 }
 
-function fallbackObjective(sources: RoundSource[]): string | null {
-  const userSource = sources.find((s) => s.sourceKind === "user");
-  if (!userSource) return null;
-  return "Continue the current user request.";
+function deriveGroupFromRequest(request: GroupIntentRequest): MemoryGroup | null {
+  const text = firstLineOfNewUserText(request) ?? "Continue the current task";
+  return {
+    id: "group_1",
+    status: "active",
+    routingLabel: slug(text),
+    summary: text,
+    lastTouchedSeq: 0,
+  };
 }
 
-function sumOf(xs: number[]): number {
-  return xs.reduce((a, b) => a + b, 0);
+function firstLineOfNewUserText(
+  request: Pick<GroupIntentRequest, "newUserPieces">,
+): string | null {
+  const userPiece = request.newUserPieces[0];
+  if (!userPiece) {
+    return null;
+  }
+  const payload = userPiece.content;
+  if (typeof payload === "string") {
+    return payload.split("\n")[0]?.slice(0, 120) ?? null;
+  }
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const content = (payload as Record<string, unknown>).content;
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  for (const entry of content) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const text = typeof record.text === "string"
+      ? record.text
+      : typeof record.input_text === "string"
+      ? record.input_text
+      : "";
+    if (text) {
+      return text.split("\n")[0].slice(0, 120);
+    }
+  }
+  return null;
 }
-function avgOf(xs: number[]): number {
-  if (xs.length === 0) return 0;
-  return Math.round(sumOf(xs) / xs.length);
+
+function slug(text: string): string {
+  const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "current-work";
 }
-function minOf(xs: number[]): number {
-  return xs.length === 0 ? 0 : Math.min(...xs);
+
+function isLikelyUserPrompt(item: Record<string, unknown>): boolean {
+  const text = extractUserText(item);
+  if (!text) {
+    return false;
+  }
+  if (text.startsWith("<environment_context>")) {
+    return false;
+  }
+  if (text.startsWith("<turn_aborted>")) {
+    return false;
+  }
+  if (text.trim().startsWith("<user_interrupt>")) {
+    return false;
+  }
+  return true;
 }
-function maxOf(xs: number[]): number {
-  return xs.length === 0 ? 0 : Math.max(...xs);
+
+function extractUserText(item: Record<string, unknown>): string {
+  const content = item.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content.map((entry) => {
+    if (typeof entry === "string") {
+      return entry;
+    }
+    if (entry && typeof entry === "object") {
+      const record = entry as Record<string, unknown>;
+      if (typeof record.text === "string") {
+        return record.text;
+      }
+      if (typeof record.input_text === "string") {
+        return record.input_text;
+      }
+    }
+    return "";
+  }).join("\n");
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function approxBytes(value: unknown): number {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+}
+
+function sumOf(values: number[]): number {
+  return values.reduce((left, right) => left + right, 0);
+}
+
+function avgOf(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  return Math.round(sumOf(values) / values.length);
+}
+
+function minOf(values: number[]): number {
+  return values.length === 0 ? 0 : Math.min(...values);
+}
+
+function maxOf(values: number[]): number {
+  return values.length === 0 ? 0 : Math.max(...values);
 }
 
 function unusedEstimate(): number {
-  // retained to keep estimateTokensForValue in the import graph; value unused.
   return estimateTokensForValue({});
 }
+
 void unusedEstimate;

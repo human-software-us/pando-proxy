@@ -1,11 +1,15 @@
 import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
-import { chronologicalChunks, type ChunkRecord, type MemoryState } from "./memory_state.ts";
-import { pinnedConstraintReasonForChunk } from "./round_update.ts";
+import {
+  activeGroups,
+  chronologicalPieces,
+  type MemoryPiece,
+  type MemoryState,
+  piecePreview,
+} from "./memory_state.ts";
 import {
   describeInputItems,
   type InputItemDescriptor,
-  inputItems,
   itemTypeCounts,
 } from "./tool_results.ts";
 
@@ -15,57 +19,54 @@ export type RewriteDiff = {
   rawInputTypeCounts: Record<string, number>;
   rewrittenInputTypeCounts: Record<string, number>;
   insertedMemory: boolean;
-  inlineChunkCount: number;
-  omittedChunkCount: number;
+  inlinePieceCount: number;
+  omittedPieceCount: number;
 };
 
 export type RewriteResult = {
   body: Record<string, unknown>;
   diff: RewriteDiff;
-  inlineChunkIds: string[];
-  omittedChunkIds: string[];
+  inlinePieceIds: string[];
+  omittedPieceIds: string[];
 };
 
 export async function rewriteRequestWithMemory(
   body: Record<string, unknown>,
   memory: MemoryState,
-  config: ProxyConfig,
+  _config: ProxyConfig,
 ): Promise<RewriteResult> {
   const raw = await describeInputItems(body.input);
   const filtered = raw.filter((item) => !item.isSyntheticMemory);
   const instructions = leadingInstructions(filtered);
   const tail = currentRoundTail(filtered);
-  const selection = selectPromptChunks(memory, config.maxIndexedPiecesPerTask);
-  const memoryItem = makeWorkingMemoryItem(memory, selection.inlineChunks);
+  const selected = selectedPromptPieces(memory);
+  const memoryItem = makeGroupMemoryItem(memory, selected.inlinePieces);
   const rewrittenItems = [
     ...instructions.map((item) => item.item),
     ...(memoryItem ? [memoryItem] : []),
     ...tail.map((item) => item.item),
   ];
-
-  const rewrittenBody = {
-    ...body,
-    input: rewrittenItems,
-    tools: injectMemoryTool(body.tools, selection.omittedChunks),
-  };
   const rewrittenDescriptors = await describeInputItems(rewrittenItems);
 
   return {
-    body: rewrittenBody,
+    body: {
+      ...body,
+      input: rewrittenItems,
+      tools: injectContextGetTool(body.tools, memory.pieces.length > 0),
+    },
     diff: {
-      droppedInputIds: filtered.filter((item) =>
-        !tailOrInstructionContains(item, instructions, tail)
-      )
-        .map((item) => item.ref),
+      droppedInputIds: filtered.filter((item) => !containsRef(item, instructions, tail)).map((
+        item,
+      ) => item.ref),
       keptInputIds: [...instructions, ...tail].map((item) => item.ref),
       rawInputTypeCounts: itemTypeCounts(raw),
       rewrittenInputTypeCounts: itemTypeCounts(rewrittenDescriptors),
       insertedMemory: Boolean(memoryItem),
-      inlineChunkCount: selection.inlineChunks.length,
-      omittedChunkCount: selection.omittedChunks.length,
+      inlinePieceCount: selected.inlinePieces.length,
+      omittedPieceCount: selected.omittedPieces.length,
     },
-    inlineChunkIds: selection.inlineChunks.map((chunk) => chunk.id),
-    omittedChunkIds: selection.omittedChunks.map((chunk) => chunk.id),
+    inlinePieceIds: selected.inlinePieces.map((piece) => piece.id),
+    omittedPieceIds: selected.omittedPieces.map((piece) => piece.id),
   };
 }
 
@@ -87,25 +88,24 @@ export async function buildDerivedPrompt(
   return {
     input: items,
     diff: {
-      droppedInputIds: filtered.filter((item) =>
-        !tailOrInstructionContains(item, instructions, tail)
-      )
-        .map((item) => item.ref),
+      droppedInputIds: filtered.filter((item) => !containsRef(item, instructions, tail)).map((
+        item,
+      ) => item.ref),
       keptInputIds: [...instructions, ...tail].map((item) => item.ref),
       rawInputTypeCounts: itemTypeCounts(raw),
       rewrittenInputTypeCounts: itemTypeCounts(rewrittenDescriptors),
       insertedMemory: Boolean(memoryItem),
-      inlineChunkCount: 0,
-      omittedChunkCount: 0,
+      inlinePieceCount: 0,
+      omittedPieceCount: 0,
     },
   };
 }
 
-export function makeWorkingMemoryItem(
+export function makeGroupMemoryItem(
   memory: MemoryState,
-  inlineChunks: ChunkRecord[],
+  inlinePieces: MemoryPiece[],
 ): Record<string, unknown> | null {
-  if (!memory.objective && inlineChunks.length === 0) {
+  if (memory.groups.length === 0 && inlinePieces.length === 0) {
     return null;
   }
 
@@ -114,102 +114,110 @@ export function makeWorkingMemoryItem(
     role: "developer",
     content: [{
       type: "input_text",
-      text: buildWorkingMemoryText(memory, inlineChunks),
+      text: buildGroupMemoryText(memory, inlinePieces),
     }],
   };
 }
 
-export function buildWorkingMemoryText(
-  memory: MemoryState,
-  inlineChunks: ChunkRecord[],
-): string {
-  const lines = ["<pando_working_memory>"];
-  if (memory.objective) {
-    lines.push("<objective>", memory.objective, "</objective>");
+export function buildGroupMemoryText(memory: MemoryState, inlinePieces: MemoryPiece[]): string {
+  const lines = ["<pando_group_memory>"];
+  const groups = activeGroups(memory.groups);
+  if (groups.length > 0) {
+    lines.push("<groups>");
+    for (const group of groups) {
+      lines.push(
+        `- groupId=${group.id} status=${group.status} label=${group.routingLabel} summary=${group.summary}`,
+      );
+    }
+    lines.push("</groups>");
   }
-  lines.push("<exact_chunks>");
-  for (const chunk of inlineChunks) {
-    lines.push(`<chunk id="${chunk.id}">`);
-    lines.push(formatChunkPayload(chunk.payload));
-    lines.push("</chunk>");
+  lines.push("<exact_pieces>");
+  for (const piece of inlinePieces) {
+    lines.push(
+      `<piece pieceId=${piece.id} groupId=${piece.groupId} sourceKind=${piece.sourceKind}>`,
+    );
+    lines.push(
+      piece.payloadInline === undefined
+        ? piecePreview(piece)
+        : formatPiecePayload(piece.payloadInline),
+    );
+    lines.push("</piece>");
   }
-  lines.push("</exact_chunks>");
-  lines.push("<memory_fallback>");
+  lines.push("</exact_pieces>");
+  lines.push("<context_get>");
+  lines.push("Use context_get({pieceIds:[...]}) when you know the needed piece ids.");
   lines.push(
-    "If the attached exact chunks are insufficient, call memory({chunkIds:[...]}) to fetch exact retained chunks by id when you already know those ids from visible context or earlier memory() results.",
+    "Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.",
   );
-  lines.push(
-    "Use memory({offset, limit}) to paginate additional exact retained chunks from the hidden retained set.",
-  );
-  lines.push(
-    "memory() skips any chunks already visible in this prompt or already returned by earlier memory() calls in this turn.",
-  );
-  lines.push(
-    "If you do not know the needed chunk ids, browse with memory({offset, limit}) until you find the exact chunk, then request specific ids if helpful.",
-  );
-  lines.push(
-    "Prefer attached chunks over running new tools when they already contain the needed exact fact.",
-  );
-  lines.push(
-    "Do not claim prior captured data is unavailable until you have used memory() when the visible chunks are insufficient.",
-  );
-  lines.push(
-    "When asked to restate or recall exact prior captured content, use memory({chunkIds:[...]}) or memory({offset, limit}) before answering from absence.",
-  );
-  lines.push("</memory_fallback>");
-  lines.push("</pando_working_memory>");
+  lines.push("If an exact value is already visible above, answer from it directly.");
+  lines.push("Do not claim lack of access when the exact value is already visible above.");
+  lines.push("</context_get>");
+  lines.push("</pando_group_memory>");
   return lines.join("\n");
 }
 
-function formatChunkPayload(payload: unknown): string {
+function formatPiecePayload(payload: unknown): string {
   return typeof payload === "string" ? payload : stableJson(payload);
 }
 
-function selectPromptChunks(
+function selectedPromptPieces(
   memory: MemoryState,
-  maxInlineChunks: number,
-): { inlineChunks: ChunkRecord[]; omittedChunks: ChunkRecord[] } {
-  const ordered = chronologicalChunks(memory.chunks);
-  if (maxInlineChunks <= 0 || ordered.length <= maxInlineChunks) {
-    return { inlineChunks: ordered, omittedChunks: [] };
-  }
-  const reservedPinnedChunks = ordered.filter((chunk) => pinnedConstraintReasonForChunk(chunk))
-    .slice(-maxInlineChunks);
-  const reservedPinnedChunkIds = new Set(reservedPinnedChunks.map((chunk) => chunk.id));
-  const remainingSlots = Math.max(0, maxInlineChunks - reservedPinnedChunks.length);
-  const scoredChunks = ordered
-    .filter((chunk) => !reservedPinnedChunkIds.has(chunk.id))
-    .sort(compareInlinePriority)
-    .slice(0, remainingSlots);
-  const inlineChunks = [...reservedPinnedChunks, ...scoredChunks]
-    .sort((left, right) =>
-      left.createdSeq === right.createdSeq
-        ? left.id.localeCompare(right.id)
-        : left.createdSeq - right.createdSeq
-    );
-  const inlineIds = new Set(inlineChunks.map((chunk) => chunk.id));
+): { inlinePieces: MemoryPiece[]; omittedPieces: MemoryPiece[] } {
+  const ordered = chronologicalPieces(memory.pieces);
+  const inlineIdSet = new Set(memory.inlinePieceIds);
+  const inlinePieces = ordered.filter((piece) => inlineIdSet.has(piece.id));
   return {
-    inlineChunks,
-    omittedChunks: ordered.filter((chunk) => !inlineIds.has(chunk.id)),
+    inlinePieces,
+    omittedPieces: ordered.filter((piece) => !inlineIdSet.has(piece.id)),
   };
 }
 
-function compareInlinePriority(left: ChunkRecord, right: ChunkRecord): number {
-  const score = (chunk: ChunkRecord): number => {
-    let total = 0;
-    if (chunk.sourceKind === "tool") {
-      total += 100;
-    } else if (chunk.sourceKind === "user") {
-      total += 50;
-    }
-    if (chunk.selector.kind === "whole") {
-      total += 10;
-    }
-    total += Math.min(chunk.byteSize, 8_192) / 8_192;
-    total += chunk.createdSeq / 1_000_000;
-    return total;
-  };
-  return score(right) - score(left);
+function injectContextGetTool(tools: unknown, shouldInject: boolean): unknown {
+  const existing = Array.isArray(tools) ? [...tools] : [];
+  if (!shouldInject) {
+    return existing;
+  }
+  if (existing.some((tool) => isContextGetTool(tool))) {
+    return existing;
+  }
+  existing.push({
+    type: "function",
+    name: "context_get",
+    description:
+      "Fetch additional exact retained group memory pieces by id or in chronological order.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        pieceIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Exact retained piece ids to fetch.",
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "How many retained pieces to skip when browsing.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "How many retained pieces to return when browsing.",
+        },
+      },
+    },
+  });
+  return existing;
+}
+
+function isContextGetTool(tool: unknown): boolean {
+  return Boolean(
+    tool &&
+      typeof tool === "object" &&
+      !Array.isArray(tool) &&
+      (tool as Record<string, unknown>).name === "context_get",
+  );
 }
 
 function leadingInstructions(items: InputItemDescriptor[]): InputItemDescriptor[] {
@@ -235,56 +243,7 @@ function currentRoundTail(items: InputItemDescriptor[]): InputItemDescriptor[] {
   return lastUserIndex >= 0 ? withoutLeading.slice(lastUserIndex) : withoutLeading;
 }
 
-function injectMemoryTool(tools: unknown, omittedChunks: ChunkRecord[]): unknown {
-  const existing = Array.isArray(tools) ? [...tools] : [];
-  if (omittedChunks.length === 0) {
-    return existing;
-  }
-  if (existing.some((tool) => isMemoryTool(tool))) {
-    return existing;
-  }
-  existing.push({
-    type: "function",
-    name: "memory",
-    description: "Fetch additional exact retained chunks by id or in chronological order.",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        chunkIds: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Exact retained chunk ids to fetch. Chunks already visible in the prompt are skipped.",
-        },
-        offset: {
-          type: "integer",
-          minimum: 0,
-          description: "How many additional retained chunks to skip when browsing omitted chunks.",
-        },
-        limit: {
-          type: "integer",
-          minimum: 1,
-          maximum: 50,
-          description:
-            "How many additional retained chunks to return when browsing omitted chunks.",
-        },
-      },
-    },
-  });
-  return existing;
-}
-
-function isMemoryTool(tool: unknown): boolean {
-  return Boolean(
-    tool &&
-      typeof tool === "object" &&
-      !Array.isArray(tool) &&
-      (tool as Record<string, unknown>).name === "memory",
-  );
-}
-
-function tailOrInstructionContains(
+function containsRef(
   item: InputItemDescriptor,
   instructions: InputItemDescriptor[],
   tail: InputItemDescriptor[],
@@ -298,5 +257,5 @@ export function inputTypeCounts(input: unknown): Promise<Record<string, number>>
 }
 
 export function normalizedInputItems(input: unknown): unknown[] {
-  return inputItems(input);
+  return Array.isArray(input) ? input : [input];
 }

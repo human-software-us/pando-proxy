@@ -62,7 +62,11 @@ export function estimateBytesForValue(value: unknown): number {
 }
 
 export function requestContextMetrics(body: Record<string, unknown>): Record<string, unknown> {
-  const items = Array.isArray(body.input) ? body.input : typeof body.input === "string" ? [body.input] : [];
+  const items = Array.isArray(body.input)
+    ? body.input
+    : typeof body.input === "string"
+    ? [body.input]
+    : [];
   let userMessageCount = 0;
   let assistantMessageCount = 0;
   let developerMessageCount = 0;
@@ -103,11 +107,14 @@ export function requestContextMetrics(body: Record<string, unknown>): Record<str
 export function memoryStateMetrics(state: MemoryState): Record<string, unknown> {
   return {
     roundSeq: state.roundSeq,
-    objective: state.objective,
-    chunkCount: state.chunks.length,
-    chunkIds: state.chunks.map((chunk) => chunk.id),
-    chunkBytes: state.chunks.reduce((total, chunk) => total + chunk.byteSize, 0),
+    groupCount: state.groups.length,
+    groupIds: state.groups.map((group) => group.id),
+    pieceCount: state.pieces.length,
+    pieceIds: state.pieces.map((piece) => piece.id),
+    pieceBytes: state.pieces.reduce((total, piece) => total + piece.byteSize, 0),
     processedSourceCount: state.processedSourceIds.length,
+    inlinePieceCount: state.inlinePieceIds.length,
+    inlinePieceIds: state.inlinePieceIds,
   };
 }
 
@@ -121,7 +128,10 @@ export function extractUsageMetrics(value: unknown): UsageMetrics | null {
     cachedInputTokens: cachedInputTokensField(usage),
     outputTokens: numberField(usage, ["output_tokens", "completion_tokens"]),
     totalTokens: numberField(usage, ["total_tokens"]) ??
-      sumDefined(numberField(usage, ["input_tokens", "prompt_tokens"]), numberField(usage, ["output_tokens", "completion_tokens"])),
+      sumDefined(
+        numberField(usage, ["input_tokens", "prompt_tokens"]),
+        numberField(usage, ["output_tokens", "completion_tokens"]),
+      ),
     raw: usage,
   };
 }
@@ -169,7 +179,10 @@ function cachedInputTokensField(value: Record<string, unknown>): number | undefi
   return numberField(details, ["cached_tokens"]);
 }
 
-function objectField(value: Record<string, unknown>, keys: string[]): Record<string, unknown> | undefined {
+function objectField(
+  value: Record<string, unknown>,
+  keys: string[],
+): Record<string, unknown> | undefined {
   for (const key of keys) {
     const field = value[key];
     if (field && typeof field === "object" && !Array.isArray(field)) {

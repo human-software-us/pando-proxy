@@ -1,26 +1,31 @@
 # Live E2E Test
 
-This verifies stock Codex can talk to a real upstream model through `pando-proxy` and that the
-current working-memory design behaves correctly under live multi-round use.
+This document describes the live validation loop for the current group-and-piece memory system.
 
-## Current Memory Design To Validate
+## Memory Design To Validate
 
-The live design is:
+The current design to validate is:
 
-- one compact `objective`
-- exact retained chunks only
-- aggressive end-of-turn pruning of useless chunks
-- optional local `memory(offset, limit)` fallback for exact retained chunks not already in the
-  prompt
-- final empty-memory behavior when the work is explicitly over
+- active group metadata for incremental routing and cleanup
+- exact retained pieces only in prompt memory
+- aggressive end-of-turn pruning through manager calls
+- optional local `context_get` fallback for exact retained pieces not already in the prompt
+- empty-memory behavior when work is explicitly over or replaced
 
 The main thing to validate is not raw recall volume. It is whether the proxy keeps the right exact
-evidence and drops the rest.
+evidence for the still-active groups and drops the rest.
 
 ## Prerequisites
 
 - `codex` is installed and logged in
 - Deno is installed
+
+Auth for the live harness resolves in this order:
+
+- `OPENAI_API_KEY`, if set
+- `~/.codex/auth.json` via `tokens.access_token`
+
+So if Codex is already logged in, live manager/backend calls should work without extra setup.
 
 **Important:** if `pando-proxy` or an aliased `codex` looks frozen before the proxy ever receives a
 request, Codex may be blocked on its own update-selection prompt. In that case run raw Codex with
@@ -67,16 +72,6 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   "your next prompt"
 ```
 
-The wrapper rewrites `resume --last` to the concrete session id saved in
-`<state-dir>/wrapper-last-thread.json`, and it hoists any `exec`-global flags written after `resume`
-(such as `--sandbox`, `-C`, `--add-dir`, `--oss`, `-p`/`--profile`, `--output-schema`, `--color`) to
-before `resume`, so Codex's `exec resume` subcommand parser accepts them. You can write the flags in
-either order; the wrapper normalizes. For exact reproduction, read the id from
-`<state-dir>/wrapper-last-thread.json` and use that concrete id directly in later commands.
-
-For a multi-round test, repeat `exec resume --last` with the same log/state paths. For an
-independent new test, switch to a new log path and new state dir.
-
 ## What To Inspect After Each Round
 
 Check:
@@ -88,7 +83,7 @@ Check:
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `memory_fetch`
+- `context_get_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
 - `round_complete`
@@ -97,23 +92,22 @@ Then inspect the persisted state under the chosen `--proxy-state-dir`.
 
 Confirm:
 
-- the current `objective`
-- retained chunk ids and count
+- active group ids and their statuses
+- retained piece ids and count
 - `codex_exec_turn_summary` counts line up with the round: tool calls, tool results, reasoning,
   assistant messages, user messages, and observed tool names
-- any `forcedKeep*` fields when deterministic constraint pinning overrode a model drop
-- total stored chunk bytes
+- total stored piece bytes
 - processed source count
-- whether irrelevant chunks were dropped
-- whether memory becomes empty when the work is explicitly ended
+- whether irrelevant pieces were dropped
+- whether closed or replaced groups were removed
 
 ## Main Live Scenarios
 
-1. Non-Pando carry-forward
-2. Pando deterministic chunking
-3. Mixed Pando + non-Pando
-4. Large exploratory round with aggressive pruning
-5. Session completion with empty memory
+1. Continue the same task across rounds
+2. Redirect the same task with "do it differently"
+3. Replace the old task with unrelated work
+4. Use tool results that later become superseded
+5. Explicitly close the session and clear all retained memory
 
 For any failure:
 
@@ -123,45 +117,18 @@ For any failure:
 4. run `deno check src/main.ts`
 5. rerun the same session from scratch
 
-## Transport Notes
-
-There are two wrapper paths:
-
-- `exec` mode injects a temporary Responses provider that points at the local HTTP proxy
-- interactive mode runs `codex` directly with the same provider overrides and a private
-  wrapper-owned `CODEX_HOME`; config/auth/update-banner state are symlinked from the real Codex home
-  while `sessions/` stays private so the rollout tailer cannot attach to the wrong session
-- the interactive rollout tailer streams appended JSONL from that private `sessions/` directory and
-  feeds each line into the same observer used by `exec --json`
-
-## Interactive TUI Note
-
-When you drive the Codex TUI through a PTY, submit prompts with carriage return (`\r`). Plain
-newline (`\n`) often only edits the composer and does not submit the turn.
-
-For memory validation of the real proxy request/response loop, prefer `exec` mode unless you are
-specifically testing the interactive TUI path.
-
-When inspecting a run, do not treat a log that currently shows only wrapper lifecycle events as
-proof that the request bypassed the proxy. There can be a delay before the first `incoming_request`.
-Judge the run only after one of:
-
-- `incoming_request` appears
-- `wrapper_exit` appears
-- the child process has clearly failed
-
 ## Success Criteria
 
 A round is successful when:
 
 - `round_complete` is present
-- the persisted state matches the intended objective/chunk set
-- unnecessary chunks were dropped
-- required exact chunks survived
+- the persisted state matches the intended task/piece set
+- unnecessary pieces were dropped
+- required exact pieces survived
 - the user-facing answer still matches the prompt
 
 A session is successful when:
 
-- memory carries forward correctly across `exec resume --last`
-- retrieval fallback, if used, returns exact chronological chunks not already in prompt
-- explicit session completion clears the memory state
+- group routing remains stable across `exec resume --last`
+- retrieval fallback, if used, returns exact chronological pieces not already in prompt
+- explicit completion or replacement clears obsolete retained memory

@@ -126,7 +126,8 @@ export class CodexEventObserver {
       return;
     }
     if (payload.type === "turn.completed") {
-      const state = this.#currentExecTurnStateByThread.get(threadId) ?? emptyObservedExecTurnState();
+      const state = this.#currentExecTurnStateByThread.get(threadId) ??
+        emptyObservedExecTurnState();
       this.#currentExecTurnStateByThread.delete(threadId);
       await this.#logger.log("codex_exec_turn_summary", {
         threadId,
