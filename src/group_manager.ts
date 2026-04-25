@@ -61,7 +61,7 @@ export type PieceRetentionBatchRequest = {
 export type PieceRetentionDecision = {
   pieceId: string;
   keep: boolean;
-  groupId?: string;
+  groupId: string | null;
   supersedesPieceIds: string[];
   visibility: "inline" | "omittable";
 };
@@ -482,9 +482,9 @@ function coercePieceRetentionBatch(value: unknown): PieceRetentionBatchResponse 
         .map((decision) => ({
           pieceId: String(decision.pieceId ?? ""),
           keep: Boolean(decision.keep),
-          ...(decision.groupId === null || decision.groupId === undefined
-            ? { groupId: undefined }
-            : { groupId: String(decision.groupId) }),
+          groupId: decision.groupId === null || decision.groupId === undefined
+            ? null
+            : String(decision.groupId),
           supersedesPieceIds: Array.isArray(decision.supersedesPieceIds)
             ? decision.supersedesPieceIds.map(String)
             : [],

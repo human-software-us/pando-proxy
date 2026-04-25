@@ -368,7 +368,7 @@ function applyStubRetentionPolicy(
     decisions: request.newPieces.map((piece) => ({
       pieceId: piece.id,
       keep: keepIds.includes(piece.id),
-      ...(keepIds.includes(piece.id) ? { groupId: activeGroupId } : {}),
+      groupId: keepIds.includes(piece.id) ? activeGroupId : null,
       supersedesPieceIds: [],
       visibility: piece.sourceKind === "user" ? "inline" : "omittable",
     })),

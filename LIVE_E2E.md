@@ -7,13 +7,14 @@ This document describes the live validation loop for the current group-and-piece
 The current design to validate is:
 
 - active group metadata for incremental routing and cleanup
-- exact retained pieces only in prompt memory
+- exact retained pieces only in the forwarded prompt
 - aggressive end-of-turn pruning through manager calls
-- optional local `context_get` fallback for exact retained pieces not already in the prompt
+- optional local `context_get` retrieval for exact retained pieces not already in the prompt
 - empty-memory behavior when work is explicitly over or replaced
 
 The main thing to validate is not raw recall volume. It is whether the proxy keeps the right exact
-evidence for the still-active groups and drops the rest.
+evidence for the still-active internal groups without exposing group metadata upstream, and drops
+the rest.
 
 ## Prerequisites
 
@@ -66,11 +67,20 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
   src/main.ts \
   --proxy-log-file /tmp/pando-test-1.jsonl \
   --proxy-state-dir /tmp/pando-test-1-state \
-  exec resume --last \
+  exec resume 019dc204-22fb-7c50-95ad-2f2508254945 \
   --sandbox read-only \
   -o /tmp/pando-test-1-r2.txt \
   "your next prompt"
 ```
+
+Prefer a concrete thread id for every resumed round. The wrapper prints the exact id after each run:
+
+```text
+pando-proxy: last Codex session id: 019dc204-22fb-7c50-95ad-2f2508254945
+```
+
+Use that exact value in the next `exec resume <thread-id> ...` command. Do not rely on `--last`
+for serious live validation unless you have no ambiguity about which session was most recent.
 
 ## What To Inspect After Each Round
 
@@ -129,6 +139,6 @@ A round is successful when:
 
 A session is successful when:
 
-- group routing remains stable across `exec resume --last`
+- group routing remains stable across `exec resume <exact-thread-id>`
 - retrieval fallback, if used, returns exact chronological pieces not already in prompt
 - explicit completion or replacement clears obsolete retained memory

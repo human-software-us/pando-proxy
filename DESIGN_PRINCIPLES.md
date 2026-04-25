@@ -1,19 +1,25 @@
 # Design Principles
 
-## 1. Groups, Not Objectives
+## 1. The Proxy Is A Sieve
 
-Durable memory is organized around active groups.
+The proxy should keep only what still needs to be sent next round.
 
-There is no session-wide objective string and no synthetic semantic compression of prior work.
+Anything else should be dropped completely.
 
-## 2. Exact Pieces Only
+## 2. One Memory Tier Only
 
-Prompt-side memory contains only exact retained pieces.
+There is no hidden retained set behind the prompt.
 
-No semantic summaries, embeddings, preview catalogs, or prose reconstructions belong in the prompt
-memory block.
+The stored memory set and the next prompt memory set must be the same thing.
 
-## 3. Semantic Decisions Belong To The Manager
+## 3. Exact Pieces Only
+
+Prompt-side memory contains only exact kept pieces.
+
+No semantic summaries, preview catalogs, omitted shadow sets, or retrieval layers belong in the
+runtime design.
+
+## 4. Semantic Decisions Belong To The Manager
 
 Every non-obviously-deterministic decision must come from a manager LLM call:
 
@@ -21,32 +27,25 @@ Every non-obviously-deterministic decision must come from a manager LLM call:
 - group routing
 - keep/drop
 - supersession
-- inline projection
+- old-piece pruning
 
 Local code must not infer these semantics.
 
-## 4. Batched, Small Manager Calls
+## 5. Chunk Everything
 
-Do not cram unrelated evaluations into one giant prompt.
+User messages, assistant messages, and tool outputs should all be chunkable.
 
-Use a few small batched calls instead:
+If splitting would be unsafe, keep the source as one exact whole piece.
 
-- `group_intent`
-- `source_chunk_batch`
-- `piece_retention_batch`
-- `prompt_projection`
-
-Run independent calls in parallel when possible.
-
-## 5. Deterministic Code Is Structural Only
+## 6. Deterministic Code Is Structural Only
 
 Allowed deterministic logic:
 
 - persistence
 - chunk materialization from selectors
 - payload spill/ref handling
-- exact chronological paging for `context_get`
 - applying manager outputs
+- preserving chronological order as much as possible
 - structural fallback such as malformed chunk selectors falling back to `whole`
 
 Not allowed:
@@ -54,10 +53,24 @@ Not allowed:
 - phrase matching
 - local close/replace inference
 - semantic scoring
-- semantic inline ranking
+- semantic projection
 - semantic auto-linking
 
-## 6. One-Shot Structured Outputs
+## 7. No Projection Layer
+
+There is no `prompt_projection`.
+
+If a piece is worth keeping, it survives into the next prompt.
+If it is not worth keeping, it is dropped.
+
+## 8. No Local Retrieval Fallback
+
+There is no `context_get` layer in the target design.
+
+If old context is needed later, resurrect it from the original source instead of hoarding it in the
+proxy.
+
+## 9. Structured Outputs With Bounded Retry
 
 Manager calls should use strict structured output schemas.
 
@@ -67,28 +80,6 @@ Policy:
 - validate locally
 - retry once if invalid
 - if still invalid, fail the memory update and keep prior state
-
-## 7. Drop Aggressively, But By Manager Decision
-
-The system should keep a minimal exact retained set.
-
-But that drop bias must come from manager output, not from local semantic heuristics.
-
-## 8. Prompt Projection Is Manager-Owned
-
-Which retained pieces are inline is itself a semantic choice and should be manager output.
-
-Local code should only render the chosen `inlinePieceIds`.
-
-## 9. `context_get` Is Exact Fallback Only
-
-`context_get` exists only to fetch exact retained omitted pieces.
-
-It must remain:
-
-- exact
-- chronological when paging
-- non-semantic
 
 ## 10. Live E2E Is The Source Of Truth
 

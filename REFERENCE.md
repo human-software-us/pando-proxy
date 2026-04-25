@@ -246,25 +246,21 @@ prompt and pieces already returned by earlier `context_get(...)` calls in the sa
 The rewritten prompt injects one synthetic developer message shaped like:
 
 ```xml
-<pando_group_memory>
-<groups>
-- groupId=group_1 status=active label=repo-docs summary=Update README and REFERENCE to match current runtime
-</groups>
+<pando_memory>
 <exact_pieces>
-<piece pieceId=piece_17 groupId=group_1 sourceKind=tool>
+<piece pieceId=piece_17 sourceKind=tool>
 ...
 </piece>
 </exact_pieces>
 <context_get>
 Use context_get({pieceIds:[...]}) when you know the needed piece ids.
 Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.
-If an exact value is already visible above, answer from it directly.
-Do not claim lack of access when the exact value is already visible above.
+Prefer attached exact pieces when they already contain the needed fact.
 </context_get>
-</pando_group_memory>
+</pando_memory>
 ```
 
-Only active groups are rendered in `<groups>`.
+Internal groups are not rendered in the forwarded prompt.
 
 ## Logging
 

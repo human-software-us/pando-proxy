@@ -15,7 +15,7 @@ are indexed in [`benchmarks/SOURCES.md`](./benchmarks/SOURCES.md).
 
 `bin/replay.ts` replays a saved rollout turn by turn and compares two prompt shapes: the naive
 baseline (`without proxy`), which keeps sending the accumulated conversation history each round, and
-the Pando rewrite (`with proxy`), which sends the compact group-memory prompt instead.
+the Pando rewrite (`with proxy`), which sends the compact exact-piece memory prompt instead.
 
 The current public reruns on the shipped lossless memory manager use deterministic stub replay
 (`--policy drop-tools`), which makes them cheap to reproduce locally while still exercising the
@@ -52,11 +52,11 @@ Long Codex sessions blow up the prompt with raw tool output and prior rounds. `p
 that approach with:
 
 - a small active-group list per session
-- exact retained pieces plus compact per-group routing summaries
+- exact retained pieces in the forwarded prompt, with groups kept internal for routing and cleanup
 - aggressive end-of-turn pruning of new material through `group_intent`, `piece_retention_batch`,
   and `prompt_projection`
-- an optional local `context_get({pieceIds:[...]})` or `context_get({offset,limit})` fallback the
-  model can call to pull remaining exact pieces on demand
+- an optional local `context_get({pieceIds:[...]})` or `context_get({offset,limit})` retrieval path
+  the model can call to pull remaining exact pieces on demand
 - a separate clean finalization pass for the user-facing answer
 
 The package is designed to be invoked with one `npx` command and is otherwise invisible to Codex.
@@ -65,7 +65,7 @@ The package is designed to be invoked with one `npx` command and is otherwise in
 
 ```sh
 npx -y pando-proxy exec "help me with this repo"
-npx -y pando-proxy exec resume --last "continue"
+npx -y pando-proxy exec resume <thread-id> "continue"
 npx -y pando-proxy "start an interactive Codex session"
 ```
 
@@ -95,7 +95,7 @@ on POST /v1/responses:
   record        = store.load(sessionKey)          # groups + kept pieces + processedSourceIds + inlinePieceIds
   rewritten     = rewriteRequestWithMemory(body, record.memory)
     # drops prior-round items not needed
-    # inserts <pando_group_memory> developer block with active groups + selected exact pieces
+    # inserts <pando_memory> developer block with selected exact pieces only
     # injects context_get if retained pieces were omitted from prompt
 
   response, fetches, assistantSources = runResponsesLoop(rewritten)
@@ -138,18 +138,17 @@ on POST /v1/responses:
 
 ```
 [ leading_instructions_from_request ]
-<pando_group_memory>
-  <groups>
-    - groupId=group_1 status=active label=repo-docs summary=Update docs to match current runtime
-  </groups>
+<pando_memory>
   <exact_pieces>
-    <piece pieceId=piece_17 groupId=group_1 sourceKind=tool>…exact payload…</piece>
+    <piece pieceId=piece_17 sourceKind=tool>…exact payload…</piece>
     …
   </exact_pieces>
   <context_get>
-    If the attached exact pieces are insufficient, call context_get({offset,limit}).
+    Use context_get({pieceIds:[...]}) when you know the needed piece ids.
+    Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.
+    Prefer attached exact pieces when they already contain the needed fact.
   </context_get>
-</pando_group_memory>
+</pando_memory>
 [ current_round_tail ]
 ```
 
@@ -187,11 +186,11 @@ npx -y pando-proxy --proxy-log exec --sandbox read-only -o out.txt "prompt"
 # Same thing, explicit separator:
 npx -y pando-proxy --proxy-log -- exec --sandbox read-only -o out.txt "prompt"
 
-# Resume last session (wrapper rewrites `resume --last` to the saved session id):
-npx -y pando-proxy exec resume --last "next prompt"
+# Resume a specific session by exact thread id:
+npx -y pando-proxy exec resume 019dc204-22fb-7c50-95ad-2f2508254945 "next prompt"
 
 # Resume with exec-global flags after resume (wrapper hoists them automatically):
-npx -y pando-proxy exec resume --last --sandbox read-only -o out.txt "next prompt"
+npx -y pando-proxy exec resume 019dc204-22fb-7c50-95ad-2f2508254945 --sandbox read-only -o out.txt "next prompt"
 
 # Pure Codex passthrough (still runs through the proxy transport, no interception):
 npx -y pando-proxy login
@@ -204,7 +203,14 @@ supported — the proxy never filters Codex's argument surface.
 
 ### Resume handling
 
-The wrapper does two things to `exec resume --last` so it behaves the way you'd expect:
+Prefer an exact thread id almost always. That keeps live validation pinned to the session you
+actually inspected in logs and avoids accidentally resuming the wrong rollout when several sessions
+exist on disk.
+
+Use `--last` only as a fallback when you explicitly want "whatever the wrapper most recently saw"
+and you have already confirmed there is no ambiguity.
+
+The wrapper does two things to `exec resume --last` if you use that fallback:
 
 1. **`--last` is replaced with the saved session id** (from `<state-dir>/wrapper-last-thread.json`)
    before handing off to Codex. Codex also accepts `--last` natively, but substituting the concrete
@@ -214,8 +220,8 @@ The wrapper does two things to `exec resume --last` so it behaves the way you'd 
    `-C`/`--cd`, `--add-dir`, `--oss`, `--local-provider`, `-p`/`--profile`, `--output-schema`, and
    `--color` are `exec`-only. Writing them after `resume` would make Codex reject the command. The
    wrapper detects these and moves them into the right slot automatically, so
-   `exec resume --last --sandbox read-only "prompt"` and
-   `exec --sandbox read-only resume --last "prompt"` both work.
+   `exec resume 019dc204-22fb-7c50-95ad-2f2508254945 --sandbox read-only "prompt"` works, and the
+   same hoisting also applies if you intentionally use `--last`.
 
 Interactive `resume --last` and `fork --last` are also normalized to a concrete session id before
 Codex is launched. The wrapper resolves that id from the explicit argument when present, otherwise
@@ -323,7 +329,8 @@ Durable per-session state is just:
 - `inlinePieceIds`
 
 The runtime stays exact where it matters: retained evidence is stored as exact pieces, while the
-group layer carries only compact routing metadata (`routingLabel` and `summary`). There is still no
+group layer carries only compact routing metadata (`routingLabel` and `summary`) for internal
+classification and cleanup. That metadata is not forwarded to the upstream model. There is still no
 embedding store. Large payloads may be spilled to per-session payload files while preserving exact
 retrieval. See `REFERENCE.md` for the exact types.
 
@@ -343,14 +350,13 @@ while their groups remain active and they are not superseded by newer retained p
 Each upstream request is rebuilt from:
 
 - the leading instructions in the original request
-- a single developer-role `<pando_group_memory>` block containing the active groups and the inline
-  exact pieces selected for this turn
+- a single developer-role `<pando_memory>` block containing only the inline exact pieces selected
+  for this turn
 - the current round tail (the live user message and in-flight tool results)
 
 If retained pieces exist that weren't selected for inline inclusion, the proxy also injects a
 `context_get` tool the model can call to read them. The tool returns exact stored payloads by
-specific piece id or in chronological order, excluding anything already in the prompt. It is a
-fallback, not the main retrieval path.
+specific piece id or in chronological order, excluding anything already in the prompt.
 
 ## Finalization
 

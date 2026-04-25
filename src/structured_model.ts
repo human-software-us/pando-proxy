@@ -105,18 +105,19 @@ export function createStructuredClients(
       return normalizeSourceChunkBatchResponse(request, result.value);
     },
     pieceRetentionBatch: async (request) => {
+      const schema = pieceRetentionBatchJsonSchema(request);
       const result = await callStructuredJson<PieceRetentionBatchResponse>(
         config,
         requestModel,
         authHeader,
         pieceRetentionBatchSystemPrompt,
         request,
-        pieceRetentionBatchJsonSchema,
+        schema,
         "piece_retention_batch",
         onSelection,
       );
       await emitUsage(result, onUsage);
-      return result.value;
+      return normalizePieceRetentionBatchResponse(request, result.value);
     },
     promptProjection: async (request) => {
       const result = await callStructuredJson<PromptProjectionResponse>(
@@ -493,33 +494,40 @@ const sourceChunkBatchJsonSchema = {
   additionalProperties: false,
 };
 
-const pieceRetentionBatchJsonSchema = {
-  type: "object",
-  properties: {
-    decisions: {
-      type: "array",
-      items: {
+function pieceRetentionBatchJsonSchema(request: PieceRetentionBatchRequest): JsonSchema {
+  const decisionSchema = {
+    type: "object",
+    properties: {
+      keep: { type: "boolean" },
+      groupId: {
+        anyOf: [
+          { type: "string" },
+          { type: "null" },
+        ],
+      },
+      supersedesPieceIds: { type: "array", items: { type: "string" } },
+      visibility: { type: "string", enum: ["inline", "omittable"] },
+    },
+    required: ["keep", "groupId", "supersedesPieceIds", "visibility"],
+    additionalProperties: false,
+  };
+
+  return {
+    type: "object",
+    properties: {
+      decisionsByPieceId: {
         type: "object",
-        properties: {
-          pieceId: { type: "string" },
-          keep: { type: "boolean" },
-          groupId: {
-            anyOf: [
-              { type: "string" },
-              { type: "null" },
-            ],
-          },
-          supersedesPieceIds: { type: "array", items: { type: "string" } },
-          visibility: { type: "string", enum: ["inline", "omittable"] },
-        },
-        required: ["pieceId", "keep", "groupId", "supersedesPieceIds", "visibility"],
+        properties: Object.fromEntries(
+          request.newPieces.map((piece) => [piece.id, decisionSchema]),
+        ),
+        required: request.newPieces.map((piece) => piece.id),
         additionalProperties: false,
       },
     },
-  },
-  required: ["decisions"],
-  additionalProperties: false,
-};
+    required: ["decisionsByPieceId"],
+    additionalProperties: false,
+  };
+}
 
 const promptProjectionJsonSchema = {
   type: "object",
@@ -575,14 +583,50 @@ Return JSON matching the supplied schema.
 
 Rules:
 - You are given post-round groups, retained anchor pieces, and all new exact pieces.
-- Return one decision for every new piece.
+- Return a decision for every new piece id under decisionsByPieceId.
 - Keep only exact pieces that materially matter later.
 - Prefer original user literals and original tool results over assistant restatements.
 - groupId must be an active group when keep=true.
+- When keep=false, set groupId to null, supersedesPieceIds to [], and visibility to "omittable".
 - supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
 - visibility decides whether the exact piece should usually be inlined next round or can stay retrievable.
 - Return JSON only.
 `.trim();
+
+function normalizePieceRetentionBatchResponse(
+  request: PieceRetentionBatchRequest,
+  value: unknown,
+): PieceRetentionBatchResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { decisions: [] };
+  }
+  const record = value as Record<string, unknown>;
+  const decisionsByPieceId = (
+    record.decisionsByPieceId &&
+      typeof record.decisionsByPieceId === "object" &&
+      !Array.isArray(record.decisionsByPieceId)
+  )
+    ? record.decisionsByPieceId as Record<string, unknown>
+    : {};
+
+  return {
+    decisions: request.newPieces.map((piece) => {
+      const rawDecision = decisionsByPieceId[piece.id];
+      const decision = rawDecision && typeof rawDecision === "object" && !Array.isArray(rawDecision)
+        ? rawDecision as Record<string, unknown>
+        : {};
+      return {
+        pieceId: piece.id,
+        keep: decision.keep === true,
+        groupId: typeof decision.groupId === "string" ? decision.groupId : null,
+        supersedesPieceIds: Array.isArray(decision.supersedesPieceIds)
+          ? decision.supersedesPieceIds.map(String)
+          : [],
+        visibility: decision.visibility === "inline" ? "inline" : "omittable",
+      };
+    }),
+  };
+}
 
 const promptProjectionSystemPrompt = `
 You choose which retained exact pieces should be inline in the next prompt.

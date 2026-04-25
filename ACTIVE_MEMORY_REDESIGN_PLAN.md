@@ -1,33 +1,42 @@
 # Active Memory Redesign Plan
 
-This document is the current implementation plan for the groups-based memory manager redesign.
+This document is the current implementation plan for the sieve-based memory manager redesign.
 
-The previous `tasks`-based runtime is being replaced again because the desired architecture is:
+The target behavior is:
 
-- active groups, not generic tasks
-- exact retained pieces only
+- one memory tier only
+- exact kept pieces only
+- no hidden retained memory
+- no prompt projection layer
+- no local retrieval fallback
 - semantic decisions made only by manager LLM calls
-- batched manager calls with small prompts
-- no local semantic heuristics
+
+Net effect:
+
+- raw outgoing prompt/history is `A`
+- proxy sends reduced prompt/history `A'`
+- `A'` is no larger than `A`
+- `A'` preserves the same essential content in nearly the same original order
+- anything not worth sending next round is dropped completely
 
 ## Hard Rules
 
 1. Every non-obviously-deterministic evaluation must be done by a manager LLM call.
-2. Manager calls must be strict-schema structured outputs.
-3. Manager calls are one-shot, with at most one retry if the response is invalid.
-4. If the retry is also invalid, fail the memory update, keep prior memory unchanged, and log it.
+2. Manager calls must use strict-schema structured outputs.
+3. Manager calls get one retry if validation fails.
+4. If the retry also fails, fail the memory update, keep prior memory unchanged, and log it.
 5. Deterministic code may only do structural work:
    - persistence
-   - chunk materialization
-   - exact payload externalization
+   - exact chunk materialization
+   - exact payload spill/ref handling
    - applying already-classified results
-   - deterministic paging / ordering for `context_get`
+   - preserving chronological order as much as possible
    - structural fallback like malformed chunk selectors falling back to `whole`
 6. No local semantic heuristics:
    - no phrase matching
    - no local close/replace inference
    - no semantic keep/drop ranking
-   - no semantic inline ranking
+   - no semantic prompt projection
    - no semantic auto-linking
 
 ## Target State
@@ -54,7 +63,6 @@ type MemoryPiece = {
   byteSize: number;
   createdSeq: number;
   selector: ChunkSelector;
-  visibility: "inline" | "omittable";
 };
 
 type MemoryState = {
@@ -62,13 +70,28 @@ type MemoryState = {
   groups: MemoryGroup[];
   pieces: MemoryPiece[];
   processedSourceIds: string[];
-  inlinePieceIds: string[];
 };
 ```
 
+The stored `pieces` set and the next prompt memory set are the same thing.
+
 ## Manager Calls
 
-### 1. `group_intent`
+### 1. `source_chunk_batch`
+
+Purpose:
+
+- chunk all new sources together, including user messages
+
+Input:
+
+- all new round sources
+
+Output:
+
+- `[{ sourceId, selectors: ChunkSelector[] }]`
+
+### 2. `group_intent`
 
 Purpose:
 
@@ -76,77 +99,76 @@ Purpose:
 
 Input:
 
-- existing groups: `id`, `status`, `routingLabel`, `summary`
-- new user-piece previews only
+- existing groups
+- retained anchor previews from already-kept pieces
+- new user-piece previews
 
 Output:
 
 - `groupsAfter`
 - `closedGroupIds`
 - `replacedGroupIds`
-- optional relation metadata for new/replacement groups
-
-### 2. `source_chunk_batch`
-
-Purpose:
-
-- chunk all new assistant/tool sources together
-
-Input:
-
-- all new assistant/tool sources from the round
-
-Output:
-
-- `[{ sourceId, selectors: ChunkSelector[] }]`
 
 ### 3. `piece_retention_batch`
 
 Purpose:
 
-- decide keep/drop, group assignment, supersession, and visibility for all new pieces together
+- decide keep/drop, group assignment, and supersession for all new pieces together
 
 Input:
 
 - `groupsAfter`
 - all new exact pieces
-- bounded anchor previews from existing kept pieces by group
+- bounded anchor previews from already-kept pieces
 
 Output:
 
-- `decisions: Array<{ pieceId, keep, groupId?, supersedesPieceIds, visibility }>`
+- one decision per new piece:
+  - `keep`
+  - `groupId`
+  - `supersedesPieceIds`
 
-### 4. `prompt_projection`
+### 4. `retained_piece_prune`
 
 Purpose:
 
-- choose which retained pieces should be inline in the next prompt
+- explicitly prune previously kept old pieces that are no longer worth sending next round
 
 Input:
 
-- active groups
-- retained piece previews
-- `maxInlinePieces`
+- `groupsAfter`
+- surviving old kept pieces
+- newly kept pieces
 
 Output:
 
-- `inlinePieceIds`
+- `dropPieceIds`
+
+Prompt rule:
+
+- err on the side of keeping if unsure
 
 ## End-Of-Round Flow
 
-1. Extract round sources.
-2. In parallel:
-   - run `group_intent`
-   - run `source_chunk_batch`
-3. Materialize exact pieces from selectors.
-4. Run `piece_retention_batch`.
-5. Deterministically apply manager results:
-   - drop pieces in closed/replaced groups
+1. Start from the full raw prompt/history that would have been sent.
+2. Extract new round sources.
+3. Run `source_chunk_batch` on all new sources.
+4. Materialize exact pieces from selectors.
+5. Run `group_intent`.
+6. Run `piece_retention_batch`.
+7. Run `retained_piece_prune`.
+8. Deterministically apply manager results:
+   - drop pieces in closed/replaced groups where appropriate
    - drop superseded pieces
-   - keep new pieces where `keep=true`
-   - assign `groupId` exactly as returned
-6. Run `prompt_projection`.
-7. Persist `groups`, `pieces`, and `inlinePieceIds`.
+   - drop pruned old pieces
+   - keep exactly the new pieces marked `keep=true`
+   - preserve original chronological order as much as possible
+9. Persist `groups`, `pieces`, and `processedSourceIds`.
+10. Build the next rewritten prompt directly from that final kept set.
+
+There is no `prompt_projection`.
+There is no omitted shadow set.
+There is no `context_get`.
 
 ## Prompt Memory
 
@@ -162,56 +184,60 @@ Prompt memory should become:
 ...
 </piece>
 </exact_pieces>
-<context_get>
-Use context_get({pieceIds:[...]}) when you know ids.
-Use context_get({offset,limit}) to browse omitted exact retained pieces.
-If the needed exact value is already visible above, answer from it directly.
-</context_get>
 </pando_group_memory>
 ```
+
+Everything shown there is exactly what survives.
+Nothing else is retained by the proxy.
 
 ## Rollout Steps
 
 ### Step 1. Update Docs
 
-- rewrite the plan and design docs to describe groups plus batched manager calls
+- rewrite the plan and design docs to describe the sieve model
 
-### Step 2. Introduce Group State Types
+### Step 2. Collapse To One Memory Tier
 
-- replace task-oriented types with group-oriented ones
-- add `inlinePieceIds` to persisted state
+- remove `inlinePieceIds`
+- remove piece visibility classes
+- remove omitted-vs-inline handling
 
-### Step 3. Replace `round_update`
+### Step 3. Replace Prompt Projection And Retrieval
 
-- delete the current semantic `round_update` contract
-- add `group_intent`
-- add `piece_retention_batch`
-- add `prompt_projection`
+- delete `prompt_projection`
+- delete `context_get`
+- delete hidden retained-piece browsing logic
 
-### Step 4. Replace Prompt Projection Heuristics
+### Step 4. Chunk All Sources
 
-- remove local inline ranking
-- make prompt projection depend only on manager-returned `inlinePieceIds`
+- run `source_chunk_batch` for user, assistant, and tool sources
+- keep deterministic `whole` fallback when splitting is unsafe
 
-### Step 5. Wire Batched Execution
+### Step 5. Add Old-Piece Pruning
 
-- `group_intent` and `source_chunk_batch` run in parallel
-- `piece_retention_batch` runs after exact pieces are materialized
+- add `retained_piece_prune`
+- prune old kept pieces conservatively
 
-### Step 6. Live E2E Only
+### Step 6. Make Next Prompt Equal Final Kept Set
+
+- render all surviving kept pieces
+- keep ordering close to original chronology
+
+### Step 7. Live E2E Only
 
 - validate only with live backend calls
-- after every fix, restart from scenario 1
+- after every fix, restart the same session from scratch
 
 ## Post-Implementation Audit
 
-After implementation, explicitly verify that no semantic heuristic remains in local code.
+After implementation, explicitly verify that no hidden second-tier memory remains.
 
 Search for and remove any local logic around:
 
-- close/replace/redirect cues
-- semantic priority/ranking
-- semantic task/group linking
+- `inlinePieceIds`
+- omitted pieces
+- `context_get`
+- prompt projection
 - semantic keep/drop overrides
 
-Only manager outputs may decide those things.
+Only the final kept set may survive into the next round.

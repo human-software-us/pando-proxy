@@ -1,16 +1,20 @@
 # Context Memory Design
 
-This document describes the target groups-based memory design.
+This document describes the target sieve-based memory design.
 
 ## Overview
 
-The proxy keeps memory as:
+The proxy is a sieve.
 
-- active groups for semantic routing and lifecycle
-- exact retained pieces linked to one group each
-- a persisted inline projection for prompt inclusion
+Each round:
 
-The main model sees exact pieces only plus a compact list of active groups.
+1. take the prompt/history that would have been sent
+2. break it into exact candidate pieces
+3. keep only the pieces still worth sending next round
+4. drop everything else completely
+
+If something old is needed later, it can be resurrected from the repo, tool reruns, or the user.
+The proxy itself does not keep a hidden fallback memory layer.
 
 ## Prompt-Side Representation
 
@@ -24,15 +28,10 @@ The main model sees exact pieces only plus a compact list of active groups.
 remember this exact token: BLUE-123
 </piece>
 </exact_pieces>
-<context_get>
-Use context_get({pieceIds:[...]}) when you know the ids.
-Use context_get({offset,limit}) to browse omitted retained exact pieces.
-If the exact answer is already visible above, answer from it directly.
-</context_get>
 </pando_group_memory>
 ```
 
-This block is exact memory, not a summary.
+This block is exact surviving memory, not a summary and not a projection.
 
 ## Persisted Representation
 
@@ -40,38 +39,35 @@ The manager persists:
 
 - `groups`
 - `pieces`
-- `inlinePieceIds`
 - `processedSourceIds`
 
-Groups are control-plane state. Pieces are exact evidence. Inline projection is a manager-chosen
-prompt projection, not a local heuristic.
+There is no separate inline projection and no hidden omitted-piece set.
 
 ## Manager Responsibilities
 
 All semantic evaluation must be done by manager LLM calls:
 
 - group lifecycle: continue / redirect / replace / close / start new
-- piece retention: keep / drop / assign group / supersede / visibility
-- prompt projection: which retained exact pieces should be inline
+- new-piece retention: keep / drop / assign group / supersede
+- old-piece pruning: drop previously kept pieces that no longer matter
 
 Deterministic local code must not infer those semantics.
 
 ## End-Of-Round Pipeline
 
 1. collect new round sources
-2. run `group_intent` on new user-piece previews
-3. run `source_chunk_batch` on assistant/tool sources
-4. materialize exact pieces
+2. run `source_chunk_batch` on all new sources
+3. materialize exact pieces
+4. run `group_intent`
 5. run `piece_retention_batch` on all new pieces
-6. deterministically apply the manager outputs
-7. run `prompt_projection`
+6. run `retained_piece_prune` on previously kept pieces
+7. deterministically apply the manager outputs
 8. persist the resulting state
-
-`group_intent` and `source_chunk_batch` should run in parallel.
+9. render that exact final kept set into the next prompt
 
 ## Failure Policy
 
-Manager calls are strict-schema one-shot calls.
+Manager calls are strict-schema calls.
 
 For each manager call:
 
@@ -82,26 +78,13 @@ For each manager call:
 
 There is no semantic local fallback.
 
-## `context_get`
-
-`context_get` is a local exact retrieval fallback only.
-
-It may fetch:
-
-- known exact piece ids
-- chronological pages of retained omitted pieces
-
-It must not:
-
-- rank semantically
-- search fuzzily
-- synthesize summaries
-
 ## Design Intent
 
-The design is intentionally split into:
+The design is intentionally simple:
 
-- semantic control-plane decisions by manager LLM calls
-- deterministic exact-data handling by local code
+- one kept set only
+- one next-prompt memory set only
+- both sets are the same
 
-That keeps prompts small, keeps memory exact, and avoids local semantic heuristics.
+The proxy reduces the prompt mechanically and semantically, but it does not maintain a second
+hidden tier “just in case.”

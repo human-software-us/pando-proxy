@@ -1541,7 +1541,7 @@ Proxy wrapper options:
 
 Examples:
   pando-proxy exec "Help me with this repo"
-  pando-proxy resume --last
+  pando-proxy resume 019dc204-22fb-7c50-95ad-2f2508254945
   pando-proxy --run-codex-direct
   pando-proxy --run-codex-direct --help
   pando-proxy --uninstall-codex-alias

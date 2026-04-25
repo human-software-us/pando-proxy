@@ -8,7 +8,7 @@ import {
   isRecord,
   type MemoryState,
 } from "./memory_state.ts";
-import { buildDerivedPrompt, makeGroupMemoryItem } from "./prompt_view.ts";
+import { buildDerivedPrompt, makePromptMemoryItem } from "./prompt_view.ts";
 import type { ExactPiece } from "./store.ts";
 import type { RoundSource } from "./tool_results.ts";
 import { extractAssistantSourcesFromResponse, inputItems } from "./tool_results.ts";
@@ -188,7 +188,7 @@ async function rebuildLoopRequestBody(
 ): Promise<Record<string, unknown>> {
   const ordered = chronologicalPieces(memory.pieces);
   const inlinePieces = ordered.filter((piece) => visiblePieceIds.has(piece.id));
-  const memoryItem = makeGroupMemoryItem(memory, inlinePieces);
+  const memoryItem = makePromptMemoryItem(memory, inlinePieces);
   const derived = await buildDerivedPrompt(
     [...inputItems(originalBody.input), ...loopOutputs],
     memoryItem,

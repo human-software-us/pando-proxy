@@ -1,43 +1,37 @@
 # Memory Operations
 
-This document describes the target groups-based memory flow.
+This document describes the target sieve-style memory flow.
 
 ## 1. Load State
 
 Load:
 
 - active groups
-- retained exact pieces
-- persisted `inlinePieceIds`
+- kept exact pieces
 - processed source ids
 
 ## 2. Rewrite Request
 
-Rewrite the request using persisted manager output only.
+Rewrite the request using only the currently kept exact pieces.
 
 Keep:
 
 - leading instructions
 - current round tail
-
-Insert:
-
-- one developer memory block containing active groups and the exact inline pieces named by
-  `inlinePieceIds`
-- the local `context_get` tool only when omitted retained pieces exist
+- the exact surviving memory block
 
 Do not:
 
 - replay full old history
-- inject semantic summaries
-- locally rank which pieces should be inline
+- inject hidden retained memory
+- inject a retrieval tool
+- locally rank a second inline subset
 
 ## 3. Execute The Round
 
-Run upstream.
+Run upstream normally.
 
-If the model emits `context_get`, return exact retained omitted pieces locally and continue the
-loop.
+There is no local exact-memory retrieval loop in the target design.
 
 ## 4. Collect Round Sources
 
@@ -49,30 +43,26 @@ Collect newly observed:
 
 Skip already-processed source ids.
 
-## 5. Run Batched Manager Calls
+## 5. Run Manager Calls
 
 At end of round:
 
-1. run `group_intent` on new user-piece previews
-2. run `source_chunk_batch` on assistant/tool sources
-
-Those two calls should run in parallel.
-
-Then:
-
-3. materialize exact pieces
+1. run `source_chunk_batch` on all new sources
+2. materialize exact pieces
+3. run `group_intent`
 4. run `piece_retention_batch` on all new pieces
-5. run `prompt_projection` on the resulting retained set
+5. run `retained_piece_prune` on previously kept pieces
 
 ## 6. Apply Results Deterministically
 
 Local deterministic application should:
 
-- drop pieces in closed/replaced groups
+- drop pieces in closed/replaced groups where appropriate
 - drop superseded pieces
+- drop explicitly pruned old pieces
 - keep exactly the new pieces marked `keep=true`
 - assign `groupId` exactly as returned
-- persist exactly the returned `inlinePieceIds`
+- preserve original chronological order as much as possible
 
 No local semantic override belongs here.
 
@@ -81,8 +71,7 @@ No local semantic override belongs here.
 Persist:
 
 - `groups`
-- retained `pieces`
-- `inlinePieceIds`
+- surviving `pieces`
 - `processedSourceIds`
 
 Small exact payloads stay inline. Larger ones spill to `payloadRef`.
@@ -106,7 +95,6 @@ Key events should include:
 - `memory_round_sources`
 - `memory_round_chunked`
 - `memory_round_decision`
-- `context_get_fetch`
 - `memory_round_updated`
 - `memory_state_saved`
 - `round_complete`
@@ -117,4 +105,4 @@ Key events should include:
 - per-piece keep/drop decisions
 - group assignment
 - superseded piece ids
-- inline projection ids
+- explicitly pruned old-piece ids

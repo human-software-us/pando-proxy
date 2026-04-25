@@ -1,7 +1,6 @@
 import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
 import {
-  activeGroups,
   chronologicalPieces,
   type MemoryPiece,
   type MemoryState,
@@ -40,7 +39,7 @@ export async function rewriteRequestWithMemory(
   const instructions = leadingInstructions(filtered);
   const tail = currentRoundTail(filtered);
   const selected = selectedPromptPieces(memory);
-  const memoryItem = makeGroupMemoryItem(memory, selected.inlinePieces);
+  const memoryItem = makePromptMemoryItem(memory, selected.inlinePieces);
   const rewrittenItems = [
     ...instructions.map((item) => item.item),
     ...(memoryItem ? [memoryItem] : []),
@@ -101,11 +100,11 @@ export async function buildDerivedPrompt(
   };
 }
 
-export function makeGroupMemoryItem(
+export function makePromptMemoryItem(
   memory: MemoryState,
   inlinePieces: MemoryPiece[],
 ): Record<string, unknown> | null {
-  if (memory.groups.length === 0 && inlinePieces.length === 0) {
+  if (memory.pieces.length === 0) {
     return null;
   }
 
@@ -114,28 +113,16 @@ export function makeGroupMemoryItem(
     role: "developer",
     content: [{
       type: "input_text",
-      text: buildGroupMemoryText(memory, inlinePieces),
+      text: buildPromptMemoryText(inlinePieces),
     }],
   };
 }
 
-export function buildGroupMemoryText(memory: MemoryState, inlinePieces: MemoryPiece[]): string {
-  const lines = ["<pando_group_memory>"];
-  const groups = activeGroups(memory.groups);
-  if (groups.length > 0) {
-    lines.push("<groups>");
-    for (const group of groups) {
-      lines.push(
-        `- groupId=${group.id} status=${group.status} label=${group.routingLabel} summary=${group.summary}`,
-      );
-    }
-    lines.push("</groups>");
-  }
+export function buildPromptMemoryText(inlinePieces: MemoryPiece[]): string {
+  const lines = ["<pando_memory>"];
   lines.push("<exact_pieces>");
   for (const piece of inlinePieces) {
-    lines.push(
-      `<piece pieceId=${piece.id} groupId=${piece.groupId} sourceKind=${piece.sourceKind}>`,
-    );
+    lines.push(`<piece pieceId=${piece.id} sourceKind=${piece.sourceKind}>`);
     lines.push(
       piece.payloadInline === undefined
         ? piecePreview(piece)
@@ -149,10 +136,9 @@ export function buildGroupMemoryText(memory: MemoryState, inlinePieces: MemoryPi
   lines.push(
     "Use context_get({offset,limit}) to browse additional retained exact pieces in chronological order.",
   );
-  lines.push("If an exact value is already visible above, answer from it directly.");
-  lines.push("Do not claim lack of access when the exact value is already visible above.");
+  lines.push("Prefer attached exact pieces when they already contain the needed fact.");
   lines.push("</context_get>");
-  lines.push("</pando_group_memory>");
+  lines.push("</pando_memory>");
   return lines.join("\n");
 }
 
@@ -184,7 +170,7 @@ function injectContextGetTool(tools: unknown, shouldInject: boolean): unknown {
     type: "function",
     name: "context_get",
     description:
-      "Fetch additional exact retained group memory pieces by id or in chronological order.",
+      "Fetch additional exact retained memory pieces by id or in chronological order.",
     parameters: {
       type: "object",
       additionalProperties: false,
