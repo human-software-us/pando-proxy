@@ -181,6 +181,178 @@ No-user-config control final excerpt:
 }
 ```
 
+## Health3 Additional Live E2E Runs
+
+These were additional live backend E2E runs through `deno run -A src/main.ts ... exec` using actual
+Codex/OpenAI calls. Unit tests were intentionally skipped. Logs and state were written under
+`/tmp/pando-live-health3-*`.
+
+### Summary
+
+| Test | Thread | User rounds | Data exercised | Result |
+| ---- | ------ | ----------: | -------------- | ------ |
+| 1 | `019dc6f7-6d4e-7011-97a7-6cea8dd1f54f` | 5 | pando-proxy metadata, Downloads JPG/CSV/JSON, Flask search, Gemini large search, no-tool recall | Passed |
+| 2 | `019dc6fa-62ab-73e1-85ac-1b590654a357` | 5 | pando-extension media/font files, Downloads HEIC/PNG/PDF, dotnet-runtime, elasticsearch docs, no-tool recall | Passed |
+| 3 | `019dc6fd-00f9-7f11-8348-6605a60ebf10` | 5 | Hospital CSV/JSON, SRT subtitle text, Metabase search, pando-proxy recall/retention search | Passed |
+| 4 | `019dc701-51e6-76d1-969d-1f332b2b8732` | 5 | Downloads EXE/HEIC/JPG, pando-extension large search, Flask, Gemini, no-tool recall | Passed |
+| 5 first attempt | `019dc705-3099-7d13-bb64-985a36ae66f5` | 4 completed plus failed round 5 | pando-proxy, binaries/images, Flask, very large dotnet search, hospital pricing retry | Abandoned after Codex stream/no-message and child idle; proxy memory updates stayed clean |
+| 5B replacement | `019dc70a-fece-7172-b0a4-2e4a5712fffb` | 10 | pando-proxy, binaries/images, Flask, dotnet, hospital CSV/JSON, pando-extension media, Gemini, SRT, elasticsearch, no-tool recall | Passed |
+
+### Aggregate Log Stats
+
+| Test | `round_complete` events | Memory errors | Recall rounds | Max active pieces | Max active bytes | Manager tokens | Max chunk input | Max retention input | Retry attempts |
+| ---- | ----------------------: | ------------: | ------------: | ----------------: | ---------------: | -------------: | --------------: | ------------------: | -------------: |
+| 1 | 12 | 0 | 1 | 8 | 5,508 | 47,725 | 3,138 | 2,504 | 0 |
+| 2 | 12 | 0 | 1 | 4 | 1,556 | 39,826 | 1,507 | 1,746 | 0 |
+| 3 | 20 | 0 | 1 | 7 | 6,770 | 70,425 | 6,851 | 3,134 | 0 |
+| 4 | 12 | 0 | 1 | 4 | 282,426 | 117,174 | 75,089 | 1,720 | 0 |
+| 5B | 26 | 0 | 1 | 10 | 34,217 | 111,955 | 15,561 | 3,889 | 0 |
+
+### Log And State Locations
+
+| Test | Proxy log | State dir | Output files |
+| ---- | --------- | --------- | ------------ |
+| 1 | `/tmp/pando-live-health3-t1/proxy.jsonl` | `/tmp/pando-live-health3-t1/state` | `/tmp/pando-live-health3-t1/r1.txt` through `r5.txt` |
+| 2 | `/tmp/pando-live-health3-t2/proxy.jsonl` | `/tmp/pando-live-health3-t2/state` | `/tmp/pando-live-health3-t2/r1.txt` through `r5.txt` |
+| 3 | `/tmp/pando-live-health3-t3/proxy.jsonl` | `/tmp/pando-live-health3-t3/state` | `/tmp/pando-live-health3-t3/r1.txt` through `r5.txt` |
+| 4 | `/tmp/pando-live-health3-t4/proxy.jsonl` | `/tmp/pando-live-health3-t4/state` | `/tmp/pando-live-health3-t4/r1.txt` through `r5.txt` |
+| 5 first attempt | `/tmp/pando-live-health3-t5/proxy.jsonl` | `/tmp/pando-live-health3-t5/state` | `/tmp/pando-live-health3-t5/r1.txt` through `r5.txt`, `r5b.txt` retry |
+| 5B replacement | `/tmp/pando-live-health3-t5b/proxy.jsonl` | `/tmp/pando-live-health3-t5b/state` | `/tmp/pando-live-health3-t5b/r1.txt` through `r10.txt` |
+
+### Test 1 - pando-proxy, Downloads, Flask, Gemini
+
+Rounds:
+
+1. pando-proxy package and memory implementation facts: package `0.1.31`, recall mentions `44`,
+   retention mentions `7`.
+2. Downloads facts: `10084.jpg` first16 `ffd8ffe000104a464946000101000048`,
+   `2026-04-23_payment_report.csv`, and `20250527_151257_typingmind_chats.json`.
+3. Flask search: version `3.2.0.dev`, `app.test_client` count `57`, blueprint snippets.
+4. Gemini large search: `mcpLineCount=5177`, `sandboxLineCount=1115`.
+5. No shell tools. Final output preserved Gemini, Flask, and JPG facts.
+
+Final excerpt:
+
+```json
+{
+  "gemini": { "version": "0.25.0-nightly.20260107.59a18e710", "mcpLineCount": 5177, "sandboxLineCount": 1115 },
+  "flask": { "version": "3.2.0.dev", "appTestClientCount": 57 },
+  "jpgFirst16": "ffd8ffe000104a464946000101000048"
+}
+```
+
+### Test 2 - Extension Media, HEIC/PNG/PDF, Dotnet, Elasticsearch
+
+Rounds:
+
+1. pando-extension media/font facts: `icon.png`, `panel-icon.svg`, `webview-codicon.ttf`.
+2. Downloads HEIC/PNG/PDF facts: HEIC first16 `00000020667479706865696300000000`.
+3. dotnet-runtime globalization search: SDK `11.0.100-preview.1.26104.118`, `Invariant=6607`.
+4. elasticsearch docs search: `snapshotLineCount=11`, `securityLineCount=10`.
+5. No shell tools. Final output preserved dotnet, elasticsearch, and HEIC facts.
+
+Final excerpt:
+
+```json
+{
+  "elasticsearch": { "snapshotLineCount": 11, "securityLineCount": 10 },
+  "dotnet": { "sdk": "11.0.100-preview.1.26104.118", "Invariant": 6607 },
+  "heicFirst16": "00000020667479706865696300000000"
+}
+```
+
+### Test 3 - Hospital Pricing, SRT, Metabase, pando-proxy Search
+
+Rounds:
+
+1. Downloads hospital pricing CSV/JSON metadata and small slices.
+2. SRT subtitle scan: `cue_count_estimate=2060`, `frodo_or_sam_line_count=62`.
+3. Metabase search: `database=9586`, `driver=6500`.
+4. pando-proxy recall/retention search: package `0.1.31`, `recall_count=44`, `retention_count=7`;
+   `docs` path was missing and reported as such.
+5. No shell tools. Final output preserved pando-proxy, Metabase, and SRT facts.
+
+Final excerpt:
+
+```json
+{
+  "pando_proxy": { "version": "0.1.31", "recall_count": 44, "retention_count": 7 },
+  "metabase": { "database": 9586, "driver": 6500 },
+  "srt": { "cue_count_estimate": 2060, "frodo_or_sam_line_count": 62 }
+}
+```
+
+### Test 4 - Binaries, pando-extension Large Search, Flask, Gemini
+
+Rounds:
+
+1. Downloads EXE/HEIC/JPG metadata: `sourceinsight40148_7177-setup.exe` bytes `24639640`, first16
+   `4d5a90000300000004000000ffff0000`.
+2. pando-extension large `snapshot|workspace|codicon` search: `snapshot=2982`, `workspace=1083`,
+   `codicon=23`.
+3. Flask search: heading `# Flask`, `template=798`, `blueprint=488`.
+4. Gemini search: version `0.25.0-nightly.20260107.59a18e710`, `oauth=1186`, `sandbox=1023`.
+5. No shell tools. Final output recovered older EXE facts and current Gemini/Flask facts.
+
+Final excerpt:
+
+```json
+{
+  "gemini": { "oauth": 1186, "sandbox": 1023 },
+  "flask": { "template": 798, "blueprint": 488 },
+  "sourceinsight40148_7177-setup.exe": { "byte_size": 24639640, "first16_hex": "4d5a90000300000004000000ffff0000" }
+}
+```
+
+### Test 5 First Attempt - Abandoned Long Session
+
+The first long-session attempt intentionally pushed a very large dotnet search stream through the
+proxy. Round 4 completed and the manager pruned the oversized active pieces on the next finalize,
+but round 5 exposed two outer Codex behaviors:
+
+- One run returned only `turn.started` and `turn.completed` with no assistant/tool items. The proxy
+  sent a normal rewritten request and finalized memory with `memoryUpdateError: null`.
+- A retry produced an initial assistant message and one shell result, then no follow-up request
+  reached the proxy for more than two minutes. The wrapper emitted `wrapper_exec_json_idle`; the
+  stuck process was terminated manually.
+
+This attempt was not counted as the passing long test. It remained useful as a stress diagnostic:
+the active-memory manager had zero schema/memory errors, but the outer Codex child stalled after
+large prior context/tool history.
+
+### Test 5B - Replacement 10-Round Long Session
+
+Rounds:
+
+1. pando-proxy package/search: version `0.1.31`, recall count `36`,
+   `retained_piece_prune` count `7`.
+2. Downloads binaries/images: EXE bytes `24639640`, first16
+   `4d5a90000300000004000000ffff0000`; HEIC and JPG metadata.
+3. Flask bounded search: heading `# Flask`, case-sensitive `blueprint=359`, `template=727`.
+4. dotnet-runtime bounded search: SDK `11.0.100-preview.1.26104.118`, `Invariant=6607`,
+   `Globalization=5244`.
+5. Hospital pricing CSV/JSON parsing: Delta first sample gross charge `140.85`; also Montana,
+   Tri-City, and SageWest JSON samples.
+6. pando-extension media/font metadata: package `0.0.14`, `icon.png=3260`,
+   `webview-codicon.ttf=80188`.
+7. Gemini bounded docs/packages search: version `0.25.0-nightly.20260107.59a18e710`,
+   `oauth=2895`, `sandbox=1409`.
+8. SRT subtitle scan: cue count estimate `2061`, `Frodo|Sam` line count `62`.
+9. Elasticsearch docs search: `snapshot=897`, `security=1251`.
+10. No shell tools. Final output preserved facts from rounds 1, 2, 5, 7, and 9.
+
+Final excerpt:
+
+```json
+{
+  "pando_proxy": { "version": "0.1.31", "recall_count": 36 },
+  "binary_exe": { "bytes": 24639640, "first16_hex": "4d5a90000300000004000000ffff0000" },
+  "hospital_delta_first_sample_gross_charge": "140.85",
+  "gemini_counts": { "oauth": 2895, "sandbox": 1409 },
+  "elasticsearch_counts": { "snapshot": 897, "security": 1251 }
+}
+```
+
 ### Test 4 - gemini-cli to dotnet-runtime
 
 First attempt:
