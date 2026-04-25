@@ -462,13 +462,6 @@ function extractResponseText(value: unknown): string {
   return parts.join("\n");
 }
 
-const pathPartSchema = {
-  anyOf: [
-    { type: "string" },
-    { type: "number" },
-  ],
-};
-
 const chunkSelectorSchema = {
   anyOf: [
     {
@@ -482,20 +475,21 @@ const chunkSelectorSchema = {
     {
       type: "object",
       properties: {
-        kind: { type: "string", enum: ["line_range"] },
-        startLine: { type: "number" },
-        endLine: { type: "number" },
+        kind: { type: "string", enum: ["text_spans"] },
+        spans: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              start: { type: "integer", minimum: 0 },
+              end: { type: "integer", minimum: 0 },
+            },
+            required: ["start", "end"],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ["kind", "startLine", "endLine"],
-      additionalProperties: false,
-    },
-    {
-      type: "object",
-      properties: {
-        kind: { type: "string", enum: ["object_path"] },
-        path: { type: "array", items: pathPartSchema },
-      },
-      required: ["kind", "path"],
+      required: ["kind", "spans"],
       additionalProperties: false,
     },
   ],
@@ -609,6 +603,7 @@ Rules:
 - summary should say what durable exact evidence matters in that group.
 - summary must not include one-turn reply instructions, stale formatting requirements, or obsolete answer text commands such as "reply STEP-4 only".
 - summary should describe durable task state, not the transient wording of the most recent answer instruction.
+- summary must not include transient current-turn response-shape requests such as "return exact JSON only", requested key names, formatting wrappers, or output-slot templates when they do not add durable facts.
 - Do not invent vague meta-groups.
 - Return JSON only.
 `.trim();
@@ -623,11 +618,18 @@ Rules:
 - Do not summarize, paraphrase, or rewrite content.
 - Return exact selectors only:
   - whole
-  - line_range using original 1-based lines
-  - object_path for exact JSON paths
+  - text_spans using exact character offsets into the provided contentText
+- Each text_spans selector may contain multiple ordered non-overlapping spans for one conceptual piece.
 - Prefer a few meaningful exact pieces over many tiny fragments.
 - When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, select the payload block itself instead of the wrapper instructions.
-- For user messages that say things like "remember this exact block" or "use this exact snippet", prefer a line_range covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
+- For user messages that say things like "remember this exact block" or "use this exact snippet", prefer text_spans covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
+- When the payload is delimited by clear markers such as fenced code blocks, BEGIN/END markers, XML-like tags, or repeated stanza boundaries, select the complete intended interior block instead of a partial prefix.
+- Exclude delimiter markers themselves when the user says they are wrapper text and not part of the exact retained content.
+- When a clearly delimited block or stanza sequence is selected, include the full intended block boundaries. Do not truncate mid-line, mid-stanza, or mid-block.
+- For structured JSON data, prefer whole objects or boundary-safe spans that keep complete fields/entries together.
+- For binary-like, base64-like, hex-dump-like, byte-array-like, image-metadata-like, or file-payload-like content, prefer whole unless there is an obvious safe boundary. Never split mid-token or mid-byte-sequence.
+- Keep spans in original order.
+- Do not invent or rewrite missing text. Select exact spans only.
 - If splitting would be lossy or ambiguous, use whole.
 - Return JSON only.
 `.trim();
@@ -643,12 +645,16 @@ Rules:
 - Keep only exact pieces that materially matter later.
 - Prefer original user literals and original tool results over assistant restatements.
 - Do not retain transient one-turn response-formatting instructions such as "reply X only", "answer UNKNOWN only", or "do not reveal it this round" unless they also contain durable facts that will matter later.
+- Do not retain current-turn answer-shape requests that only specify how to format this response, such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" instructions, when the underlying durable evidence already exists elsewhere.
+- Example of keep=false: a piece whose only purpose is "Return exact JSON only: {\"a\":\"<...>\",\"c\":\"<...>\"}" or similar current-turn output-shape instructions.
+- Queries, questions, and answer-shape prompts with placeholders such as "...", "<...>", "<full ...>", or requested key names are not durable evidence and must keep=false unless they also introduce brand-new exact source material to remember.
 - When a round contains both durable exact evidence and transient answer-formatting instructions, keep the durable evidence and drop the transient control chatter.
 - If a piece is the canonical raw source for future verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction, keep that original raw piece.
 - Do not treat a group summary as a replacement for the canonical raw source when exact reproduction of the original text may matter later.
 - groupId must be an active group when keep=true.
 - When keep=false, set groupId to null and supersedesPieceIds to [].
 - supersedesPieceIds should only list older retained pieces made obsolete by the new piece.
+- Never supersede older retained pieces with a query, question, or answer-shape request. Only supersede when the new piece itself contains replacement exact evidence that should now be remembered instead.
 - Return JSON only.
 `.trim();
 
@@ -693,10 +699,12 @@ Return JSON matching the supplied schema.
 
 Rules:
 - You are given the current groups, surviving old pieces, and newly kept pieces.
-- dropPieceIds must be a subset of retainedOldPieces ids.
-- Drop only old pieces that are clearly obsolete now.
+- dropPieceIds must be a subset of the ids from retainedOldPieces plus keptNewPieces.
+- Drop only pieces that are clearly obsolete now.
 - Prefer to keep earlier original user literals, tokens, constraints, and exact values when later rounds may still depend on them.
 - Prefer to drop transient response-formatting or acknowledgment pieces before dropping earlier durable exact evidence.
+- Drop current-turn answer-shape requests such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" prompts before dropping durable exact evidence.
+- Drop queries/questions whose only purpose is to ask for already-known values in a specific shape, especially when they contain placeholders like "...", "<...>", or "<full ...>".
 - Do not drop the only remaining canonical raw source for material that may need verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction later.
 - For formatting-sensitive blocks or snippets, prefer to keep the original raw source piece rather than relying on the group summary alone.
 - If unsure, keep the old piece.
@@ -715,7 +723,7 @@ function normalizeSourceChunkBatchResponse(
     return defaultSourceChunkBatchResponse(request);
   }
   const requestedIds = new Set(request.sources.map((source) => source.sourceId));
-  const byId = new Map<string, ChunkSelector[]>();
+  const byId = new Map<string, SourceChunkBatchResponse["results"][number]["selectors"]>();
   for (const entry of record.results) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       continue;
@@ -728,7 +736,11 @@ function normalizeSourceChunkBatchResponse(
     const selectors = Array.isArray(item.selectors)
       ? item.selectors
         .map(coerceChunkSelector)
-        .filter((selector: ChunkSelector | null): selector is ChunkSelector => Boolean(selector))
+        .filter((
+          selector,
+        ): selector is SourceChunkBatchResponse["results"][number]["selectors"][number] =>
+          Boolean(selector)
+        )
       : [];
     byId.set(sourceId, selectors.length > 0 ? selectors : [{ kind: "whole" }]);
   }
@@ -751,7 +763,9 @@ function defaultSourceChunkBatchResponse(
   };
 }
 
-function coerceChunkSelector(value: unknown): ChunkSelector | null {
+function coerceChunkSelector(
+  value: unknown,
+): SourceChunkBatchResponse["results"][number]["selectors"][number] | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -760,19 +774,19 @@ function coerceChunkSelector(value: unknown): ChunkSelector | null {
     return { kind: "whole" };
   }
   if (
-    record.kind === "line_range" &&
-    typeof record.startLine === "number" &&
-    typeof record.endLine === "number"
+    record.kind === "text_spans" &&
+    Array.isArray(record.spans)
   ) {
-    return { kind: "line_range", startLine: record.startLine, endLine: record.endLine };
-  }
-  if (record.kind === "object_path" && Array.isArray(record.path)) {
-    return {
-      kind: "object_path",
-      path: record.path.filter((part): part is string | number =>
-        typeof part === "string" || typeof part === "number"
-      ),
-    };
+    const spans = record.spans
+      .filter((span): span is Record<string, unknown> =>
+        Boolean(span) && typeof span === "object" && !Array.isArray(span)
+      )
+      .map((span) => ({
+        start: typeof span.start === "number" ? Math.trunc(span.start) : -1,
+        end: typeof span.end === "number" ? Math.trunc(span.end) : -1,
+      }))
+      .filter((span) => span.start >= 0 && span.end > span.start);
+    return spans.length > 0 ? { kind: "text_spans", spans } : null;
   }
   return null;
 }

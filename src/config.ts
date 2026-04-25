@@ -11,7 +11,6 @@ export type ProxyConfig = {
   stateDir: string;
   memoryEnabled: boolean;
   logFile: string | null;
-  inlinePieceByteLimit: number;
   codexAutoCompactTokenLimit: number;
 };
 
@@ -38,7 +37,6 @@ export const DEFAULT_OVERFLOW_STRUCTURED_MODEL = "gpt-5.4";
 export const DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW = 272_000;
 export const DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW = 1_000_000;
 export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
-export const DEFAULT_INLINE_PIECE_BYTE_LIMIT = 16_384;
 export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 280_000;
 
 export function loadConfig(options: CliOptions = {}): ProxyConfig {
@@ -77,10 +75,6 @@ export function loadConfig(options: CliOptions = {}): ProxyConfig {
     memoryEnabled: options.memoryEnabled ??
       !parseBoolean(Deno.env.get("PANDO_PROXY_DISABLE_MEMORY")),
     logFile: options.logFile ?? Deno.env.get("PANDO_PROXY_LOG_FILE") ?? null,
-    inlinePieceByteLimit: parsePositiveInt(
-      Deno.env.get("PANDO_PROXY_INLINE_PIECE_BYTE_LIMIT"),
-      DEFAULT_INLINE_PIECE_BYTE_LIMIT,
-    ),
     codexAutoCompactTokenLimit: parsePositiveInt(
       options.codexAutoCompactTokenLimit !== undefined
         ? String(options.codexAutoCompactTokenLimit)

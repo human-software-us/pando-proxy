@@ -1,5 +1,11 @@
-import { stableJson } from "./json.ts";
 import type { ChunkSelector, PieceDraft } from "./memory_state.ts";
+import {
+  exactByteSizeForSelection,
+  materializeTextSpans,
+  previewForRenderedText,
+  renderTextSelection,
+  sourceTextView,
+} from "./source_selectors.ts";
 import type { StructuredClients } from "./structured_model.ts";
 import type { RoundSource } from "./tool_results.ts";
 
@@ -76,8 +82,8 @@ export function materializeSourceSelectors(
 ): PieceDraft[] {
   const out: PieceDraft[] = [];
   for (const [index, selector] of selectors.entries()) {
-    const payloadInline = materializeSelector(source.payload, selector);
-    if (payloadInline === undefined) {
+    const materialized = materializeSelector(source, selector);
+    if (!materialized) {
       continue;
     }
     const pointer = buildPointer(source, selector);
@@ -86,10 +92,10 @@ export function materializeSourceSelectors(
       sourceKind: source.sourceKind,
       sourceId: source.sourceId,
       ...(source.toolName ? { toolName: source.toolName } : {}),
-      payloadInline,
-      previewText: previewText(payloadInline),
+      content: materialized.content,
+      previewText: materialized.previewText,
       ...(pointer ? { pointer } : {}),
-      byteSize: byteSize(payloadInline),
+      byteSize: materialized.byteSize,
       selector,
     };
     if (draft.byteSize > 0) {
@@ -99,18 +105,44 @@ export function materializeSourceSelectors(
   return out;
 }
 
-export function materializeSelector(payload: unknown, selector: ChunkSelector): unknown {
+export function materializeSelector(
+  source: Pick<RoundSource, "sourceKind" | "toolName" | "payload">,
+  selector: ChunkSelector,
+): { content: unknown; previewText: string; byteSize: number } | null {
   if (selector.kind === "whole") {
-    return payload;
+    if (source.sourceKind === "tool" && isPandoToolName(source.toolName)) {
+      const content = source.payload;
+      return {
+        content,
+        previewText: previewText(content),
+        byteSize: byteSize(content),
+      };
+    }
+    const text = sourceTextView(source);
+    return {
+      content: text,
+      previewText: previewForRenderedText(text),
+      byteSize: byteSize(text),
+    };
   }
-  if (selector.kind === "line_range") {
-    const text = typeof payload === "string" ? payload : stableJson(payload);
-    const lines = text.split(/\r?\n/);
-    const start = Math.max(1, selector.startLine);
-    const end = Math.max(start, selector.endLine);
-    return lines.slice(start - 1, end).join("\n");
+  if (selector.kind === "text_spans") {
+    const selection = materializeTextSpans(source, selector.spans);
+    const rendered = renderTextSelection(selection);
+    return {
+      content: selection,
+      previewText: previewForRenderedText(rendered),
+      byteSize: exactByteSizeForSelection(selection),
+    };
   }
-  return readObjectPath(payload, selector.path);
+  const content = readObjectPath(source.payload, selector.path);
+  if (content === undefined) {
+    return null;
+  }
+  return {
+    content,
+    previewText: previewText(content),
+    byteSize: byteSize(content),
+  };
 }
 
 async function chunkBatchWithModel(
@@ -122,7 +154,7 @@ async function chunkBatchWithModel(
       sourceId: source.sourceId,
       sourceKind: source.sourceKind,
       ...(source.toolName ? { toolName: source.toolName } : {}),
-      content: source.payload,
+      contentText: sourceTextView(source),
       ...(source.pointer ? { pointer: source.pointer } : {}),
     })),
   });
@@ -168,10 +200,12 @@ function readObjectPath(payload: unknown, path: Array<string | number>): unknown
 }
 
 function byteSize(value: unknown): number {
-  return new TextEncoder().encode(typeof value === "string" ? value : stableJson(value)).length;
+  return new TextEncoder().encode(
+    typeof value === "string" ? value : JSON.stringify(value),
+  ).length;
 }
 
 function previewText(value: unknown): string {
-  const text = typeof value === "string" ? value : stableJson(value);
+  const text = typeof value === "string" ? value : JSON.stringify(value);
   return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }

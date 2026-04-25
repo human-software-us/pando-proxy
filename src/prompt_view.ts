@@ -1,10 +1,9 @@
 import type { ProxyConfig } from "./config.ts";
-import { stableJson } from "./json.ts";
 import {
   activeGroups,
   chronologicalPieces,
-  type MemoryPiece,
-  type MemoryState,
+  type MaterializedMemoryPiece,
+  type MaterializedMemoryState,
   piecePreview,
 } from "./memory_state.ts";
 import { describeInputItems, type InputItemDescriptor, itemTypeCounts } from "./tool_results.ts";
@@ -26,7 +25,7 @@ export type RewriteResult = {
 
 export async function rewriteRequestWithMemory(
   body: Record<string, unknown>,
-  memory: MemoryState,
+  memory: MaterializedMemoryState,
   _config: ProxyConfig,
 ): Promise<RewriteResult> {
   const raw = await describeInputItems(body.input);
@@ -93,8 +92,8 @@ export async function buildDerivedPrompt(
 }
 
 export function makePromptMemoryItem(
-  memory: MemoryState,
-  pieces: MemoryPiece[],
+  memory: MaterializedMemoryState,
+  pieces: MaterializedMemoryPiece[],
 ): Record<string, unknown> | null {
   if (memory.groups.length === 0 && pieces.length === 0) {
     return null;
@@ -110,7 +109,10 @@ export function makePromptMemoryItem(
   };
 }
 
-export function buildPromptMemoryText(memory: MemoryState, pieces: MemoryPiece[]): string {
+export function buildPromptMemoryText(
+  memory: MaterializedMemoryState,
+  pieces: MaterializedMemoryPiece[],
+): string {
   const lines = ["<pando_group_memory>"];
   const groups = activeGroups(memory.groups);
   if (groups.length > 0) {
@@ -133,11 +135,7 @@ export function buildPromptMemoryText(memory: MemoryState, pieces: MemoryPiece[]
     lines.push(
       `<piece pieceId=${piece.id} groupId=${piece.groupId} sourceKind=${piece.sourceKind}>`,
     );
-    lines.push(
-      piece.payloadInline === undefined
-        ? piecePreview(piece)
-        : formatPiecePayload(piece.payloadInline),
-    );
+    lines.push(piece.renderText || piecePreview(piece));
     lines.push("</piece>");
   }
   lines.push("</exact_pieces>");
@@ -164,10 +162,6 @@ export function buildPromptMemoryText(memory: MemoryState, pieces: MemoryPiece[]
   }
   lines.push("</pando_group_memory>");
   return lines.join("\n");
-}
-
-function formatPiecePayload(payload: unknown): string {
-  return typeof payload === "string" ? payload : stableJson(payload);
 }
 
 function leadingInstructions(items: InputItemDescriptor[]): InputItemDescriptor[] {
@@ -202,11 +196,11 @@ function containsRef(
     tail.some((candidate) => candidate.ref === item.ref);
 }
 
-function hasArchivedSourceGap(memory: MemoryState): boolean {
+function hasArchivedSourceGap(memory: MaterializedMemoryState): boolean {
   return archivedSourceCount(memory) > 0;
 }
 
-function archivedSourceCount(memory: MemoryState): number {
+function archivedSourceCount(memory: MaterializedMemoryState): number {
   const visibleSourceIds = new Set(memory.pieces.map((piece) => piece.sourceId));
   return memory.processedSourceIds.filter((sourceId) => !visibleSourceIds.has(sourceId)).length;
 }

@@ -1,8 +1,8 @@
-import { stableJson } from "./json.ts";
+import type { TextSpan } from "./source_selectors.ts";
 
 export type ChunkSelector =
   | { kind: "whole" }
-  | { kind: "line_range"; startLine: number; endLine: number }
+  | { kind: "text_spans"; spans: TextSpan[] }
   | { kind: "object_path"; path: Array<string | number> };
 
 export type MemoryGroup = {
@@ -18,7 +18,7 @@ export type PieceDraft = {
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  payloadInline: unknown;
+  content: unknown;
   previewText: string;
   pointer?: Record<string, unknown>;
   byteSize: number;
@@ -31,13 +31,19 @@ export type MemoryPiece = {
   sourceKind: "user" | "assistant" | "tool";
   sourceId: string;
   toolName?: string;
-  payloadInline?: unknown;
-  payloadRef?: string;
   previewText: string;
   pointer?: Record<string, unknown>;
   byteSize: number;
   createdSeq: number;
   selector: ChunkSelector;
+};
+
+export type MaterializedMemoryPiece = MemoryPiece & {
+  renderText: string;
+};
+
+export type MaterializedMemoryState = Omit<MemoryState, "pieces"> & {
+  pieces: MaterializedMemoryPiece[];
 };
 
 export type MemoryState = {
@@ -68,7 +74,9 @@ export function pruneMemoryState(state: MemoryState): MemoryState {
   const groups = dedupeGroups(state.groups ?? []);
   const groupIds = new Set(groups.map((group) => group.id));
   const pieces = dedupePieces(
-    (state.pieces ?? []).filter((piece) => typeof piece?.groupId === "string" && groupIds.has(piece.groupId)),
+    (state.pieces ?? []).filter((piece) =>
+      typeof piece?.groupId === "string" && groupIds.has(piece.groupId)
+    ),
   );
   return {
     roundSeq: Math.max(0, Math.trunc(state.roundSeq ?? 0)),
@@ -82,7 +90,9 @@ export function pruneMemoryState(state: MemoryState): MemoryState {
   };
 }
 
-export function chronologicalPieces(pieces: MemoryPiece[]): MemoryPiece[] {
+export function chronologicalPieces<T extends { createdSeq: number; id: string }>(
+  pieces: T[],
+): T[] {
   return [...pieces].sort((left, right) =>
     left.createdSeq === right.createdSeq
       ? left.id.localeCompare(right.id)
@@ -114,24 +124,26 @@ export function dedupePieces(pieces: MemoryPiece[]): MemoryPiece[] {
       continue;
     }
     byId.set(piece.id, {
-      ...piece,
+      id: piece.id,
+      groupId: piece.groupId,
+      sourceKind: piece.sourceKind,
+      sourceId: piece.sourceId,
+      ...(piece.toolName ? { toolName: piece.toolName } : {}),
       previewText: typeof piece.previewText === "string" ? piece.previewText : "",
+      ...(piece.pointer ? { pointer: piece.pointer } : {}),
+      byteSize: Math.max(0, Math.trunc(piece.byteSize ?? 0)),
+      createdSeq: Math.max(0, Math.trunc(piece.createdSeq ?? 0)),
+      selector: piece.selector,
     });
   }
   return chronologicalPieces([...byId.values()]);
 }
 
-export function piecePayload(piece: Pick<MemoryPiece, "payloadInline">): unknown {
-  return piece.payloadInline;
-}
-
-export function piecePreview(piece: Pick<MemoryPiece, "previewText" | "payloadInline">): string {
+export function piecePreview(piece: Pick<MemoryPiece, "previewText">): string {
   if (typeof piece.previewText === "string" && piece.previewText.trim().length > 0) {
     return piece.previewText;
   }
-  const payload = piece.payloadInline;
-  const text = typeof payload === "string" ? payload : stableJson(payload);
-  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+  return "";
 }
 
 export function activeGroups(groups: MemoryGroup[]): MemoryGroup[] {
@@ -174,9 +186,6 @@ export function assertMemoryInvariant(state: MemoryState): void {
     }
     if (piece.byteSize < 0) {
       errors.push(`Piece ${piece.id} has invalid byteSize`);
-    }
-    if (!piece.payloadRef && piece.payloadInline === undefined) {
-      errors.push(`Piece ${piece.id} must have payloadInline or payloadRef`);
     }
   }
 

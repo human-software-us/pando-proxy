@@ -5,6 +5,7 @@ import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
 import type { MemoryState } from "./memory_state.ts";
 import {
   estimateBytesForValue,
+  estimateTokensForValue,
   extractUsageMetrics,
   memoryStateMetrics,
   requestContextMetrics,
@@ -49,6 +50,25 @@ export type ContextWindowComparisonStats = {
   withProxy: ContextWindowStats | null;
 };
 
+export type TokenSeriesStats = {
+  samples: number;
+  min: number;
+  avg: number;
+  max: number;
+  total: number;
+};
+
+export type UsageSeriesStats = {
+  inputTokens: TokenSeriesStats;
+  cachedInputTokens: TokenSeriesStats;
+  outputTokens: TokenSeriesStats;
+  totalTokens: TokenSeriesStats;
+};
+
+export type WithoutProxyTokenStats = {
+  estimatedInputTokens: TokenSeriesStats;
+};
+
 type StructuredUsageClassifierTotals = {
   attempts: number;
   retryAttempts: number;
@@ -70,12 +90,23 @@ type StructuredUsageSessionTotals = {
 };
 
 export type SessionTokenStats = {
+  withoutProxy: WithoutProxyTokenStats | null;
+  withProxy: UsageSeriesStats | null;
   mainModel: UsageTotals | null;
-  manager: StructuredUsageSessionTotals | null;
+  proxyOverhead: StructuredUsageSessionTotals | null;
 };
 
 type MutableContextWindowStats = ContextWindowStats & {
   totalBytes: number;
+};
+
+type MutableTokenSeriesStats = TokenSeriesStats;
+
+type MutableUsageSeriesStats = {
+  inputTokens: MutableTokenSeriesStats;
+  cachedInputTokens: MutableTokenSeriesStats;
+  outputTokens: MutableTokenSeriesStats;
+  totalTokens: MutableTokenSeriesStats;
 };
 
 class ContextWindowStatsTracker {
@@ -129,6 +160,68 @@ class ContextWindowStatsTracker {
       this.#withoutProxyBySession.get(sessionKey),
       this.#withProxyBySession.get(sessionKey),
     );
+  }
+}
+
+class WithoutProxyTokenStatsTracker {
+  #latestSessionKey: string | null = null;
+  #estimatedInputTokensBySession = new Map<string, MutableTokenSeriesStats>();
+
+  recordEstimatedInputTokens(sessionKey: string, tokenCount: number): void {
+    if (!Number.isFinite(tokenCount) || tokenCount < 0) {
+      return;
+    }
+    const previous = this.#estimatedInputTokensBySession.get(sessionKey);
+    this.#estimatedInputTokensBySession.set(sessionKey, updateTokenSeries(previous, tokenCount));
+    this.#latestSessionKey = sessionKey;
+  }
+
+  latest(): WithoutProxyTokenStats | null {
+    return this.#latestSessionKey ? this.forSession(this.#latestSessionKey) : null;
+  }
+
+  forSession(sessionKey: string): WithoutProxyTokenStats | null {
+    const estimatedInputTokens = snapshotTokenSeriesStats(
+      this.#estimatedInputTokensBySession.get(sessionKey),
+    );
+    if (!estimatedInputTokens) {
+      return null;
+    }
+    return { estimatedInputTokens };
+  }
+}
+
+class WithProxyTokenStatsTracker {
+  #latestSessionKey: string | null = null;
+  #bySession = new Map<string, MutableUsageSeriesStats>();
+
+  record(sessionKey: string, usage: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  }): void {
+    const previous = this.#bySession.get(sessionKey);
+    const next: MutableUsageSeriesStats = {
+      inputTokens: updateTokenSeries(previous?.inputTokens, usage.inputTokens),
+      cachedInputTokens: updateTokenSeries(previous?.cachedInputTokens, usage.cachedInputTokens),
+      outputTokens: updateTokenSeries(previous?.outputTokens, usage.outputTokens),
+      totalTokens: updateTokenSeries(previous?.totalTokens, usage.totalTokens),
+    };
+    this.#bySession.set(sessionKey, next);
+    this.#latestSessionKey = sessionKey;
+  }
+
+  latest(): UsageSeriesStats | null {
+    return this.#latestSessionKey ? this.forSession(this.#latestSessionKey) : null;
+  }
+
+  forSession(sessionKey: string): UsageSeriesStats | null {
+    const value = this.#bySession.get(sessionKey);
+    if (!value) {
+      return null;
+    }
+    return snapshotUsageSeriesStats(value);
   }
 }
 
@@ -191,7 +284,7 @@ class StructuredUsageTracker {
 
 export function createHandler(
   config: ProxyConfig,
-  store = new SessionStore(config.stateDir, config.inlinePieceByteLimit),
+  store = new SessionStore(config.stateDir),
   fallbackSessionKeyForRequest?: () => string | null | undefined,
   observedRoundSourcesForSession?: (
     sessionKey: string,
@@ -200,6 +293,8 @@ export function createHandler(
 ) {
   const logger = createLogger(config.logFile);
   const usageTracker = new TokenUsageTracker();
+  const withoutProxyTokenStats = new WithoutProxyTokenStatsTracker();
+  const withProxyTokenStats = new WithProxyTokenStatsTracker();
   const managerUsageTracker = new StructuredUsageTracker();
   const contextWindowStats = new ContextWindowStatsTracker();
   const fallbackSessionKey = `wrapper_${crypto.randomUUID()}`;
@@ -274,6 +369,7 @@ export function createHandler(
       ...requestContextMetrics(body),
     });
     contextWindowStats.recordWithoutProxy(sessionKey, estimateBytesForValue(body));
+    withoutProxyTokenStats.recordEstimatedInputTokens(sessionKey, estimateTokensForValue(body));
 
     if (!config.memoryEnabled) {
       contextWindowStats.recordWithProxy(sessionKey, estimateBytesForValue(body));
@@ -328,6 +424,7 @@ export function createHandler(
                   store,
                   logger,
                   usageTracker,
+                  withProxyTokenStats,
                   managerUsageTracker,
                   requestId,
                   sessionKey,
@@ -348,6 +445,7 @@ export function createHandler(
               store,
               logger,
               usageTracker,
+              withProxyTokenStats,
               managerUsageTracker,
               requestId,
               sessionKey,
@@ -411,9 +509,17 @@ export function createHandler(
       forSession: (sessionKey: string) => contextWindowStats.forSession(sessionKey),
     },
     tokenStats: {
-      latest: () => snapshotSessionTokenStats(usageTracker.latest(), managerUsageTracker.latest()),
+      latest: () =>
+        snapshotSessionTokenStats(
+          withoutProxyTokenStats.latest(),
+          withProxyTokenStats.latest(),
+          usageTracker.latest(),
+          managerUsageTracker.latest(),
+        ),
       forSession: (sessionKey: string) =>
         snapshotSessionTokenStats(
+          withoutProxyTokenStats.forSession(sessionKey),
+          withProxyTokenStats.forSession(sessionKey),
           usageTracker.forSession(sessionKey),
           managerUsageTracker.forSession(sessionKey),
         ),
@@ -472,6 +578,54 @@ function snapshotContextWindowComparisonStats(
   };
 }
 
+function updateTokenSeries(
+  previous: MutableTokenSeriesStats | undefined,
+  value: number,
+): MutableTokenSeriesStats {
+  if (previous) {
+    const samples = previous.samples + 1;
+    const total = previous.total + value;
+    return {
+      samples,
+      min: Math.min(previous.min, value),
+      avg: Math.round(total / samples),
+      max: Math.max(previous.max, value),
+      total,
+    };
+  }
+  return {
+    samples: 1,
+    min: value,
+    avg: value,
+    max: value,
+    total: value,
+  };
+}
+
+function snapshotTokenSeriesStats(
+  value: MutableTokenSeriesStats | undefined,
+): TokenSeriesStats | null {
+  if (!value || value.samples === 0) {
+    return null;
+  }
+  return {
+    samples: value.samples,
+    min: value.min,
+    avg: value.avg,
+    max: value.max,
+    total: value.total,
+  };
+}
+
+function snapshotUsageSeriesStats(value: MutableUsageSeriesStats): UsageSeriesStats {
+  return {
+    inputTokens: snapshotTokenSeriesStats(value.inputTokens)!,
+    cachedInputTokens: snapshotTokenSeriesStats(value.cachedInputTokens)!,
+    outputTokens: snapshotTokenSeriesStats(value.outputTokens)!,
+    totalTokens: snapshotTokenSeriesStats(value.totalTokens)!,
+  };
+}
+
 function emptyStructuredUsageTotals(): StructuredUsageClassifierTotals {
   return {
     attempts: 0,
@@ -510,13 +664,15 @@ function sumStructuredUsageTotals(
 }
 
 function snapshotSessionTokenStats(
+  withoutProxy: WithoutProxyTokenStats | null,
+  withProxy: UsageSeriesStats | null,
   mainModel: UsageTotals | null,
-  manager: StructuredUsageSessionTotals | null,
+  proxyOverhead: StructuredUsageSessionTotals | null,
 ): SessionTokenStats | null {
-  if (!mainModel && !manager) {
+  if (!withoutProxy && !withProxy && !mainModel && !proxyOverhead) {
     return null;
   }
-  return { mainModel, manager };
+  return { withoutProxy, withProxy, mainModel, proxyOverhead };
 }
 
 export async function serve(config: ProxyConfig): Promise<void> {
@@ -531,6 +687,7 @@ type FinalizeRoundOptions = {
   store: SessionStore;
   logger: ReturnType<typeof createLogger>;
   usageTracker: TokenUsageTracker;
+  withProxyTokenStats: WithProxyTokenStatsTracker;
   managerUsageTracker: StructuredUsageTracker;
   requestId: string;
   sessionKey: string;
@@ -559,6 +716,7 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     store,
     logger,
     usageTracker,
+    withProxyTokenStats,
     managerUsageTracker,
     requestId,
     sessionKey,
@@ -673,6 +831,16 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
   const structuredUsageTotals = sumStructuredUsageTotals(
     Object.values(structuredUsageByClassifier),
   );
+  const allInUsage = {
+    inputTokens: (usage?.inputTokens ?? 0) + structuredUsageTotals.inputTokens,
+    cachedInputTokens: (usage?.cachedInputTokens ?? 0) + structuredUsageTotals.cachedInputTokens,
+    outputTokens: (usage?.outputTokens ?? 0) + structuredUsageTotals.outputTokens,
+    totalTokens: (usage?.totalTokens ?? ((usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0))) +
+      structuredUsageTotals.totalTokens,
+  };
+  if (usage || structuredUsageTotals.totalTokens > 0 || structuredUsageTotals.inputTokens > 0) {
+    withProxyTokenStats.record(sessionKey, allInUsage);
+  }
   const archiveRecallReturnedBytes = recalls.reduce(
     (total, recall) => total + recall.returnedBytes,
     0,
@@ -703,17 +871,16 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
     ...memoryStateMetrics(finalMemory),
     ...(usageTotals
       ? {
-        allInInputTokens: usageTotals.inputTokens + structuredUsageTotals.inputTokens,
-        allInCachedInputTokens: usageTotals.cachedInputTokens +
-          structuredUsageTotals.cachedInputTokens,
-        allInOutputTokens: usageTotals.outputTokens + structuredUsageTotals.outputTokens,
-        allInTotalTokens: usageTotals.totalTokens + structuredUsageTotals.totalTokens,
+        allInInputTokens: allInUsage.inputTokens,
+        allInCachedInputTokens: allInUsage.cachedInputTokens,
+        allInOutputTokens: allInUsage.outputTokens,
+        allInTotalTokens: allInUsage.totalTokens,
       }
       : {
-        allInInputTokens: structuredUsageTotals.inputTokens,
-        allInCachedInputTokens: structuredUsageTotals.cachedInputTokens,
-        allInOutputTokens: structuredUsageTotals.outputTokens,
-        allInTotalTokens: structuredUsageTotals.totalTokens,
+        allInInputTokens: allInUsage.inputTokens,
+        allInCachedInputTokens: allInUsage.cachedInputTokens,
+        allInOutputTokens: allInUsage.outputTokens,
+        allInTotalTokens: allInUsage.totalTokens,
       }),
     ...(usageTotals ? usageTotals : {}),
   });

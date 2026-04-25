@@ -9,6 +9,7 @@ import {
   pruneMemoryState,
   unique,
 } from "./memory_state.ts";
+import type { TextSpan } from "./source_selectors.ts";
 
 export type GroupIntentRequest = {
   groups: MemoryGroup[];
@@ -100,7 +101,7 @@ export type SourceChunkBatchRequest = {
     sourceId: string;
     sourceKind: "user" | "assistant" | "tool";
     toolName?: string;
-    content: unknown;
+    contentText: string;
     pointer?: Record<string, unknown>;
   }>;
 };
@@ -110,8 +111,7 @@ export type SourceChunkBatchResponse = {
     sourceId: string;
     selectors: Array<
       | { kind: "whole" }
-      | { kind: "line_range"; startLine: number; endLine: number }
-      | { kind: "object_path"; path: Array<string | number> }
+      | { kind: "text_spans"; spans: TextSpan[] }
     >;
   }>;
 };
@@ -195,7 +195,7 @@ export async function applyGroupUpdate(
           sourceKind: piece.sourceKind,
           sourceId: piece.sourceId,
           ...(piece.toolName ? { toolName: piece.toolName } : {}),
-          content: piece.payloadInline,
+          content: piece.content,
           previewText: piece.previewText,
           ...(piece.pointer ? { pointer: piece.pointer } : {}),
         })),
@@ -225,7 +225,14 @@ export async function applyGroupUpdate(
     .map((piece) => {
       const decision = decisionsByPieceId.get(piece.id)!;
       return {
-        ...piece,
+        id: piece.id,
+        sourceKind: piece.sourceKind,
+        sourceId: piece.sourceId,
+        ...(piece.toolName ? { toolName: piece.toolName } : {}),
+        previewText: piece.previewText,
+        ...(piece.pointer ? { pointer: piece.pointer } : {}),
+        byteSize: piece.byteSize,
+        selector: piece.selector,
         groupId: decision.groupId!,
         createdSeq: nextSeq,
       };
@@ -256,16 +263,17 @@ export async function applyGroupUpdate(
             createdSeq: piece.createdSeq,
           })),
         }, attempt),
-      (value) => parseAndValidateRetainedPiecePrune(value, prelimKeptOldPieces),
+      (value) => parseAndValidateRetainedPiecePrune(value, prelimKeptOldPieces, keptNewPieces),
       "retained_piece_prune",
     );
 
-  const prunedOldPieceIds = new Set(retainedPiecePrune.dropPieceIds);
-  const keptOldPieces = prelimKeptOldPieces.filter((piece) => !prunedOldPieceIds.has(piece.id));
+  const prunedPieceIds = new Set(retainedPiecePrune.dropPieceIds);
+  const keptOldPieces = prelimKeptOldPieces.filter((piece) => !prunedPieceIds.has(piece.id));
+  const finalKeptNewPieces = keptNewPieces.filter((piece) => !prunedPieceIds.has(piece.id));
   const memory = pruneMemoryState({
     roundSeq: nextSeq,
     groups: groupsAfter,
-    pieces: chronologicalPieces([...keptOldPieces, ...keptNewPieces]),
+    pieces: chronologicalPieces([...keptOldPieces, ...finalKeptNewPieces]),
     processedSourceIds: unique([
       ...state.processedSourceIds,
       ...newPieces.map((piece) => piece.sourceId),
@@ -281,10 +289,10 @@ export async function applyGroupUpdate(
     droppedOldPieceIds: state.pieces.map((piece) => piece.id).filter((id) =>
       !keptOldPieces.some((piece) => piece.id === id)
     ),
-    keptNewPieceIds: keptNewPieces.map((piece) => piece.id),
+    keptNewPieceIds: finalKeptNewPieces.map((piece) => piece.id),
     droppedNewPieceIds: newPieces
       .map((piece) => piece.id)
-      .filter((id) => !keptNewPieces.some((piece) => piece.id === id)),
+      .filter((id) => !finalKeptNewPieces.some((piece) => piece.id === id)),
   };
 }
 
@@ -428,25 +436,30 @@ function validatePieceRetentionBatch(
 function parseAndValidateRetainedPiecePrune(
   value: unknown,
   retainedOldPieces: MemoryPiece[],
+  keptNewPieces: MemoryPiece[],
 ): { ok: true; value: RetainedPiecePruneResponse } | { ok: false; errors: string[] } {
   const response = coerceRetainedPiecePrune(value);
   if (!response) {
     return { ok: false, errors: ["retained_piece_prune response must be an object"] };
   }
-  const errors = validateRetainedPiecePrune(response, retainedOldPieces);
+  const errors = validateRetainedPiecePrune(response, retainedOldPieces, keptNewPieces);
   return errors.length === 0 ? { ok: true, value: response } : { ok: false, errors };
 }
 
 function validateRetainedPiecePrune(
   response: RetainedPiecePruneResponse,
   retainedOldPieces: MemoryPiece[],
+  keptNewPieces: MemoryPiece[],
 ): string[] {
-  const retainedOldIds = new Set(retainedOldPieces.map((piece) => piece.id));
+  const retainedIds = new Set([
+    ...retainedOldPieces.map((piece) => piece.id),
+    ...keptNewPieces.map((piece) => piece.id),
+  ]);
   const seenDropIds = new Set<string>();
   const errors: string[] = [];
   for (const pieceId of response.dropPieceIds) {
-    if (!retainedOldIds.has(pieceId)) {
-      errors.push(`retained_piece_prune references unknown old piece ${pieceId}`);
+    if (!retainedIds.has(pieceId)) {
+      errors.push(`retained_piece_prune references unknown kept piece ${pieceId}`);
       continue;
     }
     if (seenDropIds.has(pieceId)) {

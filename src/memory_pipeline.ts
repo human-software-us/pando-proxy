@@ -121,7 +121,7 @@ export async function updateMemoryForCompletedRound(
     closedGroupIds: applied.groupIntent.closedGroupIds,
     replacedGroupIds: applied.groupIntent.replacedGroupIds,
     pieceRetention: applied.pieceRetention.decisions,
-    prunedOldPieceIds: applied.retainedPiecePrune.dropPieceIds,
+    prunedPieceIds: applied.retainedPiecePrune.dropPieceIds,
     keptOldPieceIds: applied.keptOldPieceIds,
     droppedOldPieceIds: applied.droppedOldPieceIds,
     keptNewPieceIds: applied.keptNewPieceIds,

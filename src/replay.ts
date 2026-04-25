@@ -13,6 +13,7 @@ import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
 import { estimateTokensForValue, requestContextMetrics } from "./metrics.ts";
 import { emptyMemoryState, type MemoryGroup, type MemoryState } from "./memory_state.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
+import { type ArchivedSource, materializeMemoryFromArchivedSources } from "./store.ts";
 import {
   createStructuredClients,
   type StructuredClients,
@@ -221,6 +222,7 @@ export async function replayRollout(
   const accumulated = [...prefixItems];
   const turns: ReplayTurnResult[] = [];
   let memory: MemoryState = emptyMemoryState();
+  const archivedSources = new Map<string, ArchivedSource>();
 
   for (const round of roundsToRun) {
     if (!round.userItem) {
@@ -242,7 +244,8 @@ export async function replayRollout(
     };
 
     const baselineMetrics = requestContextMetrics(baselineBody);
-    const rewrite = await rewriteRequestWithMemory(baselineBody, memory, config);
+    const promptMemory = materializeMemoryFromArchivedSources(memory, archivedSources);
+    const rewrite = await rewriteRequestWithMemory(baselineBody, promptMemory, config);
     const pandoMetrics = requestContextMetrics(rewrite.body);
     const fakeResponse = {
       id: `replay_${round.index}`,
@@ -257,6 +260,9 @@ export async function replayRollout(
       clients,
       { sessionKey: `replay_${round.index}`, requestId: `replay_${round.index}` },
     );
+    for (const source of updated.sources) {
+      archivedSources.set(source.sourceId, source);
+    }
     memory = updated.memory;
 
     const turnResult: ReplayTurnResult = {

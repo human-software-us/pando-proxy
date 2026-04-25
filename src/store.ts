@@ -1,34 +1,52 @@
 import { expandHome } from "./config.ts";
+import { materializeSelector } from "./chunking.ts";
 import { shortHash } from "./hash.ts";
 import {
   assertMemoryInvariant,
   emptySessionRecord,
   isRecord,
+  type MaterializedMemoryPiece,
+  type MaterializedMemoryState,
   type MemoryPiece,
   pruneMemoryState,
   type SessionRecord,
 } from "./memory_state.ts";
+import { renderTextSelection, type TextSpanSelection } from "./source_selectors.ts";
 import type { RoundSource } from "./tool_results.ts";
-
-export type ExactPiece = {
-  id: string;
-  sourceKind: "user" | "assistant" | "tool";
-  sourceId: string;
-  toolName?: string;
-  selector: MemoryPiece["selector"];
-  payload: unknown;
-};
 
 export type ArchivedSource = RoundSource;
 
+export function materializeMemoryFromArchivedSources(
+  memory: SessionRecord["memory"],
+  archivedSourcesById: ReadonlyMap<string, ArchivedSource>,
+): MaterializedMemoryState {
+  return {
+    ...memory,
+    pieces: memory.pieces.flatMap((piece) => {
+      const source = archivedSourcesById.get(piece.sourceId);
+      if (!source) {
+        return [];
+      }
+      const materialized = materializeSelector(source, piece.selector);
+      if (!materialized) {
+        return [];
+      }
+      return [
+        {
+          ...piece,
+          renderText: renderMaterializedContent(materialized.content),
+        } satisfies MaterializedMemoryPiece,
+      ];
+    }),
+  };
+}
+
 export class SessionStore {
   #root: string;
-  #inlinePieceByteLimit: number;
   #locks = new Map<string, Promise<void>>();
 
-  constructor(root: string, inlinePieceByteLimit = Number.POSITIVE_INFINITY) {
+  constructor(root: string) {
     this.#root = expandHome(root);
-    this.#inlinePieceByteLimit = inlinePieceByteLimit;
   }
 
   async load(sessionKey: string): Promise<SessionRecord> {
@@ -53,59 +71,20 @@ export class SessionStore {
 
   async save(sessionKey: string, record: SessionRecord): Promise<void> {
     const dir = await this.#sessionDir(sessionKey);
-    const payloadDir = `${dir}/payloads`;
     const memory = pruneMemoryState(structuredClone(record.memory));
-
-    for (const piece of memory.pieces) {
-      if (piece.payloadInline === undefined || piece.byteSize <= this.#inlinePieceByteLimit) {
-        continue;
-      }
-      const payloadRef = piece.payloadRef ?? await this.#payloadRefForPiece(piece.id);
-      await Deno.mkdir(payloadDir, { recursive: true });
-      await atomicWriteText(`${dir}/${payloadRef}`, `${JSON.stringify(piece.payloadInline)}\n`);
-      delete piece.payloadInline;
-      piece.payloadRef = payloadRef;
-    }
-
     assertMemoryInvariant(memory);
     await atomicWriteText(`${dir}/state.json`, `${JSON.stringify({ memory }, null, 2)}\n`);
   }
 
-  async getExactPieces(sessionKey: string, pieceIds: string[]): Promise<ExactPiece[]> {
-    const dir = await this.#sessionDir(sessionKey);
-    const record = await this.load(sessionKey);
-    const byId = new Map(record.memory.pieces.map((piece) => [piece.id, piece] as const));
-    const out: ExactPiece[] = [];
-    for (const pieceId of pieceIds) {
-      const piece = byId.get(pieceId);
-      if (!piece) {
-        continue;
-      }
-      out.push({
-        id: piece.id,
-        sourceKind: piece.sourceKind,
-        sourceId: piece.sourceId,
-        ...(piece.toolName ? { toolName: piece.toolName } : {}),
-        selector: piece.selector,
-        payload: await this.#readPiecePayload(dir, piece),
-      });
-    }
-    return out;
-  }
-
-  async materializeMemory(sessionKey: string, memory: SessionRecord["memory"]): Promise<SessionRecord["memory"]> {
-    const dir = await this.#sessionDir(sessionKey);
-    return {
-      ...memory,
-      pieces: await Promise.all(memory.pieces.map(async (piece) => ({
-        ...piece,
-        payloadInline: piece.payloadInline !== undefined
-          ? piece.payloadInline
-          : piece.payloadRef
-          ? await this.#readPiecePayload(dir, piece)
-          : undefined,
-      }))),
-    };
+  async materializeMemory(
+    sessionKey: string,
+    memory: SessionRecord["memory"],
+  ): Promise<MaterializedMemoryState> {
+    const bySourceId = await this.#archivedSourcesById(
+      sessionKey,
+      memory.pieces.map((piece) => piece.sourceId),
+    );
+    return materializeMemoryFromArchivedSources(memory, bySourceId);
   }
 
   async archiveSources(sessionKey: string, sources: RoundSource[]): Promise<void> {
@@ -167,18 +146,12 @@ export class SessionStore {
     }
   }
 
-  async #readPiecePayload(dir: string, piece: MemoryPiece): Promise<unknown> {
-    if (piece.payloadInline !== undefined) {
-      return piece.payloadInline;
-    }
-    if (!piece.payloadRef) {
-      return null;
-    }
-    return JSON.parse(await Deno.readTextFile(`${dir}/${piece.payloadRef}`));
-  }
-
-  async #payloadRefForPiece(pieceId: string): Promise<string> {
-    return `payloads/${await shortHash(pieceId, 16)}.json`;
+  async #archivedSourcesById(
+    sessionKey: string,
+    sourceIds: string[],
+  ): Promise<Map<string, ArchivedSource>> {
+    const archived = await this.getArchivedSources(sessionKey, [...new Set(sourceIds)]);
+    return new Map(archived.map((source) => [source.sourceId, source] as const));
   }
 
   async #archiveRefForSource(sourceId: string): Promise<string> {
@@ -190,6 +163,21 @@ export class SessionStore {
     const suffix = await shortHash(sessionKey, 10);
     return `${this.#root}/sessions/${sanitized}_${suffix}`;
   }
+}
+
+function renderMaterializedContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (isTextSpanSelection(content)) {
+    return renderTextSelection(content);
+  }
+  return JSON.stringify(content, null, 2);
+}
+
+function isTextSpanSelection(value: unknown): value is TextSpanSelection {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
+    (value as Record<string, unknown>).kind === "text_spans";
 }
 
 async function atomicWriteText(path: string, text: string): Promise<void> {

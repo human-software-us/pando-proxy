@@ -3,7 +3,7 @@ import { resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import { stableJson } from "./json.ts";
 import type { ProxyLogger } from "./logger.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
-import { isRecord, type MemoryState } from "./memory_state.ts";
+import { isRecord, type MaterializedMemoryState } from "./memory_state.ts";
 import { buildDerivedPrompt, makePromptMemoryItem } from "./prompt_view.ts";
 import type { ArchivedSource } from "./store.ts";
 import type { RoundSource } from "./tool_results.ts";
@@ -98,7 +98,7 @@ export async function forwardResponsesRequest(
 export async function runResponsesLoop(
   config: ProxyConfig,
   options: UpstreamOptions,
-  memory: MemoryState,
+  memory: MaterializedMemoryState,
   resolveArchivedSources: ResolveArchivedSources,
   sessionKey?: string,
 ): Promise<UpstreamLoopResult> {
@@ -188,7 +188,7 @@ export async function runResponsesLoop(
 
 async function rebuildLoopRequestBody(
   originalBody: Record<string, unknown>,
-  memory: MemoryState,
+  memory: MaterializedMemoryState,
   loopOutputs: Record<string, unknown>[],
 ): Promise<Record<string, unknown>> {
   const memoryItem = makePromptMemoryItem(memory, memory.pieces);
@@ -205,7 +205,7 @@ async function rebuildLoopRequestBody(
 }
 
 async function resolveSourcesForCall(
-  memory: MemoryState,
+  memory: MaterializedMemoryState,
   call: { offset: number; limit: number },
   resolveArchivedSources: ResolveArchivedSources,
 ): Promise<{ remainingArchivedSourceCount: number; items: ArchivedSource[] }> {
