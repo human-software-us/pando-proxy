@@ -777,12 +777,27 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
           ...skipped,
         });
       },
-      (error) =>
-        logger.log("structured_model_error", {
+      async (diagnostics) => {
+        await logger.log("structured_model_error", {
           requestId,
           sessionKey,
-          ...error,
-        }),
+          ...diagnostics,
+        });
+      },
+      async (wire) => {
+        await logger.log("structured_model_request", {
+          requestId,
+          sessionKey,
+          ...wire,
+        });
+      },
+      async (wire) => {
+        await logger.log("structured_model_response", {
+          requestId,
+          sessionKey,
+          ...wire,
+        });
+      },
     );
     const observedWaitStartedAt = Date.now();
     const observedSources = observedRoundSourcesForSession

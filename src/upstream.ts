@@ -72,6 +72,27 @@ export async function forwardResponsesRequest(
     body: JSON.stringify(options.body),
   });
 
+  let responseBody = upstream.body;
+  if (options.logger && upstream.body) {
+    const [clientBody, logBody] = upstream.body.tee();
+    responseBody = clientBody;
+    void new Response(logBody).text()
+      .then((body) =>
+        options.logger?.log("upstream_response_body", {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: redactHeaders(upstream.headers),
+          body,
+        })
+      )
+      .catch((error) =>
+        options.logger?.log("upstream_response_body_failed", {
+          status: upstream.status,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      );
+  }
+
   await options.logger?.log("upstream_response", {
     status: upstream.status,
     statusText: upstream.statusText,
@@ -88,7 +109,7 @@ export async function forwardResponsesRequest(
     responseHeaders.set("content-type", "application/json");
   }
 
-  return new Response(upstream.body, {
+  return new Response(responseBody, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers: responseHeaders,
@@ -325,7 +346,8 @@ async function postResponsesJson(
     status: upstream.status,
     statusText: upstream.statusText,
     contentType: upstream.headers.get("content-type"),
-    bodyPreview: text.slice(0, 2_000),
+    headers: redactHeaders(upstream.headers),
+    body: text,
   });
 
   const response = new Response(text, {
