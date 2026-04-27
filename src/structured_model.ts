@@ -10,6 +10,7 @@ import {
   type SourceChunkBatchResponse,
 } from "./group_manager.ts";
 import { extractJsonObject, stableJson } from "./json.ts";
+import { loggableBody, redactHeaders } from "./logger.ts";
 import { extractUsageMetrics, type UsageMetrics } from "./metrics.ts";
 import { type ChunkSelector } from "./memory_state.ts";
 
@@ -49,7 +50,7 @@ export type StructuredModelSkipped = {
   sourceCount: number;
 };
 
-export type StructuredModelError = {
+export type StructuredModelFailureDiagnostics = {
   classifier: StructuredModelSelection["classifier"];
   requestModel: string | null;
   chosenModel: string;
@@ -57,9 +58,38 @@ export type StructuredModelError = {
   selectionReason: StructuredModelSelection["selectionReason"];
   attempt: number;
   durationMs: number;
+  failureKind: "http_error" | "no_output_text" | "invalid_json" | "unexpected_error";
+  responseStatus?: number;
+  responseContentType?: string | null;
+  bodyBytes?: number;
+  bodyLooksLikeEventStream?: boolean;
+  sseEventCount?: number;
+  sseEventTypes?: string[];
+  responseApiStatus?: string;
+  responseIncompleteDetails?: unknown;
+  responseError?: unknown;
+  outputItemTypes?: string[];
+  outputContentTypes?: string[];
+  usage?: UsageMetrics | null;
   message: string;
 };
 
+export type StructuredModelWireLog = {
+  classifier: StructuredModelSelection["classifier"];
+  requestModel: string | null;
+  chosenModel: string;
+  estimatedInputTokens: number;
+  selectionReason: StructuredModelSelection["selectionReason"];
+  attempt: number;
+  url: string;
+  requestHeaders?: Record<string, string>;
+  requestBody?: unknown;
+  responseStatus?: number;
+  responseStatusText?: string;
+  responseHeaders?: Record<string, string>;
+  responseBody?: string;
+  durationMs?: number;
+};
 export type StructuredClients = {
   groupIntent: (request: GroupIntentRequest, attempt?: number) => Promise<GroupIntentResponse>;
   sourceChunkBatch: (
@@ -96,7 +126,9 @@ export function createStructuredClients(
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
   onUsage?: (usage: StructuredModelUsage) => Promise<void> | void,
   onSkipped?: (skipped: StructuredModelSkipped) => Promise<void> | void,
-  onError?: (error: StructuredModelError) => Promise<void> | void,
+  onError?: (diagnostics: StructuredModelFailureDiagnostics) => Promise<void> | void,
+  onWireRequest?: (wire: StructuredModelWireLog) => Promise<void> | void,
+  onWireResponse?: (wire: StructuredModelWireLog) => Promise<void> | void,
 ): StructuredClients {
   return {
     groupIntent: async (request, attempt = 1) => {
@@ -111,6 +143,8 @@ export function createStructuredClients(
         attempt,
         onSelection,
         onError,
+        onWireRequest,
+        onWireResponse,
       );
       await emitUsage(result, onUsage);
       return result.value;
@@ -154,6 +188,8 @@ export function createStructuredClients(
         attempt,
         onSelection,
         onError,
+        onWireRequest,
+        onWireResponse,
       );
       await emitUsage(result, onUsage);
       return normalizeSourceChunkBatchResponse(request, result.value);
@@ -171,6 +207,8 @@ export function createStructuredClients(
         attempt,
         onSelection,
         onError,
+        onWireRequest,
+        onWireResponse,
       );
       await emitUsage(result, onUsage);
       return normalizePieceRetentionBatchResponse(request, result.value);
@@ -187,6 +225,8 @@ export function createStructuredClients(
         attempt,
         onSelection,
         onError,
+        onWireRequest,
+        onWireResponse,
       );
       await emitUsage(result, onUsage);
       return result.value;
@@ -247,7 +287,9 @@ async function callStructuredJson<T>(
   classifier: StructuredModelSelection["classifier"],
   attempt: number,
   onSelection?: (selection: StructuredModelSelection) => Promise<void> | void,
-  onError?: (error: StructuredModelError) => Promise<void> | void,
+  onError?: (diagnostics: StructuredModelFailureDiagnostics) => Promise<void> | void,
+  onWireRequest?: (wire: StructuredModelWireLog) => Promise<void> | void,
+  onWireResponse?: (wire: StructuredModelWireLog) => Promise<void> | void,
 ): Promise<StructuredJsonCallResult<T>> {
   if (!authHeader) {
     throw new Error(
@@ -264,46 +306,109 @@ async function callStructuredJson<T>(
     classifier,
   );
   await onSelection?.(selection);
+  const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
+  const requestBody = {
+    model: selection.chosenModel,
+    instructions: system,
+    stream: true,
+    store: false,
+    text: {
+      format: {
+        type: "json_schema",
+        name: classifier,
+        strict: true,
+        schema,
+      },
+    },
+    input: [{
+      role: "user",
+      content: [{ type: "input_text", text: stableJson(payload) }],
+    }],
+  };
+  await onWireRequest?.({
+    ...baseWireLog(selection, attempt, url),
+    requestHeaders: {
+      authorization: "[redacted]",
+      "content-type": "application/json",
+    },
+    requestBody: loggableBody(requestBody),
+  });
   const startedAt = performance.now();
+  let errorLogged = false;
   try {
-    const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
     const response = await fetch(url, {
       method: "POST",
       headers: {
         "authorization": authHeader,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: selection.chosenModel,
-        instructions: system,
-        stream: true,
-        store: false,
-        text: {
-          format: {
-            type: "json_schema",
-            name: classifier,
-            strict: true,
-            schema,
-          },
-        },
-        input: [{
-          role: "user",
-          content: [{ type: "input_text", text: stableJson(payload) }],
-        }],
-      }),
+      body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(config.modelTimeoutMs),
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Structured model call failed: ${response.status} ${text.slice(0, 500)}`);
+      const durationMs = Math.round(performance.now() - startedAt);
+      await onWireResponse?.({
+        ...baseWireLog(selection, attempt, url),
+        responseStatus: response.status,
+        responseStatusText: response.statusText,
+        responseHeaders: redactHeaders(response.headers),
+        responseBody: text,
+        durationMs,
+      });
+      const message = `Structured model call failed: ${response.status} ${text.slice(0, 500)}`;
+      errorLogged = true;
+      await onError?.({
+        ...baseFailureDiagnostics(selection, attempt, durationMs, "http_error", message),
+        responseStatus: response.status,
+        responseContentType: response.headers.get("content-type"),
+        bodyBytes: byteLength(text),
+      });
+      throw new Error(message);
     }
 
     const bodyText = await response.text();
-    const text = isEventStream(response, bodyText)
-      ? extractResponseTextFromSseText(bodyText)
-      : extractResponseText(JSON.parse(bodyText));
+    const durationMs = Math.round(performance.now() - startedAt);
+    await onWireResponse?.({
+      ...baseWireLog(selection, attempt, url),
+      responseStatus: response.status,
+      responseStatusText: response.statusText,
+      responseHeaders: redactHeaders(response.headers),
+      responseBody: bodyText,
+      durationMs,
+    });
+    const bodyLooksLikeEventStream = isEventStream(response, bodyText);
+    let parsedBody: unknown = null;
+    let text = "";
+    try {
+      if (bodyLooksLikeEventStream) {
+        text = extractResponseTextFromSseText(bodyText);
+      } else {
+        parsedBody = JSON.parse(bodyText);
+        text = extractResponseText(parsedBody);
+      }
+    } catch (error) {
+      const message = `Structured model response was not parseable JSON: ${messageFor(error)}`;
+      errorLogged = true;
+      await onError?.({
+        ...baseFailureDiagnostics(selection, attempt, durationMs, "invalid_json", message),
+        responseStatus: response.status,
+        responseContentType: response.headers.get("content-type"),
+        bodyBytes: byteLength(bodyText),
+        bodyLooksLikeEventStream,
+      });
+      throw new Error(message);
+    }
     if (!text) {
-      throw new Error("Structured model response did not include text");
+      const usage = extractUsageMetricsFromStructuredResponse(response, bodyText);
+      const message = "Structured model response did not include text";
+      errorLogged = true;
+      await onError?.({
+        ...baseFailureDiagnostics(selection, attempt, durationMs, "no_output_text", message),
+        ...summarizeStructuredResponseBody(response, bodyText, parsedBody),
+        usage,
+      });
+      throw new Error(message);
     }
     const usage = extractUsageMetricsFromStructuredResponse(response, bodyText);
     return {
@@ -311,21 +416,147 @@ async function callStructuredJson<T>(
       usage,
       selection,
       attempt,
-      durationMs: Math.round(performance.now() - startedAt),
+      durationMs,
     };
   } catch (error) {
-    await onError?.({
-      classifier: selection.classifier,
-      requestModel: selection.requestModel,
-      chosenModel: selection.chosenModel,
-      estimatedInputTokens: selection.estimatedInputTokens,
-      selectionReason: selection.selectionReason,
-      attempt,
-      durationMs: Math.round(performance.now() - startedAt),
-      message: error instanceof Error ? error.message : String(error),
-    });
+    if (!errorLogged) {
+      const message = messageFor(error);
+      await onError?.({
+        ...baseFailureDiagnostics(
+          selection,
+          attempt,
+          Math.round(performance.now() - startedAt),
+          "unexpected_error",
+          message,
+        ),
+      });
+    }
     throw error;
   }
+}
+
+function baseWireLog(
+  selection: StructuredModelSelection,
+  attempt: number,
+  url: string,
+): Omit<
+  StructuredModelWireLog,
+  | "requestHeaders"
+  | "requestBody"
+  | "responseStatus"
+  | "responseStatusText"
+  | "responseHeaders"
+  | "responseBody"
+  | "durationMs"
+> {
+  return {
+    classifier: selection.classifier,
+    requestModel: selection.requestModel,
+    chosenModel: selection.chosenModel,
+    estimatedInputTokens: selection.estimatedInputTokens,
+    selectionReason: selection.selectionReason,
+    attempt,
+    url,
+  };
+}
+
+function baseFailureDiagnostics(
+  selection: StructuredModelSelection,
+  attempt: number,
+  durationMs: number,
+  failureKind: StructuredModelFailureDiagnostics["failureKind"],
+  message: string,
+): Omit<
+  StructuredModelFailureDiagnostics,
+  | "responseStatus"
+  | "responseContentType"
+  | "bodyBytes"
+  | "bodyLooksLikeEventStream"
+  | "sseEventCount"
+  | "sseEventTypes"
+  | "responseApiStatus"
+  | "responseIncompleteDetails"
+  | "responseError"
+  | "outputItemTypes"
+  | "outputContentTypes"
+  | "usage"
+> {
+  return {
+    classifier: selection.classifier,
+    requestModel: selection.requestModel,
+    chosenModel: selection.chosenModel,
+    estimatedInputTokens: selection.estimatedInputTokens,
+    selectionReason: selection.selectionReason,
+    attempt,
+    durationMs,
+    failureKind,
+    message,
+  };
+}
+
+export function summarizeStructuredResponseBody(
+  response: Pick<Response, "headers" | "status">,
+  bodyText: string,
+  parsedBody: unknown = null,
+): Pick<
+  StructuredModelFailureDiagnostics,
+  | "responseStatus"
+  | "responseContentType"
+  | "bodyBytes"
+  | "bodyLooksLikeEventStream"
+  | "sseEventCount"
+  | "sseEventTypes"
+  | "responseApiStatus"
+  | "responseIncompleteDetails"
+  | "responseError"
+  | "outputItemTypes"
+  | "outputContentTypes"
+> {
+  const bodyLooksLikeEventStream = isEventStream(response as Response, bodyText);
+  const summary: Pick<
+    StructuredModelFailureDiagnostics,
+    | "responseStatus"
+    | "responseContentType"
+    | "bodyBytes"
+    | "bodyLooksLikeEventStream"
+    | "sseEventCount"
+    | "sseEventTypes"
+    | "responseApiStatus"
+    | "responseIncompleteDetails"
+    | "responseError"
+    | "outputItemTypes"
+    | "outputContentTypes"
+  > = {
+    responseStatus: response.status,
+    responseContentType: response.headers.get("content-type"),
+    bodyBytes: byteLength(bodyText),
+    bodyLooksLikeEventStream,
+  };
+
+  if (bodyLooksLikeEventStream) {
+    const events = parseSseJsonEvents(bodyText);
+    summary.sseEventCount = events.length;
+    summary.sseEventTypes = uniqueStrings(
+      events.map((event) =>
+        stringField(event, "type") ??
+          stringField(objectField(event, "response"), "status") ??
+          "unknown"
+      ),
+    ).slice(0, 25);
+    const finalResponse = lastObject(
+      events.map((event) => objectField(event, "response")).filter(Boolean),
+    );
+    if (finalResponse) {
+      addResponseShape(summary, finalResponse);
+    }
+    return summary;
+  }
+
+  const body = parsedBody ?? safeParseJson(bodyText);
+  if (body && typeof body === "object") {
+    addResponseShape(summary, body as Record<string, unknown>);
+  }
+  return summary;
 }
 
 function chooseStructuredModel(
@@ -436,6 +667,24 @@ function extractUsageMetricsFromSseText(streamText: string): UsageMetrics | null
   return usage;
 }
 
+function parseSseJsonEvents(streamText: string): Record<string, unknown>[] {
+  const events: Record<string, unknown>[] = [];
+  for (const line of streamText.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) {
+      continue;
+    }
+    const data = line.slice("data:".length).trim();
+    if (!data || data === "[DONE]") {
+      continue;
+    }
+    const parsed = safeParseJson(data);
+    if (parsed && typeof parsed === "object") {
+      events.push(parsed as Record<string, unknown>);
+    }
+  }
+  return events;
+}
+
 function extractResponseTextFromEvent(value: unknown): string {
   if (!value || typeof value !== "object") {
     return "";
@@ -491,6 +740,91 @@ function extractResponseText(value: unknown): string {
     }
   }
   return parts.join("\n");
+}
+
+function addResponseShape(
+  summary: Pick<
+    StructuredModelFailureDiagnostics,
+    | "responseApiStatus"
+    | "responseIncompleteDetails"
+    | "responseError"
+    | "outputItemTypes"
+    | "outputContentTypes"
+  >,
+  response: Record<string, unknown>,
+): void {
+  summary.responseApiStatus = stringField(response, "status") ?? undefined;
+  summary.responseIncompleteDetails = response.incomplete_details;
+  summary.responseError = response.error;
+
+  const output = response.output;
+  if (!Array.isArray(output)) {
+    return;
+  }
+  summary.outputItemTypes = uniqueStrings(
+    output.map((item) => stringField(item, "type") ?? "unknown"),
+  ).slice(0, 25);
+  const contentTypes: string[] = [];
+  for (const item of output) {
+    const content = arrayField(item, "content");
+    for (const part of content) {
+      contentTypes.push(stringField(part, "type") ?? "unknown");
+    }
+  }
+  summary.outputContentTypes = uniqueStrings(contentTypes).slice(0, 25);
+}
+
+function objectField(value: unknown, key: string): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return child && typeof child === "object" ? child as Record<string, unknown> : null;
+}
+
+function stringField(value: unknown, key: string): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return typeof child === "string" ? child : null;
+}
+
+function arrayField(value: unknown, key: string): unknown[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const child = (value as Record<string, unknown>)[key];
+  return Array.isArray(child) ? child : [];
+}
+
+function lastObject(values: (Record<string, unknown> | null)[]): Record<string, unknown> | null {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (values[index]) {
+      return values[index];
+    }
+  }
+  return null;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function safeParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+function messageFor(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const chunkSelectorSchema = {
