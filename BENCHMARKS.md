@@ -8,7 +8,9 @@ This file now distinguishes two categories explicitly:
 - current reruns on the shipped lossless task-and-piece memory manager
 - older historical measurements kept for comparison until they are rerun
 
-The current public reruns in this file use the deterministic stub replay path:
+The current public reruns in this file use the deterministic stub replay path. Run these without
+`--real-llm`; they are intended to measure naive processing and replay accounting, not live model
+decisions:
 
 ```sh
 python3 scripts/run_replay_batch.py \
@@ -30,11 +32,15 @@ currently exposed `.traj.json` files from:
 
 - <https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj>
 
-The committed aggregate for the current rerun lives at:
+The committed full trajectory list and aggregate for the current rerun live at:
 
+- [`benchmarks/results/devstral_verified_full_selection.json`](./benchmarks/results/devstral_verified_full_selection.json)
 - [`benchmarks/results/devstral_verified_drop_tools_batch.json`](./benchmarks/results/devstral_verified_drop_tools_batch.json)
 
 The raw fetched corpus was stored only locally during replay and is intentionally not checked in.
+The full-corpus rerun should use every path in the full selection list; do not use the top-20
+selection JSON for this benchmark. This rerun should stay on the deterministic stub path and should
+not pass `--real-llm`.
 
 Reproduction:
 
@@ -55,24 +61,29 @@ python3 scripts/aggregate_replay_stats.py \
   --out tmp/replay-devstral-verified-batch-current.aggregate.json
 ```
 
+The fetch helper enumerates the dataset's paginated Hugging Face tree API. As of this rerun, that
+API exposed `345` `.traj.json` trajectories, all listed in
+[`benchmarks/results/devstral_verified_full_selection.json`](./benchmarks/results/devstral_verified_full_selection.json).
+
 Aggregate across all `345` fetched trajectories:
 
 | Set                                             | Samples | Rounds | Policy       | Avg baseline min | Avg pando min | Avg baseline avg | Avg pando avg | Avg baseline max | Avg pando max | Avg avg savings | Avg max savings | Aggregate avg reduction | Aggregate peak reduction |
 | ----------------------------------------------- | ------: | -----: | ------------ | ---------------: | ------------: | ---------------: | ------------: | ---------------: | ------------: | --------------: | --------------: | ----------------------: | -----------------------: |
-| SWE-bench Verified devstral public trajectories |     345 | 21,709 | `drop-tools` |            1,402 |           462 |           15,199 |           936 |           33,636 |         7,085 |          14,262 |          26,551 |                   93.8% |                    78.9% |
+| SWE-bench Verified devstral public trajectories |     345 | 21,709 | `drop-tools` |            1,402 |           631 |           15,199 |         1,093 |           33,636 |         7,212 |          14,105 |          26,424 |                   92.8% |                    78.6% |
 
 Additional distribution notes:
 
 - 71.6% of traces had positive average-token savings
-- 71.6% of traces had positive peak-token savings
-- mean per-trace average reduction was 92.2%
-- mean per-trace peak reduction was 84.0%
-- median per-trace average reduction was 93.0%
-- median per-trace peak reduction was 87.1%
+- 71.3% of traces had positive peak-token savings
+- mean per-trace average reduction was 90.9%
+- mean per-trace peak reduction was 83.5%
+- median per-trace average reduction was 91.6%
+- median per-trace peak reduction was 86.5%
 
 ### SWE-bench Verified devstral top-20 public sample (stub replay)
 
-I also reran the public `20`-trace sample from that same devstral Verified dataset using this
+This is only a small comparison sample, not the full benchmark set. I also reran the public
+`20`-trace sample from that same devstral Verified dataset using this
 deterministic rule:
 
 - top `10` by replay round count

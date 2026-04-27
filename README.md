@@ -9,9 +9,11 @@ The important invariant is simple:
 - the next forwarded prompt contains that exact kept set
 - anything not kept is dropped from active memory completely
 - if older exact material is needed later, the agent can use `recall({offset,limit})` against the
-  per-session archive, up to 3 times in that round
+  per-session archive, up to 3 times in that round, with no per-call item cap
 
 There is no projection layer, no hidden omitted-memory tier, and no summary/embedding memory.
+`groups[].summary` is internal routing and grouping state only; summaries are not provided to the
+model as source material, and exact answers must come from visible `pieces` or archive `recall`.
 
 ## Validation Policy
 
@@ -26,10 +28,11 @@ For the active-memory redesign in this repository:
 
 The runtime is built around:
 
-- `groups`: compact semantic buckets managed only by structured LLM calls
+- `groups`: compact semantic buckets managed only by structured LLM calls; their summaries are
+  temporary grouping/routing metadata, not a memory source
 - `pieces`: exact retained user/assistant/tool chunks
 - `processedSourceIds`: source ids already seen and archived
-- `archive`: raw original sources kept only for bounded recovery, not for normal prompt memory
+- `archive`: raw original sources kept only for explicit recovery, not for normal prompt memory
 
 Normal end-of-round flow:
 
@@ -63,7 +66,7 @@ Archive:
 - raw original round sources on disk
 - not part of normal prompt construction
 - only reachable through explicit `recall`
-- bounded to at most 3 recall calls per round
+- call-count bounded to at most 3 recall calls per round, with no per-call item cap
 
 The archive is a recovery surface, not a second active-memory tier.
 
@@ -74,6 +77,7 @@ The proxy may inject one local function tool:
 - name: `recall`
 - arguments: `{ offset, limit }`
 - max uses per round: `3`
+- per-call item cap: none
 
 Guidance injected to the model:
 

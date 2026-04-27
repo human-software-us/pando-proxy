@@ -278,7 +278,7 @@ function parseRecallArguments(argumentsValue: unknown): { offset: number; limit:
   const rawLimit = typeof parsed.limit === "number" && Number.isInteger(parsed.limit)
     ? parsed.limit
     : 5;
-  const limit = Math.max(1, Math.min(20, rawLimit));
+  const limit = Math.max(1, rawLimit);
   return { offset, limit };
 }
 

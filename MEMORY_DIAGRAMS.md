@@ -15,6 +15,7 @@ new round sources
     |
     +--> group_intent
     |      - decide active/closed/replaced groups
+    |      - maintain summaries only as temporary routing/grouping metadata
     |
     +--> piece_retention_batch
     |      - keep/drop new pieces
@@ -42,6 +43,7 @@ incoming request
     +--> if model calls recall:
             - resolve archive sources locally
             - return exact archive payloads
+            - allow any requested per-call item count
             - cap at 3 recall calls in that round
     +--> finalize memory after response
 ```
@@ -51,6 +53,7 @@ incoming request
 ```text
 ACTIVE MEMORY
   - groups
+  - group summaries are routing/grouping metadata only
   - exact surviving pieces
   - always shown next round
 
@@ -58,6 +61,7 @@ ARCHIVE
   - raw original sources on disk
   - not shown normally
   - reachable only through recall({offset,limit})
+  - no per-call item cap
   - recovery only, not a second active-memory tier
 ```
 
@@ -84,6 +88,7 @@ assistant decides exact older material is missing
 - one active memory tier only
 - no projection layer
 - no hidden omitted-piece set
+- no summaries as source material
 - active stored pieces == active prompt pieces
 - archive is separate from active memory
 - semantic decisions come from structured manager calls, not local heuristics

@@ -15,7 +15,8 @@ If the model calls `recall({offset,limit})`:
 1. resolve archived source ids not currently active
 2. return exact archived payloads
 3. include `remainingArchivedSourceCount`
-4. cap at 3 recalls in that round
+4. allow any requested per-call item count
+5. cap at 3 recalls in that round
 
 ## End of round
 
@@ -26,6 +27,9 @@ If the model calls `recall({offset,limit})`:
 5. prune obsolete old pieces
 6. archive raw round sources
 7. persist the surviving active pieces
+
+`groups[].summary` is updated as temporary routing/grouping metadata. It is not user-provided source
+material and must not be treated as a replacement for exact pieces or archive recall.
 
 ## Failure policy
 

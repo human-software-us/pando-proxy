@@ -95,7 +95,8 @@ local Codex settings that can hang independently of the proxy.
 2. Did obsolete pieces get dropped?
 3. Did the kept set plateau or stay bounded instead of drifting upward?
 4. If `recall` was used, was it because the model actually needed older exact material?
-5. Did `recall` stay within the hard cap of 3 calls for that round?
+5. Did `recall` stay within the hard cap of 3 calls for that round while requesting enough items per
+   call? There is no per-call item cap.
 6. Did any round hit `memory_update_failed`?
 7. Which classifier actually cost the tokens and time in `internalManagerByClassifier`?
 8. Did wrapper stderr print both main-model and manager token summaries at exit?
@@ -142,6 +143,8 @@ Expected result:
 - `archiveRecallCount` may be 0, 1, 2, or 3 depending on how broad the final ask is
 - if it reaches 3, inspect whether the final request truly demanded a broad chronological archive
   walk
+- broad final asks should request enough coverage in each recall call instead of assuming a small
+  fixed per-call limit
 
 ## Failure Loop
 
@@ -160,5 +163,5 @@ A session is good when:
 - every `round_complete.memoryUpdateError` is `null`
 - active memory contains only the needed exact pieces
 - dropped material is actually obsolete
-- `recall` is archive-only and bounded
+- `recall` is archive-only, call-count bounded, and item-count unbounded per call
 - the user-facing answer is still correct

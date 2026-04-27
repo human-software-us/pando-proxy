@@ -1,0 +1,1389 @@
+{
+  "dataset": "pankajmathur/devstral-24b-swebench-verified-traj",
+  "dataset_url": "https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj",
+  "source_api": "https://huggingface.co/api/datasets/pankajmathur/devstral-24b-swebench-verified-traj/tree/main?recursive=true&expand=true",
+  "description": "Complete currently exposed .traj.json list for the devstral SWE-bench Verified public trajectory dataset. This is the full fetched replay corpus, not the top-20 sample.",
+  "samples": 345,
+  "items": [
+    {
+      "traj_path": "astropy__astropy-13453/astropy__astropy-13453.traj.json",
+      "instance_id": "astropy__astropy-13453"
+    },
+    {
+      "traj_path": "astropy__astropy-7336/astropy__astropy-7336.traj.json",
+      "instance_id": "astropy__astropy-7336"
+    },
+    {
+      "traj_path": "django__django-11099/django__django-11099.traj.json",
+      "instance_id": "django__django-11099"
+    },
+    {
+      "traj_path": "django__django-11239/django__django-11239.traj.json",
+      "instance_id": "django__django-11239"
+    },
+    {
+      "traj_path": "django__django-11265/django__django-11265.traj.json",
+      "instance_id": "django__django-11265"
+    },
+    {
+      "traj_path": "django__django-11555/django__django-11555.traj.json",
+      "instance_id": "django__django-11555"
+    },
+    {
+      "traj_path": "django__django-11734/django__django-11734.traj.json",
+      "instance_id": "django__django-11734"
+    },
+    {
+      "traj_path": "django__django-11880/django__django-11880.traj.json",
+      "instance_id": "django__django-11880"
+    },
+    {
+      "traj_path": "django__django-12273/django__django-12273.traj.json",
+      "instance_id": "django__django-12273"
+    },
+    {
+      "traj_path": "django__django-12276/django__django-12276.traj.json",
+      "instance_id": "django__django-12276"
+    },
+    {
+      "traj_path": "django__django-12304/django__django-12304.traj.json",
+      "instance_id": "django__django-12304"
+    },
+    {
+      "traj_path": "django__django-12713/django__django-12713.traj.json",
+      "instance_id": "django__django-12713"
+    },
+    {
+      "traj_path": "django__django-13590/django__django-13590.traj.json",
+      "instance_id": "django__django-13590"
+    },
+    {
+      "traj_path": "django__django-13786/django__django-13786.traj.json",
+      "instance_id": "django__django-13786"
+    },
+    {
+      "traj_path": "django__django-13821/django__django-13821.traj.json",
+      "instance_id": "django__django-13821"
+    },
+    {
+      "traj_path": "django__django-13933/django__django-13933.traj.json",
+      "instance_id": "django__django-13933"
+    },
+    {
+      "traj_path": "django__django-14238/django__django-14238.traj.json",
+      "instance_id": "django__django-14238"
+    },
+    {
+      "traj_path": "django__django-14351/django__django-14351.traj.json",
+      "instance_id": "django__django-14351"
+    },
+    {
+      "traj_path": "django__django-14539/django__django-14539.traj.json",
+      "instance_id": "django__django-14539"
+    },
+    {
+      "traj_path": "django__django-14725/django__django-14725.traj.json",
+      "instance_id": "django__django-14725"
+    },
+    {
+      "traj_path": "django__django-14792/django__django-14792.traj.json",
+      "instance_id": "django__django-14792"
+    },
+    {
+      "traj_path": "django__django-14999/django__django-14999.traj.json",
+      "instance_id": "django__django-14999"
+    },
+    {
+      "traj_path": "django__django-15022/django__django-15022.traj.json",
+      "instance_id": "django__django-15022"
+    },
+    {
+      "traj_path": "django__django-15037/django__django-15037.traj.json",
+      "instance_id": "django__django-15037"
+    },
+    {
+      "traj_path": "django__django-15127/django__django-15127.traj.json",
+      "instance_id": "django__django-15127"
+    },
+    {
+      "traj_path": "django__django-15128/django__django-15128.traj.json",
+      "instance_id": "django__django-15128"
+    },
+    {
+      "traj_path": "django__django-15161/django__django-15161.traj.json",
+      "instance_id": "django__django-15161"
+    },
+    {
+      "traj_path": "django__django-15252/django__django-15252.traj.json",
+      "instance_id": "django__django-15252"
+    },
+    {
+      "traj_path": "django__django-15268/django__django-15268.traj.json",
+      "instance_id": "django__django-15268"
+    },
+    {
+      "traj_path": "django__django-15277/django__django-15277.traj.json",
+      "instance_id": "django__django-15277"
+    },
+    {
+      "traj_path": "django__django-15278/django__django-15278.traj.json",
+      "instance_id": "django__django-15278"
+    },
+    {
+      "traj_path": "django__django-15280/django__django-15280.traj.json",
+      "instance_id": "django__django-15280"
+    },
+    {
+      "traj_path": "django__django-15315/django__django-15315.traj.json",
+      "instance_id": "django__django-15315"
+    },
+    {
+      "traj_path": "django__django-15368/django__django-15368.traj.json",
+      "instance_id": "django__django-15368"
+    },
+    {
+      "traj_path": "django__django-15375/django__django-15375.traj.json",
+      "instance_id": "django__django-15375"
+    },
+    {
+      "traj_path": "django__django-15380/django__django-15380.traj.json",
+      "instance_id": "django__django-15380"
+    },
+    {
+      "traj_path": "django__django-15382/django__django-15382.traj.json",
+      "instance_id": "django__django-15382"
+    },
+    {
+      "traj_path": "django__django-15467/django__django-15467.traj.json",
+      "instance_id": "django__django-15467"
+    },
+    {
+      "traj_path": "django__django-15499/django__django-15499.traj.json",
+      "instance_id": "django__django-15499"
+    },
+    {
+      "traj_path": "django__django-15503/django__django-15503.traj.json",
+      "instance_id": "django__django-15503"
+    },
+    {
+      "traj_path": "django__django-15525/django__django-15525.traj.json",
+      "instance_id": "django__django-15525"
+    },
+    {
+      "traj_path": "django__django-15554/django__django-15554.traj.json",
+      "instance_id": "django__django-15554"
+    },
+    {
+      "traj_path": "django__django-15561/django__django-15561.traj.json",
+      "instance_id": "django__django-15561"
+    },
+    {
+      "traj_path": "django__django-15563/django__django-15563.traj.json",
+      "instance_id": "django__django-15563"
+    },
+    {
+      "traj_path": "django__django-15569/django__django-15569.traj.json",
+      "instance_id": "django__django-15569"
+    },
+    {
+      "traj_path": "django__django-15572/django__django-15572.traj.json",
+      "instance_id": "django__django-15572"
+    },
+    {
+      "traj_path": "django__django-15629/django__django-15629.traj.json",
+      "instance_id": "django__django-15629"
+    },
+    {
+      "traj_path": "django__django-15695/django__django-15695.traj.json",
+      "instance_id": "django__django-15695"
+    },
+    {
+      "traj_path": "django__django-15731/django__django-15731.traj.json",
+      "instance_id": "django__django-15731"
+    },
+    {
+      "traj_path": "django__django-15732/django__django-15732.traj.json",
+      "instance_id": "django__django-15732"
+    },
+    {
+      "traj_path": "django__django-15741/django__django-15741.traj.json",
+      "instance_id": "django__django-15741"
+    },
+    {
+      "traj_path": "django__django-15814/django__django-15814.traj.json",
+      "instance_id": "django__django-15814"
+    },
+    {
+      "traj_path": "django__django-15851/django__django-15851.traj.json",
+      "instance_id": "django__django-15851"
+    },
+    {
+      "traj_path": "django__django-15863/django__django-15863.traj.json",
+      "instance_id": "django__django-15863"
+    },
+    {
+      "traj_path": "django__django-15916/django__django-15916.traj.json",
+      "instance_id": "django__django-15916"
+    },
+    {
+      "traj_path": "django__django-15930/django__django-15930.traj.json",
+      "instance_id": "django__django-15930"
+    },
+    {
+      "traj_path": "django__django-15957/django__django-15957.traj.json",
+      "instance_id": "django__django-15957"
+    },
+    {
+      "traj_path": "django__django-15973/django__django-15973.traj.json",
+      "instance_id": "django__django-15973"
+    },
+    {
+      "traj_path": "django__django-15987/django__django-15987.traj.json",
+      "instance_id": "django__django-15987"
+    },
+    {
+      "traj_path": "django__django-16032/django__django-16032.traj.json",
+      "instance_id": "django__django-16032"
+    },
+    {
+      "traj_path": "django__django-16082/django__django-16082.traj.json",
+      "instance_id": "django__django-16082"
+    },
+    {
+      "traj_path": "django__django-16100/django__django-16100.traj.json",
+      "instance_id": "django__django-16100"
+    },
+    {
+      "traj_path": "django__django-16116/django__django-16116.traj.json",
+      "instance_id": "django__django-16116"
+    },
+    {
+      "traj_path": "django__django-16136/django__django-16136.traj.json",
+      "instance_id": "django__django-16136"
+    },
+    {
+      "traj_path": "django__django-16139/django__django-16139.traj.json",
+      "instance_id": "django__django-16139"
+    },
+    {
+      "traj_path": "django__django-16145/django__django-16145.traj.json",
+      "instance_id": "django__django-16145"
+    },
+    {
+      "traj_path": "django__django-16255/django__django-16255.traj.json",
+      "instance_id": "django__django-16255"
+    },
+    {
+      "traj_path": "django__django-16256/django__django-16256.traj.json",
+      "instance_id": "django__django-16256"
+    },
+    {
+      "traj_path": "django__django-16263/django__django-16263.traj.json",
+      "instance_id": "django__django-16263"
+    },
+    {
+      "traj_path": "django__django-16315/django__django-16315.traj.json",
+      "instance_id": "django__django-16315"
+    },
+    {
+      "traj_path": "django__django-16333/django__django-16333.traj.json",
+      "instance_id": "django__django-16333"
+    },
+    {
+      "traj_path": "django__django-16429/django__django-16429.traj.json",
+      "instance_id": "django__django-16429"
+    },
+    {
+      "traj_path": "django__django-16454/django__django-16454.traj.json",
+      "instance_id": "django__django-16454"
+    },
+    {
+      "traj_path": "django__django-16485/django__django-16485.traj.json",
+      "instance_id": "django__django-16485"
+    },
+    {
+      "traj_path": "django__django-16493/django__django-16493.traj.json",
+      "instance_id": "django__django-16493"
+    },
+    {
+      "traj_path": "django__django-16502/django__django-16502.traj.json",
+      "instance_id": "django__django-16502"
+    },
+    {
+      "traj_path": "django__django-16527/django__django-16527.traj.json",
+      "instance_id": "django__django-16527"
+    },
+    {
+      "traj_path": "django__django-16560/django__django-16560.traj.json",
+      "instance_id": "django__django-16560"
+    },
+    {
+      "traj_path": "django__django-16569/django__django-16569.traj.json",
+      "instance_id": "django__django-16569"
+    },
+    {
+      "traj_path": "django__django-16595/django__django-16595.traj.json",
+      "instance_id": "django__django-16595"
+    },
+    {
+      "traj_path": "django__django-16612/django__django-16612.traj.json",
+      "instance_id": "django__django-16612"
+    },
+    {
+      "traj_path": "django__django-16631/django__django-16631.traj.json",
+      "instance_id": "django__django-16631"
+    },
+    {
+      "traj_path": "django__django-16642/django__django-16642.traj.json",
+      "instance_id": "django__django-16642"
+    },
+    {
+      "traj_path": "django__django-16661/django__django-16661.traj.json",
+      "instance_id": "django__django-16661"
+    },
+    {
+      "traj_path": "django__django-16662/django__django-16662.traj.json",
+      "instance_id": "django__django-16662"
+    },
+    {
+      "traj_path": "django__django-16667/django__django-16667.traj.json",
+      "instance_id": "django__django-16667"
+    },
+    {
+      "traj_path": "django__django-16801/django__django-16801.traj.json",
+      "instance_id": "django__django-16801"
+    },
+    {
+      "traj_path": "django__django-16819/django__django-16819.traj.json",
+      "instance_id": "django__django-16819"
+    },
+    {
+      "traj_path": "django__django-16877/django__django-16877.traj.json",
+      "instance_id": "django__django-16877"
+    },
+    {
+      "traj_path": "django__django-16899/django__django-16899.traj.json",
+      "instance_id": "django__django-16899"
+    },
+    {
+      "traj_path": "django__django-16901/django__django-16901.traj.json",
+      "instance_id": "django__django-16901"
+    },
+    {
+      "traj_path": "django__django-16938/django__django-16938.traj.json",
+      "instance_id": "django__django-16938"
+    },
+    {
+      "traj_path": "django__django-16950/django__django-16950.traj.json",
+      "instance_id": "django__django-16950"
+    },
+    {
+      "traj_path": "django__django-17029/django__django-17029.traj.json",
+      "instance_id": "django__django-17029"
+    },
+    {
+      "traj_path": "django__django-17084/django__django-17084.traj.json",
+      "instance_id": "django__django-17084"
+    },
+    {
+      "traj_path": "django__django-17087/django__django-17087.traj.json",
+      "instance_id": "django__django-17087"
+    },
+    {
+      "traj_path": "django__django-7530/django__django-7530.traj.json",
+      "instance_id": "django__django-7530"
+    },
+    {
+      "traj_path": "django__django-9296/django__django-9296.traj.json",
+      "instance_id": "django__django-9296"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-13989/matplotlib__matplotlib-13989.traj.json",
+      "instance_id": "matplotlib__matplotlib-13989"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-14623/matplotlib__matplotlib-14623.traj.json",
+      "instance_id": "matplotlib__matplotlib-14623"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-20488/matplotlib__matplotlib-20488.traj.json",
+      "instance_id": "matplotlib__matplotlib-20488"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-20676/matplotlib__matplotlib-20676.traj.json",
+      "instance_id": "matplotlib__matplotlib-20676"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-20826/matplotlib__matplotlib-20826.traj.json",
+      "instance_id": "matplotlib__matplotlib-20826"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-20859/matplotlib__matplotlib-20859.traj.json",
+      "instance_id": "matplotlib__matplotlib-20859"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-21568/matplotlib__matplotlib-21568.traj.json",
+      "instance_id": "matplotlib__matplotlib-21568"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-22719/matplotlib__matplotlib-22719.traj.json",
+      "instance_id": "matplotlib__matplotlib-22719"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-22865/matplotlib__matplotlib-22865.traj.json",
+      "instance_id": "matplotlib__matplotlib-22865"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-22871/matplotlib__matplotlib-22871.traj.json",
+      "instance_id": "matplotlib__matplotlib-22871"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-23299/matplotlib__matplotlib-23299.traj.json",
+      "instance_id": "matplotlib__matplotlib-23299"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-23314/matplotlib__matplotlib-23314.traj.json",
+      "instance_id": "matplotlib__matplotlib-23314"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-23412/matplotlib__matplotlib-23412.traj.json",
+      "instance_id": "matplotlib__matplotlib-23412"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-23476/matplotlib__matplotlib-23476.traj.json",
+      "instance_id": "matplotlib__matplotlib-23476"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24026/matplotlib__matplotlib-24026.traj.json",
+      "instance_id": "matplotlib__matplotlib-24026"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24149/matplotlib__matplotlib-24149.traj.json",
+      "instance_id": "matplotlib__matplotlib-24149"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24177/matplotlib__matplotlib-24177.traj.json",
+      "instance_id": "matplotlib__matplotlib-24177"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24570/matplotlib__matplotlib-24570.traj.json",
+      "instance_id": "matplotlib__matplotlib-24570"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24627/matplotlib__matplotlib-24627.traj.json",
+      "instance_id": "matplotlib__matplotlib-24627"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24637/matplotlib__matplotlib-24637.traj.json",
+      "instance_id": "matplotlib__matplotlib-24637"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24870/matplotlib__matplotlib-24870.traj.json",
+      "instance_id": "matplotlib__matplotlib-24870"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-24970/matplotlib__matplotlib-24970.traj.json",
+      "instance_id": "matplotlib__matplotlib-24970"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-25122/matplotlib__matplotlib-25122.traj.json",
+      "instance_id": "matplotlib__matplotlib-25122"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-25287/matplotlib__matplotlib-25287.traj.json",
+      "instance_id": "matplotlib__matplotlib-25287"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-25311/matplotlib__matplotlib-25311.traj.json",
+      "instance_id": "matplotlib__matplotlib-25311"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-25332/matplotlib__matplotlib-25332.traj.json",
+      "instance_id": "matplotlib__matplotlib-25332"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-25479/matplotlib__matplotlib-25479.traj.json",
+      "instance_id": "matplotlib__matplotlib-25479"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-25775/matplotlib__matplotlib-25775.traj.json",
+      "instance_id": "matplotlib__matplotlib-25775"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-25960/matplotlib__matplotlib-25960.traj.json",
+      "instance_id": "matplotlib__matplotlib-25960"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-26113/matplotlib__matplotlib-26113.traj.json",
+      "instance_id": "matplotlib__matplotlib-26113"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-26208/matplotlib__matplotlib-26208.traj.json",
+      "instance_id": "matplotlib__matplotlib-26208"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-26291/matplotlib__matplotlib-26291.traj.json",
+      "instance_id": "matplotlib__matplotlib-26291"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-26342/matplotlib__matplotlib-26342.traj.json",
+      "instance_id": "matplotlib__matplotlib-26342"
+    },
+    {
+      "traj_path": "matplotlib__matplotlib-26466/matplotlib__matplotlib-26466.traj.json",
+      "instance_id": "matplotlib__matplotlib-26466"
+    },
+    {
+      "traj_path": "mwaskom__seaborn-3069/mwaskom__seaborn-3069.traj.json",
+      "instance_id": "mwaskom__seaborn-3069"
+    },
+    {
+      "traj_path": "mwaskom__seaborn-3187/mwaskom__seaborn-3187.traj.json",
+      "instance_id": "mwaskom__seaborn-3187"
+    },
+    {
+      "traj_path": "pallets__flask-5014/pallets__flask-5014.traj.json",
+      "instance_id": "pallets__flask-5014"
+    },
+    {
+      "traj_path": "psf__requests-1142/psf__requests-1142.traj.json",
+      "instance_id": "psf__requests-1142"
+    },
+    {
+      "traj_path": "psf__requests-1724/psf__requests-1724.traj.json",
+      "instance_id": "psf__requests-1724"
+    },
+    {
+      "traj_path": "psf__requests-1766/psf__requests-1766.traj.json",
+      "instance_id": "psf__requests-1766"
+    },
+    {
+      "traj_path": "psf__requests-1921/psf__requests-1921.traj.json",
+      "instance_id": "psf__requests-1921"
+    },
+    {
+      "traj_path": "psf__requests-2317/psf__requests-2317.traj.json",
+      "instance_id": "psf__requests-2317"
+    },
+    {
+      "traj_path": "psf__requests-2931/psf__requests-2931.traj.json",
+      "instance_id": "psf__requests-2931"
+    },
+    {
+      "traj_path": "psf__requests-5414/psf__requests-5414.traj.json",
+      "instance_id": "psf__requests-5414"
+    },
+    {
+      "traj_path": "psf__requests-6028/psf__requests-6028.traj.json",
+      "instance_id": "psf__requests-6028"
+    },
+    {
+      "traj_path": "pydata__xarray-2905/pydata__xarray-2905.traj.json",
+      "instance_id": "pydata__xarray-2905"
+    },
+    {
+      "traj_path": "pydata__xarray-3095/pydata__xarray-3095.traj.json",
+      "instance_id": "pydata__xarray-3095"
+    },
+    {
+      "traj_path": "pydata__xarray-3151/pydata__xarray-3151.traj.json",
+      "instance_id": "pydata__xarray-3151"
+    },
+    {
+      "traj_path": "pydata__xarray-3305/pydata__xarray-3305.traj.json",
+      "instance_id": "pydata__xarray-3305"
+    },
+    {
+      "traj_path": "pydata__xarray-3677/pydata__xarray-3677.traj.json",
+      "instance_id": "pydata__xarray-3677"
+    },
+    {
+      "traj_path": "pydata__xarray-3993/pydata__xarray-3993.traj.json",
+      "instance_id": "pydata__xarray-3993"
+    },
+    {
+      "traj_path": "pydata__xarray-4075/pydata__xarray-4075.traj.json",
+      "instance_id": "pydata__xarray-4075"
+    },
+    {
+      "traj_path": "pydata__xarray-4094/pydata__xarray-4094.traj.json",
+      "instance_id": "pydata__xarray-4094"
+    },
+    {
+      "traj_path": "pydata__xarray-4356/pydata__xarray-4356.traj.json",
+      "instance_id": "pydata__xarray-4356"
+    },
+    {
+      "traj_path": "pydata__xarray-4629/pydata__xarray-4629.traj.json",
+      "instance_id": "pydata__xarray-4629"
+    },
+    {
+      "traj_path": "pydata__xarray-4687/pydata__xarray-4687.traj.json",
+      "instance_id": "pydata__xarray-4687"
+    },
+    {
+      "traj_path": "pydata__xarray-4695/pydata__xarray-4695.traj.json",
+      "instance_id": "pydata__xarray-4695"
+    },
+    {
+      "traj_path": "pydata__xarray-4966/pydata__xarray-4966.traj.json",
+      "instance_id": "pydata__xarray-4966"
+    },
+    {
+      "traj_path": "pydata__xarray-6461/pydata__xarray-6461.traj.json",
+      "instance_id": "pydata__xarray-6461"
+    },
+    {
+      "traj_path": "pydata__xarray-6599/pydata__xarray-6599.traj.json",
+      "instance_id": "pydata__xarray-6599"
+    },
+    {
+      "traj_path": "pydata__xarray-6721/pydata__xarray-6721.traj.json",
+      "instance_id": "pydata__xarray-6721"
+    },
+    {
+      "traj_path": "pydata__xarray-6744/pydata__xarray-6744.traj.json",
+      "instance_id": "pydata__xarray-6744"
+    },
+    {
+      "traj_path": "pydata__xarray-6938/pydata__xarray-6938.traj.json",
+      "instance_id": "pydata__xarray-6938"
+    },
+    {
+      "traj_path": "pydata__xarray-6992/pydata__xarray-6992.traj.json",
+      "instance_id": "pydata__xarray-6992"
+    },
+    {
+      "traj_path": "pydata__xarray-7229/pydata__xarray-7229.traj.json",
+      "instance_id": "pydata__xarray-7229"
+    },
+    {
+      "traj_path": "pydata__xarray-7233/pydata__xarray-7233.traj.json",
+      "instance_id": "pydata__xarray-7233"
+    },
+    {
+      "traj_path": "pydata__xarray-7393/pydata__xarray-7393.traj.json",
+      "instance_id": "pydata__xarray-7393"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-4551/pylint-dev__pylint-4551.traj.json",
+      "instance_id": "pylint-dev__pylint-4551"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-4604/pylint-dev__pylint-4604.traj.json",
+      "instance_id": "pylint-dev__pylint-4604"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-4661/pylint-dev__pylint-4661.traj.json",
+      "instance_id": "pylint-dev__pylint-4661"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-4970/pylint-dev__pylint-4970.traj.json",
+      "instance_id": "pylint-dev__pylint-4970"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-6386/pylint-dev__pylint-6386.traj.json",
+      "instance_id": "pylint-dev__pylint-6386"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-6528/pylint-dev__pylint-6528.traj.json",
+      "instance_id": "pylint-dev__pylint-6528"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-6903/pylint-dev__pylint-6903.traj.json",
+      "instance_id": "pylint-dev__pylint-6903"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-7080/pylint-dev__pylint-7080.traj.json",
+      "instance_id": "pylint-dev__pylint-7080"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-7277/pylint-dev__pylint-7277.traj.json",
+      "instance_id": "pylint-dev__pylint-7277"
+    },
+    {
+      "traj_path": "pylint-dev__pylint-8898/pylint-dev__pylint-8898.traj.json",
+      "instance_id": "pylint-dev__pylint-8898"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-10051/pytest-dev__pytest-10051.traj.json",
+      "instance_id": "pytest-dev__pytest-10051"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-10081/pytest-dev__pytest-10081.traj.json",
+      "instance_id": "pytest-dev__pytest-10081"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-10356/pytest-dev__pytest-10356.traj.json",
+      "instance_id": "pytest-dev__pytest-10356"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-5262/pytest-dev__pytest-5262.traj.json",
+      "instance_id": "pytest-dev__pytest-5262"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-5631/pytest-dev__pytest-5631.traj.json",
+      "instance_id": "pytest-dev__pytest-5631"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-5787/pytest-dev__pytest-5787.traj.json",
+      "instance_id": "pytest-dev__pytest-5787"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-5809/pytest-dev__pytest-5809.traj.json",
+      "instance_id": "pytest-dev__pytest-5809"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-5840/pytest-dev__pytest-5840.traj.json",
+      "instance_id": "pytest-dev__pytest-5840"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-6197/pytest-dev__pytest-6197.traj.json",
+      "instance_id": "pytest-dev__pytest-6197"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-6202/pytest-dev__pytest-6202.traj.json",
+      "instance_id": "pytest-dev__pytest-6202"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7205/pytest-dev__pytest-7205.traj.json",
+      "instance_id": "pytest-dev__pytest-7205"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7236/pytest-dev__pytest-7236.traj.json",
+      "instance_id": "pytest-dev__pytest-7236"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7324/pytest-dev__pytest-7324.traj.json",
+      "instance_id": "pytest-dev__pytest-7324"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7432/pytest-dev__pytest-7432.traj.json",
+      "instance_id": "pytest-dev__pytest-7432"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7490/pytest-dev__pytest-7490.traj.json",
+      "instance_id": "pytest-dev__pytest-7490"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7521/pytest-dev__pytest-7521.traj.json",
+      "instance_id": "pytest-dev__pytest-7521"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7571/pytest-dev__pytest-7571.traj.json",
+      "instance_id": "pytest-dev__pytest-7571"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-7982/pytest-dev__pytest-7982.traj.json",
+      "instance_id": "pytest-dev__pytest-7982"
+    },
+    {
+      "traj_path": "pytest-dev__pytest-8399/pytest-dev__pytest-8399.traj.json",
+      "instance_id": "pytest-dev__pytest-8399"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-10297/scikit-learn__scikit-learn-10297.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-10297"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-10844/scikit-learn__scikit-learn-10844.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-10844"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-10908/scikit-learn__scikit-learn-10908.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-10908"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-11310/scikit-learn__scikit-learn-11310.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-11310"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-11578/scikit-learn__scikit-learn-11578.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-11578"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-12585/scikit-learn__scikit-learn-12585.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-12585"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-12682/scikit-learn__scikit-learn-12682.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-12682"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-12973/scikit-learn__scikit-learn-12973.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-12973"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-13124/scikit-learn__scikit-learn-13124.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-13124"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-13135/scikit-learn__scikit-learn-13135.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-13135"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-13142/scikit-learn__scikit-learn-13142.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-13142"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-13328/scikit-learn__scikit-learn-13328.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-13328"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-13439/scikit-learn__scikit-learn-13439.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-13439"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-13496/scikit-learn__scikit-learn-13496.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-13496"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-13779/scikit-learn__scikit-learn-13779.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-13779"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14053/scikit-learn__scikit-learn-14053.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14053"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14087/scikit-learn__scikit-learn-14087.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14087"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14141/scikit-learn__scikit-learn-14141.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14141"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14496/scikit-learn__scikit-learn-14496.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14496"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14629/scikit-learn__scikit-learn-14629.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14629"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14710/scikit-learn__scikit-learn-14710.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14710"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14894/scikit-learn__scikit-learn-14894.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14894"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-14983/scikit-learn__scikit-learn-14983.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-14983"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-15100/scikit-learn__scikit-learn-15100.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-15100"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-25102/scikit-learn__scikit-learn-25102.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-25102"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-25232/scikit-learn__scikit-learn-25232.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-25232"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-25747/scikit-learn__scikit-learn-25747.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-25747"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-25931/scikit-learn__scikit-learn-25931.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-25931"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-25973/scikit-learn__scikit-learn-25973.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-25973"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-26194/scikit-learn__scikit-learn-26194.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-26194"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-26323/scikit-learn__scikit-learn-26323.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-26323"
+    },
+    {
+      "traj_path": "scikit-learn__scikit-learn-9288/scikit-learn__scikit-learn-9288.traj.json",
+      "instance_id": "scikit-learn__scikit-learn-9288"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-10323/sphinx-doc__sphinx-10323.traj.json",
+      "instance_id": "sphinx-doc__sphinx-10323"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-10435/sphinx-doc__sphinx-10435.traj.json",
+      "instance_id": "sphinx-doc__sphinx-10435"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-10449/sphinx-doc__sphinx-10449.traj.json",
+      "instance_id": "sphinx-doc__sphinx-10449"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-10466/sphinx-doc__sphinx-10466.traj.json",
+      "instance_id": "sphinx-doc__sphinx-10466"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-10614/sphinx-doc__sphinx-10614.traj.json",
+      "instance_id": "sphinx-doc__sphinx-10614"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-10673/sphinx-doc__sphinx-10673.traj.json",
+      "instance_id": "sphinx-doc__sphinx-10673"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-11445/sphinx-doc__sphinx-11445.traj.json",
+      "instance_id": "sphinx-doc__sphinx-11445"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-11510/sphinx-doc__sphinx-11510.traj.json",
+      "instance_id": "sphinx-doc__sphinx-11510"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7440/sphinx-doc__sphinx-7440.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7440"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7454/sphinx-doc__sphinx-7454.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7454"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7462/sphinx-doc__sphinx-7462.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7462"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7590/sphinx-doc__sphinx-7590.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7590"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7748/sphinx-doc__sphinx-7748.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7748"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7757/sphinx-doc__sphinx-7757.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7757"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7889/sphinx-doc__sphinx-7889.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7889"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7910/sphinx-doc__sphinx-7910.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7910"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-7985/sphinx-doc__sphinx-7985.traj.json",
+      "instance_id": "sphinx-doc__sphinx-7985"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8035/sphinx-doc__sphinx-8035.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8035"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8056/sphinx-doc__sphinx-8056.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8056"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8120/sphinx-doc__sphinx-8120.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8120"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8265/sphinx-doc__sphinx-8265.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8265"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8269/sphinx-doc__sphinx-8269.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8269"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8459/sphinx-doc__sphinx-8459.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8459"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8475/sphinx-doc__sphinx-8475.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8475"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8548/sphinx-doc__sphinx-8548.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8548"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8551/sphinx-doc__sphinx-8551.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8551"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8593/sphinx-doc__sphinx-8593.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8593"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8595/sphinx-doc__sphinx-8595.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8595"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8621/sphinx-doc__sphinx-8621.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8621"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8638/sphinx-doc__sphinx-8638.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8638"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-8721/sphinx-doc__sphinx-8721.traj.json",
+      "instance_id": "sphinx-doc__sphinx-8721"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9229/sphinx-doc__sphinx-9229.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9229"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9230/sphinx-doc__sphinx-9230.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9230"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9258/sphinx-doc__sphinx-9258.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9258"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9281/sphinx-doc__sphinx-9281.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9281"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9320/sphinx-doc__sphinx-9320.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9320"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9367/sphinx-doc__sphinx-9367.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9367"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9461/sphinx-doc__sphinx-9461.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9461"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9591/sphinx-doc__sphinx-9591.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9591"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9602/sphinx-doc__sphinx-9602.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9602"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9658/sphinx-doc__sphinx-9658.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9658"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9673/sphinx-doc__sphinx-9673.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9673"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9698/sphinx-doc__sphinx-9698.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9698"
+    },
+    {
+      "traj_path": "sphinx-doc__sphinx-9711/sphinx-doc__sphinx-9711.traj.json",
+      "instance_id": "sphinx-doc__sphinx-9711"
+    },
+    {
+      "traj_path": "sympy__sympy-11618/sympy__sympy-11618.traj.json",
+      "instance_id": "sympy__sympy-11618"
+    },
+    {
+      "traj_path": "sympy__sympy-12096/sympy__sympy-12096.traj.json",
+      "instance_id": "sympy__sympy-12096"
+    },
+    {
+      "traj_path": "sympy__sympy-12419/sympy__sympy-12419.traj.json",
+      "instance_id": "sympy__sympy-12419"
+    },
+    {
+      "traj_path": "sympy__sympy-12481/sympy__sympy-12481.traj.json",
+      "instance_id": "sympy__sympy-12481"
+    },
+    {
+      "traj_path": "sympy__sympy-12489/sympy__sympy-12489.traj.json",
+      "instance_id": "sympy__sympy-12489"
+    },
+    {
+      "traj_path": "sympy__sympy-13031/sympy__sympy-13031.traj.json",
+      "instance_id": "sympy__sympy-13031"
+    },
+    {
+      "traj_path": "sympy__sympy-13091/sympy__sympy-13091.traj.json",
+      "instance_id": "sympy__sympy-13091"
+    },
+    {
+      "traj_path": "sympy__sympy-13372/sympy__sympy-13372.traj.json",
+      "instance_id": "sympy__sympy-13372"
+    },
+    {
+      "traj_path": "sympy__sympy-13480/sympy__sympy-13480.traj.json",
+      "instance_id": "sympy__sympy-13480"
+    },
+    {
+      "traj_path": "sympy__sympy-13551/sympy__sympy-13551.traj.json",
+      "instance_id": "sympy__sympy-13551"
+    },
+    {
+      "traj_path": "sympy__sympy-13615/sympy__sympy-13615.traj.json",
+      "instance_id": "sympy__sympy-13615"
+    },
+    {
+      "traj_path": "sympy__sympy-13647/sympy__sympy-13647.traj.json",
+      "instance_id": "sympy__sympy-13647"
+    },
+    {
+      "traj_path": "sympy__sympy-13757/sympy__sympy-13757.traj.json",
+      "instance_id": "sympy__sympy-13757"
+    },
+    {
+      "traj_path": "sympy__sympy-13798/sympy__sympy-13798.traj.json",
+      "instance_id": "sympy__sympy-13798"
+    },
+    {
+      "traj_path": "sympy__sympy-13852/sympy__sympy-13852.traj.json",
+      "instance_id": "sympy__sympy-13852"
+    },
+    {
+      "traj_path": "sympy__sympy-13877/sympy__sympy-13877.traj.json",
+      "instance_id": "sympy__sympy-13877"
+    },
+    {
+      "traj_path": "sympy__sympy-13878/sympy__sympy-13878.traj.json",
+      "instance_id": "sympy__sympy-13878"
+    },
+    {
+      "traj_path": "sympy__sympy-13974/sympy__sympy-13974.traj.json",
+      "instance_id": "sympy__sympy-13974"
+    },
+    {
+      "traj_path": "sympy__sympy-14248/sympy__sympy-14248.traj.json",
+      "instance_id": "sympy__sympy-14248"
+    },
+    {
+      "traj_path": "sympy__sympy-14531/sympy__sympy-14531.traj.json",
+      "instance_id": "sympy__sympy-14531"
+    },
+    {
+      "traj_path": "sympy__sympy-14711/sympy__sympy-14711.traj.json",
+      "instance_id": "sympy__sympy-14711"
+    },
+    {
+      "traj_path": "sympy__sympy-14976/sympy__sympy-14976.traj.json",
+      "instance_id": "sympy__sympy-14976"
+    },
+    {
+      "traj_path": "sympy__sympy-15017/sympy__sympy-15017.traj.json",
+      "instance_id": "sympy__sympy-15017"
+    },
+    {
+      "traj_path": "sympy__sympy-15345/sympy__sympy-15345.traj.json",
+      "instance_id": "sympy__sympy-15345"
+    },
+    {
+      "traj_path": "sympy__sympy-15349/sympy__sympy-15349.traj.json",
+      "instance_id": "sympy__sympy-15349"
+    },
+    {
+      "traj_path": "sympy__sympy-15599/sympy__sympy-15599.traj.json",
+      "instance_id": "sympy__sympy-15599"
+    },
+    {
+      "traj_path": "sympy__sympy-15809/sympy__sympy-15809.traj.json",
+      "instance_id": "sympy__sympy-15809"
+    },
+    {
+      "traj_path": "sympy__sympy-15875/sympy__sympy-15875.traj.json",
+      "instance_id": "sympy__sympy-15875"
+    },
+    {
+      "traj_path": "sympy__sympy-15976/sympy__sympy-15976.traj.json",
+      "instance_id": "sympy__sympy-15976"
+    },
+    {
+      "traj_path": "sympy__sympy-16450/sympy__sympy-16450.traj.json",
+      "instance_id": "sympy__sympy-16450"
+    },
+    {
+      "traj_path": "sympy__sympy-16597/sympy__sympy-16597.traj.json",
+      "instance_id": "sympy__sympy-16597"
+    },
+    {
+      "traj_path": "sympy__sympy-16766/sympy__sympy-16766.traj.json",
+      "instance_id": "sympy__sympy-16766"
+    },
+    {
+      "traj_path": "sympy__sympy-16792/sympy__sympy-16792.traj.json",
+      "instance_id": "sympy__sympy-16792"
+    },
+    {
+      "traj_path": "sympy__sympy-16886/sympy__sympy-16886.traj.json",
+      "instance_id": "sympy__sympy-16886"
+    },
+    {
+      "traj_path": "sympy__sympy-17139/sympy__sympy-17139.traj.json",
+      "instance_id": "sympy__sympy-17139"
+    },
+    {
+      "traj_path": "sympy__sympy-17318/sympy__sympy-17318.traj.json",
+      "instance_id": "sympy__sympy-17318"
+    },
+    {
+      "traj_path": "sympy__sympy-17630/sympy__sympy-17630.traj.json",
+      "instance_id": "sympy__sympy-17630"
+    },
+    {
+      "traj_path": "sympy__sympy-17655/sympy__sympy-17655.traj.json",
+      "instance_id": "sympy__sympy-17655"
+    },
+    {
+      "traj_path": "sympy__sympy-18189/sympy__sympy-18189.traj.json",
+      "instance_id": "sympy__sympy-18189"
+    },
+    {
+      "traj_path": "sympy__sympy-18199/sympy__sympy-18199.traj.json",
+      "instance_id": "sympy__sympy-18199"
+    },
+    {
+      "traj_path": "sympy__sympy-18211/sympy__sympy-18211.traj.json",
+      "instance_id": "sympy__sympy-18211"
+    },
+    {
+      "traj_path": "sympy__sympy-18698/sympy__sympy-18698.traj.json",
+      "instance_id": "sympy__sympy-18698"
+    },
+    {
+      "traj_path": "sympy__sympy-18763/sympy__sympy-18763.traj.json",
+      "instance_id": "sympy__sympy-18763"
+    },
+    {
+      "traj_path": "sympy__sympy-19040/sympy__sympy-19040.traj.json",
+      "instance_id": "sympy__sympy-19040"
+    },
+    {
+      "traj_path": "sympy__sympy-19346/sympy__sympy-19346.traj.json",
+      "instance_id": "sympy__sympy-19346"
+    },
+    {
+      "traj_path": "sympy__sympy-19495/sympy__sympy-19495.traj.json",
+      "instance_id": "sympy__sympy-19495"
+    },
+    {
+      "traj_path": "sympy__sympy-19637/sympy__sympy-19637.traj.json",
+      "instance_id": "sympy__sympy-19637"
+    },
+    {
+      "traj_path": "sympy__sympy-19783/sympy__sympy-19783.traj.json",
+      "instance_id": "sympy__sympy-19783"
+    },
+    {
+      "traj_path": "sympy__sympy-19954/sympy__sympy-19954.traj.json",
+      "instance_id": "sympy__sympy-19954"
+    },
+    {
+      "traj_path": "sympy__sympy-20154/sympy__sympy-20154.traj.json",
+      "instance_id": "sympy__sympy-20154"
+    },
+    {
+      "traj_path": "sympy__sympy-20428/sympy__sympy-20428.traj.json",
+      "instance_id": "sympy__sympy-20428"
+    },
+    {
+      "traj_path": "sympy__sympy-20438/sympy__sympy-20438.traj.json",
+      "instance_id": "sympy__sympy-20438"
+    },
+    {
+      "traj_path": "sympy__sympy-20590/sympy__sympy-20590.traj.json",
+      "instance_id": "sympy__sympy-20590"
+    },
+    {
+      "traj_path": "sympy__sympy-20801/sympy__sympy-20801.traj.json",
+      "instance_id": "sympy__sympy-20801"
+    },
+    {
+      "traj_path": "sympy__sympy-20916/sympy__sympy-20916.traj.json",
+      "instance_id": "sympy__sympy-20916"
+    },
+    {
+      "traj_path": "sympy__sympy-21379/sympy__sympy-21379.traj.json",
+      "instance_id": "sympy__sympy-21379"
+    },
+    {
+      "traj_path": "sympy__sympy-21596/sympy__sympy-21596.traj.json",
+      "instance_id": "sympy__sympy-21596"
+    },
+    {
+      "traj_path": "sympy__sympy-21612/sympy__sympy-21612.traj.json",
+      "instance_id": "sympy__sympy-21612"
+    },
+    {
+      "traj_path": "sympy__sympy-21847/sympy__sympy-21847.traj.json",
+      "instance_id": "sympy__sympy-21847"
+    },
+    {
+      "traj_path": "sympy__sympy-21930/sympy__sympy-21930.traj.json",
+      "instance_id": "sympy__sympy-21930"
+    },
+    {
+      "traj_path": "sympy__sympy-22080/sympy__sympy-22080.traj.json",
+      "instance_id": "sympy__sympy-22080"
+    },
+    {
+      "traj_path": "sympy__sympy-22456/sympy__sympy-22456.traj.json",
+      "instance_id": "sympy__sympy-22456"
+    },
+    {
+      "traj_path": "sympy__sympy-22714/sympy__sympy-22714.traj.json",
+      "instance_id": "sympy__sympy-22714"
+    },
+    {
+      "traj_path": "sympy__sympy-22914/sympy__sympy-22914.traj.json",
+      "instance_id": "sympy__sympy-22914"
+    },
+    {
+      "traj_path": "sympy__sympy-23262/sympy__sympy-23262.traj.json",
+      "instance_id": "sympy__sympy-23262"
+    },
+    {
+      "traj_path": "sympy__sympy-23413/sympy__sympy-23413.traj.json",
+      "instance_id": "sympy__sympy-23413"
+    },
+    {
+      "traj_path": "sympy__sympy-23534/sympy__sympy-23534.traj.json",
+      "instance_id": "sympy__sympy-23534"
+    },
+    {
+      "traj_path": "sympy__sympy-23824/sympy__sympy-23824.traj.json",
+      "instance_id": "sympy__sympy-23824"
+    },
+    {
+      "traj_path": "sympy__sympy-23950/sympy__sympy-23950.traj.json",
+      "instance_id": "sympy__sympy-23950"
+    },
+    {
+      "traj_path": "sympy__sympy-24066/sympy__sympy-24066.traj.json",
+      "instance_id": "sympy__sympy-24066"
+    },
+    {
+      "traj_path": "sympy__sympy-24213/sympy__sympy-24213.traj.json",
+      "instance_id": "sympy__sympy-24213"
+    },
+    {
+      "traj_path": "sympy__sympy-24443/sympy__sympy-24443.traj.json",
+      "instance_id": "sympy__sympy-24443"
+    },
+    {
+      "traj_path": "sympy__sympy-24539/sympy__sympy-24539.traj.json",
+      "instance_id": "sympy__sympy-24539"
+    },
+    {
+      "traj_path": "sympy__sympy-24562/sympy__sympy-24562.traj.json",
+      "instance_id": "sympy__sympy-24562"
+    },
+    {
+      "traj_path": "sympy__sympy-24661/sympy__sympy-24661.traj.json",
+      "instance_id": "sympy__sympy-24661"
+    }
+  ]
+}

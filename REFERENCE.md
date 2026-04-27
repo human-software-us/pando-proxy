@@ -43,6 +43,7 @@ Important invariant:
 
 - the stored `pieces` set is the active prompt-memory set
 - pieces reference exact original sources through selectors instead of storing rewritten payloads
+- `groups[].summary` is temporary routing/grouping metadata only, not user-provided source material
 - non-Pando text-like pieces use exact `text_spans` into the archived original source
 - one conceptual piece may contain multiple ordered spans when separated source regions belong
   together
@@ -197,7 +198,7 @@ The proxy injects one synthetic developer message shaped like:
 </exact_pieces>
 <archive>
 archivedSourceCount=12
-If you truly need older exact material that is not shown above, you may call recall({offset,limit}) up to 3 times in this round.
+If you truly need older exact material that is not shown above, you may call recall({offset,limit}) up to 3 times in this round; there is no per-call limit cap.
 Use it only as an emergency recovery path for earlier exact sources from the per-session archive, not from active memory.
 Prefer answering from active memory first. If you do use recall, request enough chronological coverage to satisfy the task and err on asking for more archived pieces rather than fewer.
 </archive>
@@ -219,7 +220,7 @@ Schema:
     "additionalProperties": false,
     "properties": {
       "offset": { "type": "integer", "minimum": 0 },
-      "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+      "limit": { "type": "integer", "minimum": 1 }
     },
     "required": ["offset", "limit"]
   }
@@ -230,6 +231,7 @@ Behavior:
 
 - archive-only, never active-memory browsing
 - max 3 calls per round
+- no per-call item cap
 - chronological selection over archived source ids not currently active
 - exact original archived source payloads only
 

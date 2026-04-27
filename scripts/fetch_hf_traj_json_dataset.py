@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,41 @@ def parse_args() -> argparse.Namespace:
 def fetch_json(url: str) -> Any:
     with urllib.request.urlopen(url, timeout=60) as response:
         return json.load(response)
+
+
+def fetch_json_page(url: str) -> tuple[Any, str | None]:
+    with urllib.request.urlopen(url, timeout=60) as response:
+        payload = json.load(response)
+        link = response.headers.get("Link", "")
+    match = re.search(r'<([^>]+)>;\s*rel="next"', link)
+    return payload, match.group(1) if match else None
+
+
+def list_traj_files(dataset: str) -> list[str]:
+    """Return every .traj.json path exposed by the dataset tree API."""
+    url: str | None = (
+        f"https://huggingface.co/api/datasets/{dataset}/tree/main"
+        "?recursive=true&expand=true"
+    )
+    files: list[str] = []
+    while url:
+        payload, url = fetch_json_page(url)
+        if not isinstance(payload, list):
+            raise SystemExit(f"Unexpected Hugging Face tree response for {dataset}")
+        for item in payload:
+            path = item.get("path") if isinstance(item, dict) else None
+            if isinstance(path, str) and path.endswith(".traj.json"):
+                files.append(path)
+
+    if files:
+        return sorted(files)
+
+    dataset_meta = fetch_json(f"https://huggingface.co/api/datasets/{dataset}")
+    return sorted(
+        sibling["rfilename"]
+        for sibling in dataset_meta.get("siblings", [])
+        if sibling.get("rfilename", "").endswith(".traj.json")
+    )
 
 
 def content_item(text: str) -> dict[str, Any]:
@@ -73,12 +109,7 @@ def main() -> int:
     raw_dir.mkdir(parents=True, exist_ok=True)
     converted_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset_meta = fetch_json(f"https://huggingface.co/api/datasets/{args.dataset}")
-    traj_files = sorted(
-        sibling["rfilename"]
-        for sibling in dataset_meta.get("siblings", [])
-        if sibling.get("rfilename", "").endswith(".traj.json")
-    )
+    traj_files = list_traj_files(args.dataset)
     if args.limit > 0:
         traj_files = traj_files[:args.limit]
 

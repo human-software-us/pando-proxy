@@ -21,11 +21,15 @@ There is one active memory tier only:
 - `groups`
 - exact surviving `pieces`
 
-There is one bounded recovery path:
+`groups` include summaries for temporary routing and grouping, but those summaries are not provided
+as source material. Exact material in normal prompts comes only from surviving `pieces`.
+
+There is one explicit recovery path:
 
 - `recall({offset,limit})`
 - archive-backed only
 - max 3 calls per round
+- no per-call item cap
 
 The archive exists so dropped exact material can be resurrected deliberately if needed, but the
 archive is not part of normal prompt memory.

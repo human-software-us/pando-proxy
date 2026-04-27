@@ -147,7 +147,7 @@ export function buildPromptMemoryText(
     lines.push("<archive>");
     lines.push(`archivedSourceCount=${archivedCount}`);
     lines.push(
-      "If you truly need older exact material that is not shown above, you may call recall({offset,limit}) up to 3 times in this round.",
+      "If you truly need older exact material that is not shown above, you may call recall({offset,limit}) up to 3 times in this round; there is no per-call limit cap.",
     );
     lines.push(
       "Use recall only as an emergency recovery path for earlier exact sources from the per-session archive, not from active memory.",
@@ -233,8 +233,8 @@ function injectRecallTool(tools: unknown, shouldInject: boolean): unknown {
         limit: {
           type: "integer",
           minimum: 1,
-          maximum: 20,
-          description: "How many archived older sources to return.",
+          description:
+            "How many archived older sources to return. There is no per-call maximum; request enough coverage to satisfy the task.",
         },
       },
       required: ["offset", "limit"],

@@ -12,6 +12,8 @@ sources for `pando-proxy`.
   <https://github.com/amazon-science/SWE-PolyBench/tree/submission/evaluation/PBVerified/20260201_iswe_agent>
 - SWE-bench Verified devstral public trajectory dataset:
   <https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj>
+- Complete devstral trajectory list used by the full-corpus replay:
+  [`benchmarks/results/devstral_verified_full_selection.json`](./results/devstral_verified_full_selection.json)
 - Committed aggregate result files: [`benchmarks/results`](./results)
 
 ## Research that supports the motivation, not the product claim
