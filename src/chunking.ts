@@ -368,17 +368,67 @@ async function chunkBatchWithModel(
   };
   const response = await requestChunkBatchWithSingleRetry(
     (attempt) => clients.sourceChunkBatch(request, attempt),
-  );
+  ).catch(() => null);
+  if (!response || !Array.isArray(response.results)) {
+    return wholeSelectorMap(sources);
+  }
   const byId = new Map<string, ChunkSelector[]>();
+  const requestedIds = new Set(sources.map((source) => source.sourceId));
   for (const entry of response.results ?? []) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      typeof entry.sourceId !== "string" ||
+      !requestedIds.has(entry.sourceId)
+    ) {
+      continue;
+    }
     byId.set(
       entry.sourceId,
-      Array.isArray(entry.selectors) && entry.selectors.length > 0
-        ? entry.selectors
-        : [{ kind: "whole" }],
+      validChunkSelectors(entry.selectors),
     );
   }
   return byId;
+}
+
+function wholeSelectorMap(sources: RoundSource[]): Map<string, ChunkSelector[]> {
+  return new Map(
+    sources.map((source) => [source.sourceId, [{ kind: "whole" } satisfies ChunkSelector]]),
+  );
+}
+
+function validChunkSelectors(value: unknown): ChunkSelector[] {
+  if (!Array.isArray(value)) {
+    return [{ kind: "whole" }];
+  }
+  const selectors = value.filter((selector): selector is ChunkSelector =>
+    isValidChunkSelector(selector)
+  );
+  return selectors.length > 0 ? selectors : [{ kind: "whole" }];
+}
+
+function isValidChunkSelector(value: unknown): value is ChunkSelector {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "whole") {
+    return true;
+  }
+  if (record.kind !== "text_spans" || !Array.isArray(record.spans)) {
+    return false;
+  }
+  return record.spans.some((span) =>
+    Boolean(
+      span &&
+        typeof span === "object" &&
+        !Array.isArray(span) &&
+        Number.isInteger((span as Record<string, unknown>).start) &&
+        Number.isInteger((span as Record<string, unknown>).end) &&
+        ((span as Record<string, number>).end > (span as Record<string, number>).start),
+    )
+  );
 }
 
 async function requestChunkBatchWithSingleRetry(

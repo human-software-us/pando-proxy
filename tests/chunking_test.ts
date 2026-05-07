@@ -1,8 +1,11 @@
 import { assert, assertEquals } from "@std/assert";
 
 import { chunkRoundSources } from "../src/chunking.ts";
+import { updateMemoryForCompletedRound } from "../src/memory_pipeline.ts";
+import { emptyMemoryState } from "../src/memory_state.ts";
 import type { StructuredClients } from "../src/structured_model.ts";
 import type { RoundSource } from "../src/tool_results.ts";
+import type { SourceChunkBatchResponse } from "../src/working_set_manager.ts";
 
 const keepWholeClients: StructuredClients = {
   taskRoute: () => Promise.resolve({ kind: "same_task" }),
@@ -109,6 +112,75 @@ Deno.test("chunkRoundSources keeps small whole payloads whole", async () => {
 
   assertEquals(result.pieces.length, 1);
   assertEquals(result.pieces[0].selector, { kind: "whole" });
+});
+
+Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch fails after retry", async () => {
+  let attempts = 0;
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () => {
+      attempts += 1;
+      return Promise.reject(new Error("chunk model unavailable"));
+    },
+  };
+  const source: RoundSource = {
+    sourceId: "user_1",
+    sourceKind: "user",
+    payload: "keep this exact text",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(attempts, 2);
+  assertEquals(result.pieces.length, 1);
+  assertEquals(result.pieces[0].selector, { kind: "whole" });
+  assertEquals(result.pieces[0].content, "keep this exact text");
+});
+
+Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch returns malformed selectors", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () =>
+      Promise.resolve({
+        results: [{
+          sourceId: "tool_1",
+          selectors: [{ kind: "not_a_selector" }],
+        }],
+      } as unknown as SourceChunkBatchResponse),
+  };
+  const source: RoundSource = {
+    sourceId: "tool_1",
+    sourceKind: "tool",
+    toolName: "exec_command",
+    payload: "important output",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(result.pieces.length, 1);
+  assertEquals(result.pieces[0].selector, { kind: "whole" });
+  assertEquals(result.pieces[0].content, "important output");
+});
+
+Deno.test("updateMemoryForCompletedRound keeps new round data when source_chunk_batch fails", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () => Promise.reject(new Error("chunk model unavailable")),
+  };
+
+  const result = await updateMemoryForCompletedRound(
+    { input: "retain this prompt exactly" },
+    emptyMemoryState(),
+    {},
+    [],
+    clients,
+  );
+
+  assertEquals(result.changed, true);
+  assertEquals(result.memory.pieces.length, 1);
+  assertEquals(result.memory.pieces[0].sourceKind, "user");
+  assertEquals(result.memory.pieces[0].selector, { kind: "whole" });
+  assertEquals(result.memory.activeTask?.pieceIds, [result.memory.pieces[0].id]);
 });
 
 function textSelectionContent(content: unknown): string {

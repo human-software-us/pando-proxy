@@ -75,9 +75,9 @@ Dynamic checks that JSON Schema cannot fully express are handled conservatively:
 
 - malformed `task_route` output falls back to `same_task`
 - malformed `piece_drop_batch` output keeps every evaluated piece in that batch
+- accepted `piece_drop_batch` drops are still filtered by local applicability and sanity checks
 - omitted `source_chunk_batch` results for requested sources default to a `whole` selector
-- malformed returned source ids or selectors from `source_chunk_batch` fail that memory update after
-  retry, leaving prior memory unchanged
+- failed or malformed `source_chunk_batch` output keeps requested sources as `whole` selectors
 
 ### `task_route`
 
@@ -174,9 +174,15 @@ drop=true + accepted reason => drop
 anything else => keep
 ```
 
+The rule is subject to local filters:
+
+- `old_task_after_confirmed_task_switch` must apply to the target piece
+- if candidates included non-assistant evidence and accepted drops would leave zero pieces or
+  assistant-only pieces, the runtime rejects non-structural drops and keeps that evidence
+
 `old_task_after_confirmed_task_switch` has an extra local applicability check. It is accepted only
-when the effective route is `new_task`, the target piece came from the previous active task candidate
-set, and the piece was created before the new task's `startedRound`.
+when the effective route is `new_task`, the target piece came from the previous active task
+candidate set, and the piece was created before the new task's `startedRound`.
 
 ### `source_chunk_batch`
 

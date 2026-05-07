@@ -24,13 +24,17 @@ If the model calls `recall({offset,limit})`:
 2. chunk non-Pando user, assistant talk/reasoning, and tool-result sources with `source_chunk_batch`
 3. decide `same_task` vs `new_task` vs `revive_task(relativeIndex)` with `task_route`
 4. materialize exact new pieces
-5. dedupe exact duplicate pieces by content hash, recording duplicate source markers on the
-   canonical kept piece
-6. build the candidate active set from the route
-7. ask `piece_drop_batch` about bounded full-payload batches
-8. keep all pieces that are not dropped with an accepted concrete reason
-9. archive raw round sources
-10. persist the active task, archived task bundles, and surviving exact pieces
+5. apply the task route
+6. for `same_task` and `revive_task`, collapse exact duplicate new pieces before prune, recording
+   duplicate source markers on the canonical kept piece
+7. build the candidate active set
+8. ask `piece_drop_batch` about bounded full-payload batches
+9. keep all pieces that are not dropped with an accepted concrete reason, and reject non-structural
+   drops that would leave only assistant output when non-assistant evidence existed
+10. collapse surviving exact duplicates; on `new_task`, old/new duplicate collapse is deferred until
+    after prune and prefers the new piece as canonical
+11. archive raw round sources
+12. persist the active task, archived task bundles, and surviving exact pieces
 
 Tool-call sources are chunked as whole pieces. They are still eligible for later full-payload prune
 decisions; nothing is protected forever.
@@ -46,6 +50,13 @@ split before creating pieces. It prefers complete top-level JSON array entries w
 JSON array. Otherwise it uses bounded line windows: contiguous line ranges under the byte budget,
 with each line kept intact. This is a fallback for cases where the model did not already split on a
 better conceptual boundary.
+
+The split fallback is deterministic:
+
+1. if the text is a complete top-level JSON array, find exact element spans
+2. pack adjacent element spans under the deterministic byte budget
+3. otherwise split into contiguous line windows under the byte budget
+4. if neither path produces multiple spans, keep the source whole
 
 For large `rg` outputs, the model prompt asks for conceptual split points before line windows:
 
@@ -78,12 +89,12 @@ round as `same_task`.
 - `task_route` invalid after retry -> use `same_task`
 - `revive_task(relativeIndex)` points at no archived task -> use `same_task`
 - `piece_drop_batch` invalid after retry -> keep all pieces evaluated by that failed batch
-- `piece_drop_batch` would leave only assistant pieces after non-structural drops while user/tool
-  evidence was available -> reject the non-structural drops and keep that evidence
+- `piece_drop_batch` would leave only assistant pieces after non-structural drops while
+  non-assistant evidence was available -> reject the non-structural drops and keep that evidence
 - `source_chunk_batch` omits requested source -> keep that source whole
 - `source_chunk_batch` exceeds the overflow structured window -> keep the whole batch as whole
   sources
-- `source_chunk_batch` returns malformed source ids or selectors after retry -> fail closed for that
-  memory update
+- `source_chunk_batch` fails or returns malformed source ids/selectors after retry -> keep requested
+  sources whole
 - failed memory update -> keep prior memory unchanged
 - log failures and the full data flow when proxy logging is enabled

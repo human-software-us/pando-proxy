@@ -3,6 +3,7 @@ import {
   applyWorkingSetUpdate,
   type MemoryManagerClients,
   type PieceDropBatchRequest,
+  type PieceDropBatchResponse,
 } from "../src/working_set_manager.ts";
 import type {
   MaterializedMemoryPiece,
@@ -336,7 +337,7 @@ Deno.test("applyWorkingSetUpdate ignores removed supersession drop reason", asyn
           drop: true,
           reason: "superseded_by_newer_exact_source",
         })),
-      }),
+      } as unknown as PieceDropBatchResponse),
   };
 
   const result = await applyWorkingSetUpdate(
@@ -392,17 +393,17 @@ Deno.test("applyWorkingSetUpdate drops old active pieces with accepted full-payl
   assertEquals(result.memory.activeTask?.pieceIds, [newPiece.id]);
 });
 
-Deno.test("applyWorkingSetUpdate accepts batch default prune decisions", async () => {
+Deno.test("applyWorkingSetUpdate accepts normalized prune decisions", async () => {
   const piece = draft("source_1:0", "source_1", "transient reply OK only");
   const clients: MemoryManagerClients = {
     ...keepAllClients,
     pieceDropBatch: () =>
       Promise.resolve({
-        defaultDecision: {
+        decisions: [{
+          pieceId: piece.id,
           drop: true,
           reason: "transient_format_request_only",
-        },
-        overrides: [],
+        }],
       }),
   };
 
@@ -640,22 +641,22 @@ Deno.test("applyWorkingSetUpdate handles 8+ rounds of turnover, drops, and recip
     ...keepAllClients,
     pieceDropBatch: (request: PieceDropBatchRequest) =>
       Promise.resolve({
-        defaultDecision: { drop: false, reason: null },
-        overrides: request.evaluatedPieces
-          .filter((piece) =>
-            piece.contentText.includes("DROP_ME") ||
+        decisions: request.evaluatedPieces.map((piece) => {
+          const shouldDrop = piece.contentText.includes("DROP_ME") ||
             (request.taskRoute.kind === "new_task" &&
               request.activeTask !== null &&
               piece.createdSeq !== undefined &&
-              piece.createdSeq < request.activeTask.startedRound)
-          )
-          .map((piece) => ({
+              piece.createdSeq < request.activeTask.startedRound);
+          return {
             pieceId: piece.id,
-            drop: true,
-            reason: piece.contentText.includes("DROP_ME")
-              ? "pure_ack_or_chatter"
-              : "old_task_after_confirmed_task_switch",
-          })),
+            drop: shouldDrop,
+            reason: shouldDrop
+              ? piece.contentText.includes("DROP_ME")
+                ? "pure_ack_or_chatter"
+                : "old_task_after_confirmed_task_switch"
+              : null,
+          };
+        }),
       }),
   };
   let state = emptyState();
@@ -734,22 +735,22 @@ Deno.test("applyWorkingSetUpdate handles 8+ large-chunk turnover with batched dr
     pieceDropBatch: (request: PieceDropBatchRequest) => {
       pruneBatches.push(request);
       return Promise.resolve({
-        defaultDecision: { drop: false, reason: null },
-        overrides: request.evaluatedPieces
-          .filter((piece) =>
-            piece.contentText.includes("DROP_LARGE") ||
+        decisions: request.evaluatedPieces.map((piece) => {
+          const shouldDrop = piece.contentText.includes("DROP_LARGE") ||
             (request.taskRoute.kind === "new_task" &&
               request.activeTask !== null &&
               piece.createdSeq !== undefined &&
-              piece.createdSeq < request.activeTask.startedRound)
-          )
-          .map((piece) => ({
+              piece.createdSeq < request.activeTask.startedRound);
+          return {
             pieceId: piece.id,
-            drop: true,
-            reason: piece.contentText.includes("DROP_LARGE")
-              ? "clearly_unrelated_to_current_work"
-              : "old_task_after_confirmed_task_switch",
-          })),
+            drop: shouldDrop,
+            reason: shouldDrop
+              ? piece.contentText.includes("DROP_LARGE")
+                ? "clearly_unrelated_to_current_work"
+                : "old_task_after_confirmed_task_switch"
+              : null,
+          };
+        }),
       });
     },
   };

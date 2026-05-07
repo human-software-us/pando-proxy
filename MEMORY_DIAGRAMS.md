@@ -10,7 +10,7 @@ new round sources
     +--> source_chunk_batch
     |      - user / assistant talk+reasoning / tool-result sources
     |      - returns exact selectors only
-    |      - omitted or oversized sources are kept whole
+    |      - failed, malformed, omitted, or oversized sources are kept whole
     |      - tool calls are whole-piece structural sources
     |
     +--> task_route
@@ -27,6 +27,7 @@ new round sources
     |      - batch includes shared user context + manifest + evaluated payloads
     |      - drop only with accepted concrete reason
     |      - malformed, oversized, missing, or uncertain means keep
+    |      - non-structural drops cannot collapse non-assistant evidence to assistant-only output
     |
     +--> post-prune duplicate collapse
     |      - exact duplicate survivors become duplicate source markers
@@ -99,3 +100,4 @@ assistant decides exact older material is missing
 - active stored pieces == active prompt pieces
 - archive is separate from active memory
 - semantic dropping requires full payload and concrete reason
+- semantic dropping also passes the assistant-only-collapse sanity guard

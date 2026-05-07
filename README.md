@@ -41,18 +41,25 @@ Normal end-of-round flow:
 1. collect new round sources, including user input, assistant talk/reasoning, tool calls, and tool
    results
 2. run `source_chunk_batch` and `task_route` in parallel
-   - if chunking omits a requested source or is too large for the structured window, that source is
-     kept whole
+   - if chunking fails, returns malformed output, omits a requested source, or is too large for the
+     structured window, that source is kept whole
    - if chunking returns `whole` for a large text payload, the proxy deterministically splits it on
      exact JSON-array boundaries or bounded line windows before active retention
    - for large `rg` output, the chunk prompt asks for conceptual boundaries first: path-prefix
      groups for `rg --files ...`, file groups for `rg -n "..." ...`, then line ranges only as a
      fallback
-3. dedupe exact duplicate pieces by content hash while recording duplicate source markers
-4. build the routed candidate active set
-5. run `piece_drop_batch` over full-payload batches sized under the prune budget
-6. keep everything not dropped with an accepted concrete reason
-7. persist the active task, archived task bundles, and surviving exact pieces
+3. materialize exact new pieces
+4. apply the task route
+5. for `same_task` and `revive_task`, collapse exact duplicate new pieces by content hash while
+   recording duplicate source markers
+6. build the routed candidate active set
+7. run `piece_drop_batch` over full-payload batches sized under the prune budget
+8. keep everything not dropped with an accepted concrete reason, including the local sanity guard
+   that rejects non-structural drops if they would leave only assistant output after non-assistant
+   evidence existed
+9. collapse surviving exact duplicates; on `new_task`, old/new duplicates are intentionally
+   collapsed only after prune and prefer the new piece as canonical
+10. persist the active task, archived task bundles, and surviving exact pieces
 
 Task switching is structural. On `new_task`, the previous active task identity is always archived as
 a complete bundle and a fresh active task is created. The old task's exact pieces are still

@@ -114,7 +114,10 @@ export type MemoryManagerClients = {
     request: SourceChunkBatchRequest,
     attempt?: number,
   ) => Promise<SourceChunkBatchResponse>;
-  pieceDropBatch: (request: PieceDropBatchRequest, attempt?: number) => Promise<unknown>;
+  pieceDropBatch: (
+    request: PieceDropBatchRequest,
+    attempt?: number,
+  ) => Promise<PieceDropBatchResponse>;
   pruneBatchTokenLimit?: number;
 };
 
@@ -734,7 +737,7 @@ async function requestPruneBatchKeepOnFailure(
   try {
     return await requestWithSingleRetry(
       (attempt) => clients.pieceDropBatch(request, attempt),
-      (value) => parseAndValidatePieceDropBatch(value, request.evaluatedPieces),
+      (value) => validateNormalizedPieceDropBatch(value, request.evaluatedPieces),
       "piece_drop_batch",
     );
   } catch {
@@ -775,13 +778,16 @@ function coerceTaskRoute(value: unknown): TaskRouteResponse | null {
   return { kind: "same_task" };
 }
 
-function parseAndValidatePieceDropBatch(
+function validateNormalizedPieceDropBatch(
   value: unknown,
   evaluatedPieces: FullPayloadPiece[],
 ): { ok: true; value: PieceDropBatchResponse } | { ok: false; errors: string[] } {
-  const response = coercePieceDropBatch(value, evaluatedPieces);
-  if (!response) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { ok: false, errors: ["piece_drop_batch response must be an object"] };
+  }
+  const response = value as PieceDropBatchResponse;
+  if (!Array.isArray(response.decisions)) {
+    return { ok: false, errors: ["piece_drop_batch.decisions must be an array"] };
   }
   const errors = validatePieceDropBatch(response, evaluatedPieces);
   return errors.length === 0 ? { ok: true, value: response } : { ok: false, errors };
@@ -805,83 +811,6 @@ function validatePieceDropBatch(
     seen.add(decision.pieceId);
   }
   return errors;
-}
-
-function coercePieceDropBatch(
-  value: unknown,
-  evaluatedPieces: FullPayloadPiece[],
-): PieceDropBatchResponse | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (Array.isArray(record.decisions)) {
-    const candidateIds = new Set(evaluatedPieces.map((piece) => piece.id));
-    return {
-      decisions: record.decisions
-        .filter((decision): decision is Record<string, unknown> =>
-          Boolean(decision) && typeof decision === "object" && !Array.isArray(decision)
-        )
-        .filter((decision) =>
-          typeof decision.pieceId === "string" && candidateIds.has(decision.pieceId)
-        )
-        .map((decision) => ({
-          pieceId: decision.pieceId as string,
-          drop: decision.drop === true,
-          reason: coerceDropReason(decision.reason),
-        })),
-    };
-  }
-  const defaultDecision = decisionObject(record.defaultDecision);
-  const overrides = Array.isArray(record.overrides)
-    ? record.overrides.filter((entry): entry is Record<string, unknown> =>
-      Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)
-    )
-    : [];
-  if (Object.keys(defaultDecision).length > 0 || Array.isArray(record.overrides)) {
-    const overridesById = new Map<string, Record<string, unknown>>();
-    for (const override of overrides) {
-      if (typeof override.pieceId === "string") {
-        overridesById.set(override.pieceId, override);
-      }
-    }
-    return {
-      decisions: evaluatedPieces.map((piece) => {
-        const decision = overridesById.get(piece.id) ?? defaultDecision;
-        return {
-          pieceId: piece.id,
-          drop: decision.drop === true,
-          reason: coerceDropReason(decision.reason),
-        };
-      }),
-    };
-  }
-  const byId = (
-      record.decisionsByPieceId &&
-      typeof record.decisionsByPieceId === "object" &&
-      !Array.isArray(record.decisionsByPieceId)
-    )
-    ? record.decisionsByPieceId as Record<string, unknown>
-    : {};
-  return {
-    decisions: evaluatedPieces.map((piece) => {
-      const raw = byId[piece.id];
-      const decision = raw && typeof raw === "object" && !Array.isArray(raw)
-        ? raw as Record<string, unknown>
-        : {};
-      return {
-        pieceId: piece.id,
-        drop: decision.drop === true,
-        reason: coerceDropReason(decision.reason),
-      };
-    }),
-  };
-}
-
-function decisionObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
 }
 
 function isAcceptedDropDecision(decision: PieceDropDecision): boolean {

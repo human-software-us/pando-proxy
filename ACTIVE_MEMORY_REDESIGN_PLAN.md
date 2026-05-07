@@ -16,13 +16,18 @@ Core invariant:
 
 Implementation shape:
 
-1. chunk all new sources
+1. collect all new sources
 2. run `source_chunk_batch` and `task_route` in parallel
-3. dedupe exact content hashes while recording duplicate source markers
-4. build the routed candidate active set
-5. run `piece_drop_batch` for bounded full-payload batches
-6. persist only the surviving exact pieces under the active task
-7. archive raw original sources separately for explicit recovery
+3. materialize exact new pieces and apply the task route
+4. collapse same-task and revived-task exact duplicate new pieces before prune; defer `new_task`
+   old/new duplicate collapse until after prune so old-task pieces can be rescued or dropped with
+   full context
+5. build the routed candidate active set
+6. run `piece_drop_batch` for bounded full-payload batches
+7. reject non-structural drops that would collapse a working set with non-assistant evidence to
+   assistant-only output
+8. persist only the surviving exact pieces under the active task
+9. archive raw original sources separately for explicit recovery
 
 Archive policy:
 

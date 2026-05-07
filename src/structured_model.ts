@@ -101,6 +101,16 @@ export type StructuredClients = {
   pruneBatchTokenLimit?: number;
 };
 
+type PieceDropDecisionBody = {
+  drop: boolean;
+  reason: DropReason | null;
+};
+
+type PieceDropBatchWireResponse = {
+  defaultDecision: PieceDropDecisionBody;
+  overrides: Array<PieceDropDecisionBody & { pieceId: string }>;
+};
+
 const OUTPUT_TOKEN_RESERVE = 4_096;
 const APPROX_CHARS_PER_TOKEN = 4;
 
@@ -193,7 +203,7 @@ export function createStructuredClients(
     },
     pieceDropBatch: async (request, attempt = 1) => {
       const schema = pieceDropBatchJsonSchema(request);
-      const result = await callStructuredJson<PieceDropBatchResponse>(
+      const result = await callStructuredJson<PieceDropBatchWireResponse>(
         config,
         requestModel,
         authHeader,
@@ -208,7 +218,7 @@ export function createStructuredClients(
         onWireResponse,
       );
       await emitUsage(result, onUsage);
-      assertValidPieceDropBatchResponse(request, result.value);
+      assertValidPieceDropBatchWireResponse(request, result.value);
       return normalizePieceDropBatchResponse(request, result.value);
     },
     pruneBatchTokenLimit: Math.max(
@@ -1076,44 +1086,23 @@ function assertValidTaskRouteResponse(value: unknown): void {
 
 function normalizePieceDropBatchResponse(
   request: PieceDropBatchRequest,
-  value: unknown,
+  value: PieceDropBatchWireResponse,
 ): PieceDropBatchResponse {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {
-      decisions: request.evaluatedPieces.map((piece) => ({
-        pieceId: piece.id,
-        drop: false,
-        reason: null,
-      })),
-    };
-  }
-  const record = value as Record<string, unknown>;
-  const defaultDecision = decisionObject(record.defaultDecision);
-  const overrides = Array.isArray(record.overrides)
-    ? record.overrides.filter((entry): entry is Record<string, unknown> =>
-      Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)
-    )
-    : [];
-  const overridesById = new Map<string, Record<string, unknown>>();
-  for (const override of overrides) {
-    if (typeof override.pieceId === "string") {
-      overridesById.set(override.pieceId, override);
-    }
-  }
+  const overridesById = new Map(value.overrides.map((override) => [override.pieceId, override]));
 
   return {
     decisions: request.evaluatedPieces.map((piece) => {
-      const decision = overridesById.get(piece.id) ?? defaultDecision;
+      const decision = overridesById.get(piece.id) ?? value.defaultDecision;
       return {
         pieceId: piece.id,
-        drop: decision.drop === true,
-        reason: coerceDropReason(decision.reason),
+        drop: decision.drop,
+        reason: decision.reason,
       };
     }),
   };
 }
 
-function assertValidPieceDropBatchResponse(
+function assertValidPieceDropBatchWireResponse(
   request: PieceDropBatchRequest,
   value: unknown,
 ): void {
@@ -1161,12 +1150,6 @@ function assertValidPieceDropDecision(value: unknown, label: string): void {
   if (record.reason !== null) {
     throw new Error(`${label}.reason must be null when drop=false`);
   }
-}
-
-function decisionObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
 }
 
 function coerceDropReason(value: unknown): DropReason | null {

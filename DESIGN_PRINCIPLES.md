@@ -17,6 +17,8 @@
    - explicit invalidation
    - certain structured drop decision
    - reason-specific applicability checks for narrow reasons like confirmed old-task switch drops
+   - sanity rejection for non-structural drops that would collapse non-assistant evidence to
+     assistant-only output
    - if uncertain, keep
 
 4. Archive is separate.
@@ -32,7 +34,7 @@
    - persistence
    - selector materialization
    - archive fetch
-   - deterministic dedupe candidates
+   - deterministic duplicate collapse before same-task prune and after new-task prune
    - applying manager outputs
    - structural fallback like omitted or oversized chunk batches -> `whole`
    - selector normalization for valid manager output
