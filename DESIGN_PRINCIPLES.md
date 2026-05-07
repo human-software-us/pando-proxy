@@ -4,34 +4,45 @@
    - no summaries as source material
    - no embeddings
    - no projection layer
-   - `groups[].summary` exists only as temporary grouping/routing metadata
+   - no memory groups or retained-state tags
 
-2. Active memory is one tier.
+2. Active memory is one task.
+   - at most one `activeTask`
+   - the task owns the exact piece ids needed for current execution
    - stored active pieces == prompt-visible active pieces
 
-3. Archive is separate.
-   - archive is an explicit recovery surface, not active memory
+3. Dropping requires positive proof.
+   - exact duplicate content hash
+   - deterministic supersession by primary key
+   - explicit invalidation
+   - certain structured drop decision
+   - if uncertain, keep
 
-4. Semantic decisions come from manager calls.
-   - `group_intent`
-   - `piece_retention_batch`
-   - `retained_piece_prune`
+4. Archive is separate.
+   - archive is an explicit recovery surface, not active memory
+   - task switches page old active memory out of the prompt, not out of storage
+
+5. Semantic decisions come from narrow manager calls.
+   - `task_route`
+   - `piece_drop_batch`
    - `source_chunk_batch`
 
-5. Local code is structural only.
+6. Local code is structural only.
    - persistence
    - selector materialization
    - archive fetch
+   - deterministic dedupe/supersession candidates
    - applying manager outputs
-   - structural fallback like malformed chunk selectors -> `whole`
+   - structural fallback like omitted or oversized chunk batches -> `whole`
+   - selector normalization for valid manager output
 
-6. Recall is call-count bounded and item-count unbounded.
+7. Recall is call-count bounded and item-count unbounded.
    - `recall({offset,limit})`
    - max 3 calls per round
    - no per-call item cap
    - archive only
 
-7. Validation is live.
+8. Validation is live.
    - real backend calls
    - logs and persisted state
-   - not unit tests
+   - unit tests only cover local regressions

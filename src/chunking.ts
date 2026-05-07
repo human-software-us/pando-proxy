@@ -45,7 +45,8 @@ export async function chunkRoundSources(
     } else if (source.sourceKind === "tool" && isPandoToolName(source.toolName)) {
       selectors = deterministicPandoSelectors(source.payload);
     } else {
-      selectors = batchedSelectors.get(source.sourceId) ?? [{ kind: "whole" } satisfies ChunkSelector];
+      selectors = batchedSelectors.get(source.sourceId) ??
+        [{ kind: "whole" } satisfies ChunkSelector];
     }
     const pieces = materializeSourceSelectors(source, selectors);
     out.push(

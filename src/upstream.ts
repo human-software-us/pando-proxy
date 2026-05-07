@@ -133,6 +133,12 @@ export async function runResponsesLoop(
       memory,
       loopOutputs,
     );
+    await options.logger?.log("upstream_loop_iteration", {
+      sessionKey,
+      iteration,
+      loopOutputCount: loopOutputs.length,
+      requestBody,
+    });
     const upstream = await postResponsesJson(
       config,
       options.authHeader,
@@ -180,6 +186,7 @@ export async function runResponsesLoop(
         limit: call.limit,
         returnedSourceIds: archivedSources.map((source) => source.sourceId),
         returnedBytes: bytesForValue(archivedSources.map((source) => source.payload)),
+        returnedSources: archivedSources,
       });
       loopOutputs.push(call.item);
       loopOutputs.push({

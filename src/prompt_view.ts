@@ -1,6 +1,5 @@
 import type { ProxyConfig } from "./config.ts";
 import {
-  activeGroups,
   chronologicalPieces,
   type MaterializedMemoryPiece,
   type MaterializedMemoryState,
@@ -95,7 +94,7 @@ export function makePromptMemoryItem(
   memory: MaterializedMemoryState,
   pieces: MaterializedMemoryPiece[],
 ): Record<string, unknown> | null {
-  if (memory.groups.length === 0 && pieces.length === 0) {
+  if (!memory.activeTask && pieces.length === 0) {
     return null;
   }
 
@@ -113,30 +112,27 @@ export function buildPromptMemoryText(
   memory: MaterializedMemoryState,
   pieces: MaterializedMemoryPiece[],
 ): string {
-  const lines = ["<pando_group_memory>"];
-  const groups = activeGroups(memory.groups);
-  if (groups.length > 0) {
-    lines.push("<groups>");
-    for (const group of groups) {
-      lines.push(
-        `- groupId=${group.id} status=${group.status} label=${group.routingLabel} summary=${group.summary}`,
-      );
-    }
+  const lines = ["<pando_task_memory>"];
+  if (memory.activeTask) {
+    lines.push("<active_task>");
     lines.push(
-      "Group summaries are summaries only. For verbatim or formatting-sensitive output, use visible exact pieces or recall. Do not reconstruct byte-exact text from a summary.",
+      `taskId=${memory.activeTask.id} startedRound=${memory.activeTask.startedRound} lastRound=${memory.activeTask.lastRound}`,
     );
     lines.push(
-      "If the user asks for an exact original block, snippet, template, or raw text and that full raw text is not visibly present in <exact_pieces>, you must use recall before answering.",
+      "The active task is the current working set. Exact answers must come from visible <exact_pieces> or archive recall.",
     );
     lines.push(
       "If an exact value is visibly present in <exact_pieces>, copy it fully. Do not shorten, normalize, abbreviate, or elide base64-like, hex-like, path-like, token-like, or other exact string values.",
     );
-    lines.push("</groups>");
+    lines.push(
+      "If the user asks for an exact original block, snippet, template, or raw text and that full raw text is not visibly present in <exact_pieces>, you must use recall before answering.",
+    );
+    lines.push("</active_task>");
   }
   lines.push("<exact_pieces>");
   for (const piece of pieces) {
     lines.push(
-      `<piece pieceId=${piece.id} groupId=${piece.groupId} sourceKind=${piece.sourceKind}>`,
+      `<piece pieceId=${piece.id} sourceKind=${piece.sourceKind}>`,
     );
     lines.push(piece.renderText || piecePreview(piece));
     lines.push("</piece>");
@@ -163,7 +159,7 @@ export function buildPromptMemoryText(
     );
     lines.push("</archive>");
   }
-  lines.push("</pando_group_memory>");
+  lines.push("</pando_task_memory>");
   return lines.join("\n");
 }
 

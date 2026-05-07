@@ -1,28 +1,31 @@
 # Context Memory Design
 
-The proxy is a sieve.
+The proxy is a one-task sieve.
 
 Each round:
 
 1. take the raw prompt/history Codex would send
-2. keep only the exact pieces still worth carrying
-3. drop everything else from active memory
-4. forward the reduced prompt
+2. chunk new user, assistant, tool-call, and tool-result sources into exact pieces
+3. decide whether the new user input continues, starts, or revives an executable task
+4. keep the active task's exact working set
+5. drop only pieces with positive proof that they are unnecessary
+6. forward the reduced prompt
 
 So:
 
 - raw prompt/history is `A`
 - forwarded prompt/history is `A'`
 - `A'` should be no larger than `A`
-- `A'` should preserve the same essential exact content, just filtered
+- `A'` should preserve exact task-relevant content, just filtered
 
 There is one active memory tier only:
 
-- `groups`
+- `activeTask`
 - exact surviving `pieces`
 
-`groups` include summaries for temporary routing and grouping, but those summaries are not provided
-as source material. Exact material in normal prompts comes only from surviving `pieces`.
+There are no groups. The model may make ad-hoc semantic judgments in `piece_drop_batch`, but those
+judgments do not create durable routing objects. They only answer: can this candidate be dropped
+with certainty?
 
 There is one explicit recovery path:
 

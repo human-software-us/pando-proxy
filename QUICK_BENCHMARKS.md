@@ -23,16 +23,10 @@ python3 scripts/run_replay_batch.py \
 | SWE-bench Verified devstral full corpus (345)    |         92.8% |          78.6% |            15,199 |          1,093 |             33,636 |           7,212 | 21,709 |
 | SWE-bench Verified devstral top-20 public sample |         95.3% |          57.4% |            43,924 |          2,069 |            142,623 |          60,772 |  3,807 |
 
-## Public sources used
+## Public source used
 
-- Public GitHub Gist rollout:
-  <https://gist.github.com/cirosantilli/82333ce34952926f5e4aea57dd0e4604>
-- SWE-PolyBench submission branch: <https://github.com/amazon-science/SWE-PolyBench/tree/submission>
-- SWE-PolyBench `PBVerified/20260201_iswe_agent` submission folder:
-  <https://github.com/amazon-science/SWE-PolyBench/tree/submission/evaluation/PBVerified/20260201_iswe_agent>
-- SWE-bench datasets guide: <https://www.swebench.com/SWE-bench/guides/datasets/>
-- SWE-smith trajectories dataset: <https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories>
-- SWE-agent trajectory format docs: <https://swe-agent.com/0.7/usage/trajectories/>
+- SWE-bench Verified devstral public trajectory dataset:
+  <https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj>
 
 ## Research links
 
@@ -46,15 +40,11 @@ python3 scripts/run_replay_batch.py \
 
 ## Notes
 
-- The current public benchmark numbers above were rerun on the shipped task-and-piece memory
-  manager, not the older objective-and-chunk design.
+- The current public benchmark numbers above were rerun on the shipped active-task working-set
+  runtime.
 - The full-corpus and top-20 public reruns both used deterministic stub replay
   (`--policy
   drop-tools`), which makes them cheap to reproduce locally.
-- The long local-log table in [`BENCHMARKS.md`](./BENCHMARKS.md) is still a recorded-token view from
-  raw local Codex logs, not a rerun of those sessions on the current implementation.
-- Older real-LLM public numbers are kept in the full benchmark note as historical reference only
-  until they are rerun on the lossless memory manager.
 - The research links above support the motivation for reducing prompt bloat. They do not measure
   `pando-proxy` itself.
 
@@ -139,13 +129,6 @@ python3 scripts/aggregate_replay_stats.py \
   --suffix __drop-tools__stats.json \
   --out tmp/replay-devstral-top20-stub.aggregate.json
 ```
-
-## Historical note
-
-The older top-20 real-LLM `gpt-5.4` replay numbers were produced before the lossless memory-manager
-rewrite. They are still preserved in [`BENCHMARKS.md`](./BENCHMARKS.md) and the corresponding JSON
-artifacts, but they are not current-implementation numbers and should not be treated as directly
-comparable to the stub reruns above.
 
 ## Best next public benchmark source
 

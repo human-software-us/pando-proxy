@@ -1,16 +1,13 @@
 import { ProxyConfig, resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import {
-  type DropConfidence,
   type DropReason,
-  type GroupIntentRequest,
-  type GroupIntentResponse,
-  type PieceRetentionBatchRequest,
-  type PieceRetentionBatchResponse,
-  type RetainedPiecePruneRequest,
-  type RetainedPiecePruneResponse,
+  type PieceDropBatchRequest,
+  type PieceDropBatchResponse,
   type SourceChunkBatchRequest,
   type SourceChunkBatchResponse,
-} from "./group_manager.ts";
+  type TaskRouteRequest,
+  type TaskRouteResponse,
+} from "./working_set_manager.ts";
 import { extractJsonObject, stableJson } from "./json.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
 import { extractUsageMetrics, type UsageMetrics } from "./metrics.ts";
@@ -18,10 +15,9 @@ import { type ChunkSelector } from "./memory_state.ts";
 
 export type StructuredModelSelection = {
   classifier:
-    | "group_intent"
+    | "task_route"
     | "source_chunk_batch"
-    | "piece_retention_batch"
-    | "retained_piece_prune";
+    | "piece_drop_batch";
   requestModel: string | null;
   estimatedInputTokens: number;
   chosenModel: string;
@@ -93,19 +89,16 @@ export type StructuredModelWireLog = {
   durationMs?: number;
 };
 export type StructuredClients = {
-  groupIntent: (request: GroupIntentRequest, attempt?: number) => Promise<GroupIntentResponse>;
+  taskRoute: (request: TaskRouteRequest, attempt?: number) => Promise<TaskRouteResponse>;
   sourceChunkBatch: (
     request: SourceChunkBatchRequest,
     attempt?: number,
   ) => Promise<SourceChunkBatchResponse>;
-  pieceRetentionBatch: (
-    request: PieceRetentionBatchRequest,
+  pieceDropBatch: (
+    request: PieceDropBatchRequest,
     attempt?: number,
-  ) => Promise<PieceRetentionBatchResponse>;
-  retainedPiecePrune: (
-    request: RetainedPiecePruneRequest,
-    attempt?: number,
-  ) => Promise<RetainedPiecePruneResponse>;
+  ) => Promise<PieceDropBatchResponse>;
+  pruneBatchTokenLimit?: number;
 };
 
 const OUTPUT_TOKEN_RESERVE = 4_096;
@@ -133,15 +126,15 @@ export function createStructuredClients(
   onWireResponse?: (wire: StructuredModelWireLog) => Promise<void> | void,
 ): StructuredClients {
   return {
-    groupIntent: async (request, attempt = 1) => {
-      const result = await callStructuredJson<GroupIntentResponse>(
+    taskRoute: async (request, attempt = 1) => {
+      const result = await callStructuredJson<TaskRouteResponse>(
         config,
         requestModel,
         authHeader,
-        groupIntentSystemPrompt,
+        taskRouteSystemPrompt,
         request,
-        groupIntentJsonSchema,
-        "group_intent",
+        taskRouteJsonSchema,
+        "task_route",
         attempt,
         onSelection,
         onError,
@@ -149,7 +142,8 @@ export function createStructuredClients(
         onWireResponse,
       );
       await emitUsage(result, onUsage);
-      return result.value;
+      assertValidTaskRouteResponse(result.value);
+      return normalizeTaskRouteResponse(result.value);
     },
     sourceChunkBatch: async (request, attempt = 1) => {
       if (
@@ -194,18 +188,19 @@ export function createStructuredClients(
         onWireResponse,
       );
       await emitUsage(result, onUsage);
+      assertValidSourceChunkBatchResponse(request, result.value);
       return normalizeSourceChunkBatchResponse(request, result.value);
     },
-    pieceRetentionBatch: async (request, attempt = 1) => {
-      const schema = pieceRetentionBatchJsonSchema(request);
-      const result = await callStructuredJson<PieceRetentionBatchResponse>(
+    pieceDropBatch: async (request, attempt = 1) => {
+      const schema = pieceDropBatchJsonSchema(request);
+      const result = await callStructuredJson<PieceDropBatchResponse>(
         config,
         requestModel,
         authHeader,
-        pieceRetentionBatchSystemPrompt,
+        pieceDropBatchSystemPrompt,
         request,
         schema,
-        "piece_retention_batch",
+        "piece_drop_batch",
         attempt,
         onSelection,
         onError,
@@ -213,26 +208,13 @@ export function createStructuredClients(
         onWireResponse,
       );
       await emitUsage(result, onUsage);
-      return normalizePieceRetentionBatchResponse(request, result.value);
+      assertValidPieceDropBatchResponse(request, result.value);
+      return normalizePieceDropBatchResponse(request, result.value);
     },
-    retainedPiecePrune: async (request, attempt = 1) => {
-      const result = await callStructuredJson<RetainedPiecePruneResponse>(
-        config,
-        requestModel,
-        authHeader,
-        retainedPiecePruneSystemPrompt,
-        request,
-        retainedPiecePruneJsonSchema,
-        "retained_piece_prune",
-        attempt,
-        onSelection,
-        onError,
-        onWireRequest,
-        onWireResponse,
-      );
-      await emitUsage(result, onUsage);
-      return normalizeRetainedPiecePruneResponse(request, result.value);
-    },
+    pruneBatchTokenLimit: Math.max(
+      1,
+      Math.floor((config.smallStructuredContextWindow - OUTPUT_TOKEN_RESERVE) * 0.7),
+    ),
   };
 }
 
@@ -862,27 +844,13 @@ const chunkSelectorSchema = {
   ],
 };
 
-const groupSchema = {
+const taskRouteJsonSchema = {
   type: "object",
   properties: {
-    id: { type: "string" },
-    status: { type: "string", enum: ["active", "closed"] },
-    routingLabel: { type: "string" },
-    summary: { type: "string" },
-    lastTouchedSeq: { type: "integer", minimum: 0 },
+    kind: { type: "string", enum: ["same_task", "new_task", "revive_task"] },
+    relativeIndex: { type: "integer" },
   },
-  required: ["id", "status", "routingLabel", "summary", "lastTouchedSeq"],
-  additionalProperties: false,
-};
-
-const groupIntentJsonSchema = {
-  type: "object",
-  properties: {
-    groupsAfter: { type: "array", items: groupSchema },
-    closedGroupIds: { type: "array", items: { type: "string" } },
-    replacedGroupIds: { type: "array", items: { type: "string" } },
-  },
-  required: ["groupsAfter", "closedGroupIds", "replacedGroupIds"],
+  required: ["kind", "relativeIndex"],
   additionalProperties: false,
 };
 
@@ -906,116 +874,113 @@ const sourceChunkBatchJsonSchema = {
   additionalProperties: false,
 };
 
-function pieceRetentionBatchJsonSchema(request: PieceRetentionBatchRequest): JsonSchema {
-  const decisionSchema = {
-    type: "object",
-    properties: {
-      keep: { type: "boolean" },
-      groupId: {
-        anyOf: [
-          { type: "string" },
-          { type: "null" },
-        ],
-      },
-      supersedesPieceIds: { type: "array", items: { type: "string" } },
-      dropConfidence: { type: "string", enum: ["certain", "probable", "uncertain"] },
-      dropReason: {
-        anyOf: [
-          {
-            type: "string",
-            enum: [
-              "duplicate",
-              "transient_formatting",
-              "ack_only",
-              "tool_noise",
-              "superseded",
-              "synthetic_memory",
-              "empty_or_invalid",
-            ],
-          },
-          { type: "null" },
-        ],
-      },
-    },
-    required: ["keep", "groupId", "supersedesPieceIds", "dropConfidence", "dropReason"],
-    additionalProperties: false,
-  };
+function pieceDropBatchJsonSchema(request: PieceDropBatchRequest): JsonSchema {
+  const decisionSchema = pieceDropDecisionSchema();
+  const overrideSchema = pieceDropOverrideSchema(
+    request.evaluatedPieces.map((piece) => piece.id),
+  );
 
   return {
     type: "object",
     properties: {
-      decisionsByPieceId: {
-        type: "object",
-        properties: Object.fromEntries(
-          request.newPieces.map((piece) => [piece.id, decisionSchema]),
-        ),
-        required: request.newPieces.map((piece) => piece.id),
-        additionalProperties: false,
+      defaultDecision: decisionSchema,
+      overrides: {
+        type: "array",
+        items: overrideSchema,
       },
     },
-    required: ["decisionsByPieceId"],
+    required: ["defaultDecision", "overrides"],
     additionalProperties: false,
   };
 }
 
-const retainedPiecePruneJsonSchema = {
-  type: "object",
-  properties: {
-    dropDecisions: {
-      type: "array",
-      items: {
+function pieceDropOverrideSchema(pieceIds: string[]): JsonSchema {
+  const pieceIdSchema = { type: "string", enum: pieceIds };
+  const reasonSchema = pieceDropReasonSchema();
+  return {
+    anyOf: [
+      {
         type: "object",
         properties: {
-          pieceId: { type: "string" },
-          dropConfidence: { type: "string", enum: ["certain", "probable", "uncertain"] },
-          dropReason: {
-            type: "string",
-            enum: [
-              "duplicate",
-              "transient_formatting",
-              "ack_only",
-              "tool_noise",
-              "superseded",
-              "synthetic_memory",
-              "empty_or_invalid",
-            ],
-          },
+          pieceId: pieceIdSchema,
+          drop: { type: "boolean", enum: [false] },
+          reason: { type: "null" },
         },
-        required: ["pieceId", "dropConfidence", "dropReason"],
+        required: ["pieceId", "drop", "reason"],
         additionalProperties: false,
       },
-    },
-  },
-  required: ["dropDecisions"],
-  additionalProperties: false,
-};
+      {
+        type: "object",
+        properties: {
+          pieceId: pieceIdSchema,
+          drop: { type: "boolean", enum: [true] },
+          reason: reasonSchema,
+        },
+        required: ["pieceId", "drop", "reason"],
+        additionalProperties: false,
+      },
+    ],
+  };
+}
 
-const groupIntentSystemPrompt = `
-You maintain durable active memory groups for a coding session.
+function pieceDropDecisionSchema(): JsonSchema {
+  const dropReasonSchema = pieceDropReasonSchema();
+  return {
+    anyOf: [
+      {
+        type: "object",
+        properties: {
+          drop: { type: "boolean", enum: [false] },
+          reason: { type: "null" },
+        },
+        required: ["drop", "reason"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: {
+          drop: { type: "boolean", enum: [true] },
+          reason: dropReasonSchema,
+        },
+        required: ["drop", "reason"],
+        additionalProperties: false,
+      },
+    ],
+  };
+}
+
+function pieceDropReasonSchema(): JsonSchema {
+  return {
+    type: "string",
+    enum: [
+      "exact_duplicate",
+      "superseded_by_newer_exact_source",
+      "explicitly_invalidated_by_user",
+      "old_task_after_confirmed_task_switch",
+      "pure_ack_or_chatter",
+      "transient_format_request_only",
+      "clearly_unrelated_to_current_work",
+      "empty_or_invalid",
+    ],
+  };
+}
+
+const taskRouteSystemPrompt = `
+You decide whether a new user turn continues the current executable task, starts a new task, or revives a prior task.
 
 Return JSON matching the supplied schema.
 
 Rules:
-- You are given the current groups, retained exact anchor previews for those groups, and the new user pieces from the latest round.
-- groupsAfter must be the full post-round group list.
-- Keep groupsAfter small and concrete.
-- Preserve active groups by default when their retained anchor facts may still matter later, even if the current round also asks for new inspection work.
-- Do not discard an active group just because the user asks another repo-inspection question in the same broader thread.
-- Continue an existing group when the user is still working on the same thread, including follow-up questions about facts, tokens, notes, or markers already established there.
-- If the user updates or replaces an exact value inside the same ongoing thread (for example "forget token B, remember token C instead"), keep the same group id and update that group's summary rather than retiring the group and creating a fresh one.
-- Use replacedGroupIds only when the broader thread itself is being abandoned in favor of a distinct new thread, not for ordinary within-thread value updates.
-- Replace or close obsolete groups when the user moves on.
-- closedGroupIds and replacedGroupIds retire prior groups and those ids must not appear in groupsAfter.
-- routingLabel should be short and operational.
-- summary should say what durable exact evidence matters in that group.
-- summary should describe durable task state, not transient answer wording.
-- summary must not include one-turn reply instructions, stale formatting requirements, obsolete answer text commands such as "reply STEP-4 only", or transient current-turn response-shape requests such as "return exact JSON only", requested key names, formatting wrappers, or output-slot templates when they do not add durable facts.
-- Do not invent vague meta-groups.
+- Return same_task unless the new user turn clearly starts a different standalone task.
+- Return new_task only when the new turn can be completed independently and needs a different active working set.
+- Return revive_task only when the user clearly asks to return to a prior task. Use relativeIndex from the supplied archivedTasks list, such as -1 for the most recent previous task.
+- Follow-up questions, refinements, debugging, verification, and requests about prior facts are same_task.
+- For same_task and new_task, set relativeIndex to 0.
 - Return JSON only.
 `.trim();
 
 const sourceChunkBatchSystemPrompt = `
-You split user, assistant, and tool payloads into exact retained pieces.
+You split user, assistant talk/reasoning, and tool-result payloads into exact retained pieces.
 
 Return JSON matching the supplied schema.
 
@@ -1040,148 +1005,238 @@ Rules:
 - Return JSON only.
 `.trim();
 
-const pieceRetentionBatchSystemPrompt = `
-You decide which exact new pieces should be retained in durable memory groups.
+const pieceDropBatchSystemPrompt = `
+You decide which exact memory pieces no longer belong in the active working set for the current task.
 
 Return JSON matching the supplied schema.
 
 Rules:
-- You are given post-round groups, retained anchors, and preview/pointer/selector anchors for all new exact pieces.
-- Return a decision for every new piece id under decisionsByPieceId.
-- Keep every piece unless it is certainly useless.
-- Set keep=false only when dropConfidence="certain" and dropReason is one of the allowed known-useless reasons.
-- If a piece might matter later, might be needed for recall targeting, or you are unsure, set keep=true.
-- Prefer original user literals and original tool results over assistant restatements.
-- Keep original raw sources when they may matter later for verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction.
-- Do not treat a group summary as a replacement for a canonical raw source when exact reproduction of the original text may matter later.
-- You may drop transient one-turn response-formatting instructions such as "reply X only", "answer UNKNOWN only", or "do not reveal it this round" only when they contain no durable facts that could matter later.
-- You may drop current-turn answer-shape requests that only specify how to format this response, such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" instructions, only when the underlying durable evidence already exists elsewhere.
-- Queries, questions, and answer-shape prompts with placeholders such as "...", "<...>", "<full ...>", or requested key names are usually not durable evidence, but keep them if they introduce brand-new exact source material or uncertainty exists.
-- Example of keep=false: a piece whose only purpose is "Return exact JSON only: {\"a\":\"<...>\",\"c\":\"<...>\"}" or similar current-turn output-shape instructions.
-- Also keep=false for a current-turn output template that embeds concrete values but is still only asking for this round's answer shape, for example "Return exact JSON only: {\"alpha_token\":\"ALPHA-7741\",\"beta_port\":9443}". That is not a new remembered source unless the user explicitly says to remember/store it.
-- When a round contains both durable exact evidence and transient answer-formatting instructions, keep the durable evidence and drop the transient control chatter.
-- groupId must be an active group when keep=true.
-- When keep=true, set dropConfidence="uncertain" and dropReason=null unless this kept piece certainly supersedes older retained pieces.
-- When keep=false, set groupId=null, supersedesPieceIds=[], dropConfidence="certain", and a concrete dropReason.
-- supersedesPieceIds should only list older retained pieces or earlier same-round new pieces made obsolete by the new piece.
-- Never supersede older retained pieces with a query, question, or answer-shape request. Only supersede when the new piece itself contains replacement exact evidence that should now be remembered instead.
-- To supersede old pieces, keep the replacement piece and set dropConfidence="certain", dropReason="superseded", and supersedesPieceIds to the exact older piece ids.
+- You are given a bounded full-payload batch plus shared context.
+- Use defaultDecision for the common batch decision.
+- Use overrides only for evaluatedPieces ids that differ from defaultDecision.
+- To keep the whole batch, set defaultDecision={drop:false,reason:null} and overrides=[].
+- To drop the whole batch, set defaultDecision={drop:true,reason:<allowed reason>} and overrides=[].
+- You may only drop evaluatedPieces whose full contentText is present in this batch.
+- Do not decide on manifest-only pieces.
+- Nothing is protected forever, including user input, tool calls, tool results, errors, code, and assistant output.
+- The question is only: does this exact piece still belong in the active working set for the current task?
+- Drop pieces that are clearly unrelated, superseded, obsolete, transient, resolved, from an old task after a confirmed switch, or explicitly invalidated.
+- Keep pieces when dropping them could remove information needed for the current task.
+- If shared user context seems insufficient to judge a piece, keep it.
+- If unsure, keep it.
+- When drop=true, set a concrete allowed reason.
+- When drop=false, set reason=null.
 - Return JSON only.
 `.trim();
 
-function normalizePieceRetentionBatchResponse(
-  request: PieceRetentionBatchRequest,
+function normalizeTaskRouteResponse(value: unknown): TaskRouteResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { kind: "same_task" };
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "new_task") {
+    return { kind: "new_task" };
+  }
+  if (record.kind === "revive_task") {
+    const relativeIndex = typeof record.relativeIndex === "number"
+      ? Math.trunc(record.relativeIndex)
+      : -1;
+    return relativeIndex < 0 ? { kind: "revive_task", relativeIndex } : { kind: "same_task" };
+  }
+  return { kind: "same_task" };
+}
+
+function assertValidTaskRouteResponse(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("task_route response must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "same_task" && record.kind !== "new_task" && record.kind !== "revive_task") {
+    throw new Error("task_route.kind is invalid");
+  }
+  if (typeof record.relativeIndex !== "number" || !Number.isInteger(record.relativeIndex)) {
+    throw new Error("task_route.relativeIndex must be an integer");
+  }
+  if ((record.kind === "same_task" || record.kind === "new_task") && record.relativeIndex !== 0) {
+    throw new Error("task_route.relativeIndex must be 0 for same_task/new_task");
+  }
+  if (record.kind === "revive_task" && record.relativeIndex >= 0) {
+    throw new Error("task_route.relativeIndex must be negative for revive_task");
+  }
+}
+
+function normalizePieceDropBatchResponse(
+  request: PieceDropBatchRequest,
   value: unknown,
-): PieceRetentionBatchResponse {
-  const fallbackGroupId = request.groups.find((group) => group.status === "active")?.id ?? null;
+): PieceDropBatchResponse {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {
-      decisions: request.newPieces.map((piece) => ({
+      decisions: request.evaluatedPieces.map((piece) => ({
         pieceId: piece.id,
-        keep: true,
-        groupId: fallbackGroupId,
-        supersedesPieceIds: [],
-        dropConfidence: "uncertain",
-        dropReason: null,
+        drop: false,
+        reason: null,
       })),
     };
   }
   const record = value as Record<string, unknown>;
-  const decisionsByPieceId = (
-      record.decisionsByPieceId &&
-      typeof record.decisionsByPieceId === "object" &&
-      !Array.isArray(record.decisionsByPieceId)
+  const defaultDecision = decisionObject(record.defaultDecision);
+  const overrides = Array.isArray(record.overrides)
+    ? record.overrides.filter((entry): entry is Record<string, unknown> =>
+      Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)
     )
-    ? record.decisionsByPieceId as Record<string, unknown>
-    : {};
+    : [];
+  const overridesById = new Map<string, Record<string, unknown>>();
+  for (const override of overrides) {
+    if (typeof override.pieceId === "string") {
+      overridesById.set(override.pieceId, override);
+    }
+  }
 
   return {
-    decisions: request.newPieces.map((piece) => {
-      const rawDecision = decisionsByPieceId[piece.id];
-      const decision = rawDecision && typeof rawDecision === "object" && !Array.isArray(rawDecision)
-        ? rawDecision as Record<string, unknown>
-        : {};
+    decisions: request.evaluatedPieces.map((piece) => {
+      const decision = overridesById.get(piece.id) ?? defaultDecision;
       return {
         pieceId: piece.id,
-        keep: decision.keep === false ? false : true,
-        groupId: typeof decision.groupId === "string" ? decision.groupId : fallbackGroupId,
-        supersedesPieceIds: Array.isArray(decision.supersedesPieceIds)
-          ? decision.supersedesPieceIds.map(String)
-          : [],
-        dropConfidence: coerceDropConfidence(decision.dropConfidence),
-        dropReason: coerceDropReason(decision.dropReason),
+        drop: decision.drop === true,
+        reason: coerceDropReason(decision.reason),
       };
     }),
   };
 }
 
-function normalizeRetainedPiecePruneResponse(
-  request: RetainedPiecePruneRequest,
+function assertValidPieceDropBatchResponse(
+  request: PieceDropBatchRequest,
   value: unknown,
-): RetainedPiecePruneResponse {
+): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { dropPieceIds: [], dropDecisions: [] };
+    throw new Error("piece_drop_batch response must be an object");
   }
   const record = value as Record<string, unknown>;
-  const retainedOldIds = new Set(request.retainedOldPieces.map((piece) => piece.id));
-  const dropDecisions = Array.isArray(record.dropDecisions)
-    ? record.dropDecisions
-      .filter((decision): decision is Record<string, unknown> =>
-        Boolean(decision) && typeof decision === "object" && !Array.isArray(decision)
-      )
-      .map((decision) => ({
-        pieceId: String(decision.pieceId ?? ""),
-        dropConfidence: coerceDropConfidence(decision.dropConfidence),
-        dropReason: coerceDropReason(decision.dropReason) ?? "empty_or_invalid",
-      }))
-      .filter((decision) => retainedOldIds.has(decision.pieceId))
-    : [];
-  return {
-    dropPieceIds: dropDecisions.map((decision) => decision.pieceId),
-    dropDecisions,
-  };
+  assertValidPieceDropDecision(record.defaultDecision, "piece_drop_batch.defaultDecision");
+  if (!Array.isArray(record.overrides)) {
+    throw new Error("piece_drop_batch.overrides must be an array");
+  }
+  const evaluatedIds = new Set(request.evaluatedPieces.map((piece) => piece.id));
+  const seen = new Set<string>();
+  for (const [index, override] of record.overrides.entries()) {
+    const label = `piece_drop_batch.overrides[${index}]`;
+    if (!override || typeof override !== "object" || Array.isArray(override)) {
+      throw new Error(`${label} must be an object`);
+    }
+    const item = override as Record<string, unknown>;
+    if (typeof item.pieceId !== "string" || !evaluatedIds.has(item.pieceId)) {
+      throw new Error(`${label}.pieceId must reference an evaluated piece`);
+    }
+    if (seen.has(item.pieceId)) {
+      throw new Error(`${label}.pieceId is duplicated`);
+    }
+    seen.add(item.pieceId);
+    assertValidPieceDropDecision(item, label);
+  }
 }
 
-function coerceDropConfidence(value: unknown): DropConfidence {
-  return value === "certain" || value === "probable" || value === "uncertain" ? value : "uncertain";
+function assertValidPieceDropDecision(value: unknown, label: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.drop !== "boolean") {
+    throw new Error(`${label}.drop must be a boolean`);
+  }
+  if (record.drop === true) {
+    if (coerceDropReason(record.reason) === null) {
+      throw new Error(`${label}.reason must be an accepted reason when drop=true`);
+    }
+    return;
+  }
+  if (record.reason !== null) {
+    throw new Error(`${label}.reason must be null when drop=false`);
+  }
+}
+
+function decisionObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function coerceDropReason(value: unknown): DropReason | null {
   return typeof value === "string" && (
-      value === "duplicate" ||
-      value === "transient_formatting" ||
-      value === "ack_only" ||
-      value === "tool_noise" ||
-      value === "superseded" ||
-      value === "synthetic_memory" ||
+      value === "exact_duplicate" ||
+      value === "superseded_by_newer_exact_source" ||
+      value === "explicitly_invalidated_by_user" ||
+      value === "old_task_after_confirmed_task_switch" ||
+      value === "pure_ack_or_chatter" ||
+      value === "transient_format_request_only" ||
+      value === "clearly_unrelated_to_current_work" ||
       value === "empty_or_invalid"
     )
     ? value
     : null;
 }
 
-const retainedPiecePruneSystemPrompt = `
-You prune kept exact pieces that are no longer worth sending next round.
+function assertValidSourceChunkBatchResponse(
+  request: SourceChunkBatchRequest,
+  value: unknown,
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("source_chunk_batch response must be an object");
+  }
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.results)) {
+    throw new Error("source_chunk_batch.results must be an array");
+  }
+  const requestedIds = new Set(request.sources.map((source) => source.sourceId));
+  const seen = new Set<string>();
+  for (const [index, result] of record.results.entries()) {
+    const label = `source_chunk_batch.results[${index}]`;
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      throw new Error(`${label} must be an object`);
+    }
+    const item = result as Record<string, unknown>;
+    if (typeof item.sourceId !== "string" || !requestedIds.has(item.sourceId)) {
+      throw new Error(`${label}.sourceId must reference a requested source`);
+    }
+    if (seen.has(item.sourceId)) {
+      throw new Error(`${label}.sourceId is duplicated`);
+    }
+    seen.add(item.sourceId);
+    if (!Array.isArray(item.selectors) || item.selectors.length === 0) {
+      throw new Error(`${label}.selectors must be a non-empty array`);
+    }
+    for (const [selectorIndex, selector] of item.selectors.entries()) {
+      assertValidChunkSelector(selector, `${label}.selectors[${selectorIndex}]`);
+    }
+  }
+}
 
-Return JSON matching the supplied schema.
-
-Rules:
-- You are given the current groups, surviving old pieces, and newly kept pieces.
-- dropDecisions must contain only ids from retainedOldPieces.
-- Newly kept pieces are shown as context only; do not drop them in this call.
-- Drop only old pieces that are certainly useless now.
-- If a retained old piece might matter later, might be needed for exact reproduction, or you are unsure, do not include it in dropDecisions.
-- Prefer to keep earlier original user literals, tokens, constraints, and exact values when later rounds may still depend on them.
-- You may drop transient response-formatting, acknowledgment, or answer-shape pieces before dropping earlier durable exact evidence, but only with dropConfidence="certain".
-- You may drop current-turn answer-shape requests such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" prompts before dropping durable exact evidence, but only with dropConfidence="certain".
-- You may drop queries/questions whose only purpose is to ask for already-known values in a specific shape, especially when they contain placeholders like "...", "<...>", or "<full ...>", but keep them if they contain any new exact source material.
-- You may drop current-turn output templates even when they embed concrete values, unless the user explicitly framed that template itself as new exact source material to remember later.
-- Do not drop the only remaining canonical raw source for material that may need verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction later.
-- For formatting-sensitive blocks or snippets, prefer to keep the original raw source piece rather than relying on the group summary alone.
-- If unsure, keep the old piece.
-- Every drop decision must include dropConfidence="certain" and a concrete dropReason.
-- Return JSON only.
-`.trim();
+function assertValidChunkSelector(value: unknown, label: string): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind === "whole") {
+    return;
+  }
+  if (record.kind !== "text_spans") {
+    throw new Error(`${label}.kind is invalid`);
+  }
+  if (!Array.isArray(record.spans) || record.spans.length === 0) {
+    throw new Error(`${label}.spans must be a non-empty array`);
+  }
+  for (const [spanIndex, span] of record.spans.entries()) {
+    if (!span || typeof span !== "object" || Array.isArray(span)) {
+      throw new Error(`${label}.spans[${spanIndex}] must be an object`);
+    }
+    const item = span as Record<string, unknown>;
+    if (
+      typeof item.start !== "number" || !Number.isInteger(item.start) || item.start < 0 ||
+      typeof item.end !== "number" || !Number.isInteger(item.end) || item.end <= item.start
+    ) {
+      throw new Error(`${label}.spans[${spanIndex}] must have integer start/end with end > start`);
+    }
+  }
+}
 
 function normalizeSourceChunkBatchResponse(
   request: SourceChunkBatchRequest,

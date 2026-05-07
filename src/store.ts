@@ -7,6 +7,7 @@ import {
   isRecord,
   type MaterializedMemoryPiece,
   type MaterializedMemoryState,
+  type MemoryPiece,
   pruneMemoryState,
   type SessionRecord,
 } from "./memory_state.ts";
@@ -21,23 +22,30 @@ export function materializeMemoryFromArchivedSources(
 ): MaterializedMemoryState {
   return {
     ...memory,
-    pieces: memory.pieces.flatMap((piece) => {
-      const source = archivedSourcesById.get(piece.sourceId);
-      if (!source) {
-        return [];
-      }
-      const materialized = materializeSelector(source, piece.selector);
-      if (!materialized) {
-        return [];
-      }
-      return [
-        {
-          ...piece,
-          renderText: renderMaterializedContent(materialized.content),
-        } satisfies MaterializedMemoryPiece,
-      ];
-    }),
+    pieces: materializePiecesFromArchivedSources(memory.pieces, archivedSourcesById),
   };
+}
+
+export function materializePiecesFromArchivedSources(
+  pieces: MemoryPiece[],
+  archivedSourcesById: ReadonlyMap<string, ArchivedSource>,
+): MaterializedMemoryPiece[] {
+  return pieces.flatMap((piece) => {
+    const source = archivedSourcesById.get(piece.sourceId);
+    if (!source) {
+      return [];
+    }
+    const materialized = materializeSelector(source, piece.selector);
+    if (!materialized) {
+      return [];
+    }
+    return [
+      {
+        ...piece,
+        renderText: renderMaterializedContent(materialized.content),
+      } satisfies MaterializedMemoryPiece,
+    ];
+  });
 }
 
 export class SessionStore {
@@ -79,11 +87,21 @@ export class SessionStore {
     sessionKey: string,
     memory: SessionRecord["memory"],
   ): Promise<MaterializedMemoryState> {
+    return {
+      ...memory,
+      pieces: await this.materializePieces(sessionKey, memory.pieces),
+    };
+  }
+
+  async materializePieces(
+    sessionKey: string,
+    pieces: MemoryPiece[],
+  ): Promise<MaterializedMemoryPiece[]> {
     const bySourceId = await this.#archivedSourcesById(
       sessionKey,
-      memory.pieces.map((piece) => piece.sourceId),
+      pieces.map((piece) => piece.sourceId),
     );
-    return materializeMemoryFromArchivedSources(memory, bySourceId);
+    return materializePiecesFromArchivedSources(pieces, bySourceId);
   }
 
   async archiveSources(sessionKey: string, sources: RoundSource[]): Promise<void> {

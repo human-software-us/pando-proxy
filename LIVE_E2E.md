@@ -52,16 +52,30 @@ Prefer exact thread ids almost always. Treat `--last` as fallback-only.
 
 After each round, inspect:
 
+- `incoming_request`
+- `materialized_memory_loaded`
+- `rewritten_context`
+- `upstream_loop_iteration`
+- `upstream_request`
+- `upstream_response`
+- `structured_model_request`
+- `structured_model_response`
 - `memory_round_chunked`
 - `memory_round_decision`
 - `memory_round_updated`
 - `memory_state_saved`
+- `memory_update_inputs`
 - `structured_model_usage`
 - `structured_model_skipped`
 - `archive_recall`
 - `round_complete`
 
 Also inspect the persisted state under the chosen `--proxy-state-dir`.
+
+Use `--proxy-log` or `--proxy-log-file` as the single wrapper logging switch. These full data-flow
+logs intentionally include prompts, tool outputs, model outputs, memory payloads, and structured
+model batch payloads so failed keep/drop decisions can be reconstructed. Authorization and token
+fields are redacted. Direct `serve` mode uses the equivalent `--log` or `--log-file` flags.
 
 ## Isolating External Codex Config
 

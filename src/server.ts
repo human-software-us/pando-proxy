@@ -2,7 +2,7 @@ import type { ProxyConfig } from "./config.ts";
 import { authHeaderFor, parseJsonBody, requestModel, sessionKeyFor } from "./codex_request.ts";
 import { createLogger } from "./logger.ts";
 import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
-import type { MemoryState } from "./memory_state.ts";
+import { allKnownPieces, type MemoryState } from "./memory_state.ts";
 import {
   estimateBytesForValue,
   estimateTokensForValue,
@@ -366,6 +366,7 @@ export function createHandler(
       requestId,
       sessionKey,
       memoryEnabled: config.memoryEnabled,
+      body,
       ...requestContextMetrics(body),
     });
     contextWindowStats.recordWithoutProxy(sessionKey, estimateBytesForValue(body));
@@ -384,12 +385,33 @@ export function createHandler(
       return await store.withLock(sessionKey, async () => {
         const record = await store.load(sessionKey);
         const promptMemory = await store.materializeMemory(sessionKey, record.memory);
+        await logger.log("materialized_memory_loaded", {
+          requestId,
+          sessionKey,
+          activeTask: promptMemory.activeTask,
+          archivedTasks: promptMemory.archivedTasks,
+          processedSourceIds: promptMemory.processedSourceIds,
+          pieces: promptMemory.pieces.map((piece) => ({
+            id: piece.id,
+            sourceId: piece.sourceId,
+            sourceKind: piece.sourceKind,
+            toolName: piece.toolName ?? null,
+            createdSeq: piece.createdSeq,
+            primaryKey: piece.primaryKey ?? null,
+            selector: piece.selector,
+            byteSize: piece.byteSize,
+            contentHash: piece.contentHash,
+            renderText: piece.renderText,
+          })),
+        });
         let finalMemory = record.memory;
         let memoryUpdateError: string | null = null;
         const rewrite = await rewriteRequestWithMemory(body, promptMemory, config);
         await logger.log("rewritten_context", {
           requestId,
           sessionKey,
+          originalBody: body,
+          rewrittenBody: rewrite.body,
           droppedInputIds: rewrite.diff.droppedInputIds,
           keptInputIds: rewrite.diff.keptInputIds,
           insertedMemory: rewrite.diff.insertedMemory,
@@ -810,6 +832,22 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
       waitedMs: Date.now() - observedWaitStartedAt,
       observedSourceCount: observedSources.length,
       observedSourceIds: observedSources.map((source) => source.sourceId),
+      observedSources,
+    });
+    const materializedPriorPieces = await store.materializePieces(
+      sessionKey,
+      allKnownPieces(previousMemory),
+    );
+    await logger.log("memory_update_inputs", {
+      requestId,
+      sessionKey,
+      requestBody,
+      rewriteBody,
+      loopFinalBody,
+      assistantSources,
+      observedSources,
+      materializedPriorPieces,
+      previousMemory,
     });
     const memoryUpdate = await updateMemoryForCompletedRound(
       rewriteBody,
@@ -818,6 +856,7 @@ async function finalizeRoundMemory(options: FinalizeRoundOptions): Promise<Final
       [...assistantSources, ...observedSources],
       structuredClients,
       { logger, requestId, sessionKey },
+      materializedPriorPieces,
     );
     finalMemory = memoryUpdate.memory;
     await store.archiveSources(sessionKey, memoryUpdate.sources);

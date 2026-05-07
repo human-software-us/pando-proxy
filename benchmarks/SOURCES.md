@@ -5,11 +5,6 @@ sources for `pando-proxy`.
 
 ## Public sources used in the current benchmark docs
 
-- Public GitHub Gist rollout:
-  <https://gist.github.com/cirosantilli/82333ce34952926f5e4aea57dd0e4604>
-- SWE-PolyBench submission branch: <https://github.com/amazon-science/SWE-PolyBench/tree/submission>
-- SWE-PolyBench `PBVerified/20260201_iswe_agent` submission folder:
-  <https://github.com/amazon-science/SWE-PolyBench/tree/submission/evaluation/PBVerified/20260201_iswe_agent>
 - SWE-bench Verified devstral public trajectory dataset:
   <https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj>
 - Complete devstral trajectory list used by the full-corpus replay:
@@ -33,6 +28,7 @@ sources for `pando-proxy`.
 
 - SWE-bench datasets guide: <https://www.swebench.com/SWE-bench/guides/datasets/>
 - SWE-bench Verified dataset: <https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified>
+- SWE-PolyBench submission branch: <https://github.com/amazon-science/SWE-PolyBench/tree/submission>
 - SWE-smith trajectories dataset: <https://huggingface.co/datasets/SWE-bench/SWE-smith-trajectories>
 - SWE-agent trajectory format and artifact docs: <https://swe-agent.com/0.7/usage/trajectories/>
 - Public SWE-agent trajectories on SWE-bench Verified:

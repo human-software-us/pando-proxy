@@ -1,52 +1,58 @@
 # pando-proxy
 
 `pando-proxy` is a local Codex wrapper that rewrites each Responses request through a strict
-active-memory sieve.
+active-task working set.
 
 The important invariant is simple:
 
-- active memory is the exact kept piece set
+- active memory is one active task plus exact kept pieces
 - the next forwarded prompt contains that exact kept set
-- anything not kept is dropped from active memory completely
+- dropped material leaves active memory, but raw round sources stay in the per-session archive
 - if older exact material is needed later, the agent can use `recall({offset,limit})` against the
-  per-session archive, up to 3 times in that round, with no per-call item cap
+  archive, up to 3 times in that round, with no per-call item cap
 
-There is no projection layer, no hidden omitted-memory tier, and no summary/embedding memory.
-`groups[].summary` is internal routing and grouping state only; summaries are not provided to the
-model as source material, and exact answers must come from visible `pieces` or archive `recall`.
+There are no memory groups, summaries as source material, embeddings, projection layers, hidden
+omitted-memory tiers, or retained-state tags. Exact answers must come from visible `pieces` or
+archive `recall`.
 
 ## Validation Policy
 
 For the active-memory redesign in this repository:
 
-- ignore unit tests completely
-- do not use unit tests as a correctness signal
+- ignore unit tests completely as product proof
 - validate with live E2E runs against the real backend
 - inspect logs and persisted state as the primary verification method
+
+Unit tests are still useful for local regressions in the state transition code.
 
 ## Current Design
 
 The runtime is built around:
 
-- `groups`: compact semantic buckets managed only by structured LLM calls; their summaries are
-  temporary grouping/routing metadata, not a memory source
-- `pieces`: exact retained user/assistant/tool chunks
+- `activeTask`: the single current executable task and its active piece ids
+- `archivedTasks`: previous task bundles, revivable by negative relative index
+- `pieces`: exact retained user/assistant reasoning/talk/tool-result/tool-call chunks
 - `processedSourceIds`: source ids already seen and archived
-- `archive`: raw original sources kept only for explicit recovery, not for normal prompt memory
+- `archive`: raw original sources kept for explicit recovery, not normal prompt memory
 
 Normal end-of-round flow:
 
-1. collect new round sources
-2. run `source_chunk_batch` and `group_intent` in parallel
-3. `piece_retention_batch`
-4. `retained_piece_prune`
-5. persist the surviving exact pieces
+1. collect new round sources, including user input, assistant talk/reasoning, tool calls, and tool
+   results
+2. run `source_chunk_batch` and `task_route` in parallel
+   - if chunking omits a requested source or is too large for the structured window, that source is
+     kept whole
+3. dedupe exact duplicate pieces by content hash
+4. build the routed candidate active set
+5. run `piece_drop_batch` over full-payload batches sized under the prune budget
+6. keep everything not dropped with an accepted concrete reason
+7. persist the active task, archived task bundles, and surviving exact pieces
 
 Normal request flow:
 
 1. load session state
 2. materialize active-piece payloads for rendering
-3. inject one synthetic developer memory block
+3. inject one synthetic `<pando_task_memory>` developer block
 4. forward to upstream
 5. if the model explicitly calls `recall`, resolve archived sources locally
 6. finalize memory after the upstream round completes
@@ -57,6 +63,7 @@ These two surfaces are intentionally separate.
 
 Active memory:
 
+- one active task
 - exact surviving pieces only
 - always shown in the next rewritten prompt
 - what survives is exactly what crosses the prompt boundary
@@ -162,16 +169,32 @@ deno run --allow-net --allow-env --allow-read --allow-write --allow-run \
 
 Inspect after each run:
 
+- `incoming_request` with the original Responses body
+- `materialized_memory_loaded`
+- `rewritten_context` with the original and rewritten bodies
+- `upstream_loop_iteration`
+- `upstream_request`
+- `upstream_response`
+- `structured_model_request`
+- `structured_model_response`
 - `memory_round_chunked`
 - `memory_round_decision`
 - `memory_round_updated`
+- `memory_update_inputs`
 - `memory_state_saved`
 - `archive_recall`
 - `structured_model_usage`
 - `structured_model_skipped`
 - `round_complete`
 
-Wrapper stderr now also prints at exit:
+`--proxy-log` is the one switch for full proxy data-flow logging. It writes every main-model
+request/response, internal structured-model request/response, memory materialization, chunking
+input/output, prune decision, archive recall payload, and round summary to JSONL. Use
+`--proxy-log-file <path>` when you want a stable path. Direct `serve` mode has equivalent `--log`
+and `--log-file` flags. Authorization and token fields are redacted, but user prompts, tool outputs,
+model outputs, and retained memory payloads are intentionally present for debugging.
+
+Wrapper stderr also prints at exit:
 
 - estimated input tokens without the proxy
 - billed all-in tokens with the proxy
@@ -179,9 +202,10 @@ Wrapper stderr now also prints at exit:
 
 ## Repo Map
 
-- [ACTIVE_MEMORY_REDESIGN_PLAN.md](./ACTIVE_MEMORY_REDESIGN_PLAN.md) — implementation target
-- [CONTEXT_MEMORY_DESIGN.md](./CONTEXT_MEMORY_DESIGN.md) — one-tier sieve design
+- [ACTIVE_MEMORY_REDESIGN_PLAN.md](./ACTIVE_MEMORY_REDESIGN_PLAN.md) — implemented target
+- [CONTEXT_MEMORY_DESIGN.md](./CONTEXT_MEMORY_DESIGN.md) — one-task sieve design
 - [DESIGN_PRINCIPLES.md](./DESIGN_PRINCIPLES.md) — architecture rules
+- [WORKING_SET_PRUNE_DESIGN.md](./WORKING_SET_PRUNE_DESIGN.md) — full-payload prune design
 - [MEMORY_OPERATIONS.md](./MEMORY_OPERATIONS.md) — round-by-round operations
 - [REFERENCE.md](./REFERENCE.md) — concrete runtime types and contracts
 - [LIVE_E2E.md](./LIVE_E2E.md) — live validation loop
@@ -192,7 +216,7 @@ Key runtime files:
 
 - `src/memory_state.ts`
 - `src/memory_pipeline.ts`
-- `src/group_manager.ts`
+- `src/working_set_manager.ts`
 - `src/chunking.ts`
 - `src/prompt_view.ts`
 - `src/upstream.ts`
@@ -201,5 +225,5 @@ Key runtime files:
 
 ## Benchmarks
 
-Replay and benchmark material remains in this repository, but treat the docs above as the source of
-truth for the shipped active-memory runtime. Historical benchmark docs may discuss earlier designs.
+Replay and benchmark material remains in this repository, but the benchmark docs are now limited to
+current active-task working-set runtime measurements.

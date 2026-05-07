@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import { assert, assertEquals } from "@std/assert";
 
 import { classifyCodexRunMode } from "../src/codex_modes.ts";
 import {
@@ -159,7 +159,7 @@ Deno.test("createInteractiveStateSyncer skips repeated sync after success", asyn
     const sync = createInteractiveStateSyncer(
       { privateCodexHome: privateHome, sourceCodexHome: sourceHome },
       {
-        log: async (event: string, payload: unknown) => {
+        log: (event: string, payload: unknown) => {
           events.push({ event, payload });
         },
       } as { log: (event: string, payload: unknown) => Promise<void> },

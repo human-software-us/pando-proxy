@@ -1,9 +1,9 @@
 import { chunkRoundSources } from "./chunking.ts";
-import { applyGroupUpdate, requestGroupIntent } from "./group_manager.ts";
+import { applyWorkingSetUpdate, requestTaskRoute } from "./working_set_manager.ts";
 import { stableJson } from "./json.ts";
 import type { ProxyLogger } from "./logger.ts";
 import { memoryStateMetrics } from "./metrics.ts";
-import type { MemoryState } from "./memory_state.ts";
+import type { MaterializedMemoryPiece, MemoryState } from "./memory_state.ts";
 import type { StructuredClients } from "./structured_model.ts";
 import {
   extractAssistantSourcesFromResponse,
@@ -32,6 +32,7 @@ export async function updateMemoryForCompletedRound(
   assistantSources: RoundSource[] = [],
   clients: StructuredClients,
   logContext: MemoryLogContext = {},
+  materializedPriorPieces: MaterializedMemoryPiece[] = [],
 ): Promise<CompletedRoundMemoryResult> {
   const requestSources = await extractNewRequestSources(body, new Set(previous.processedSourceIds));
   const resolvedAssistantSources = assistantSources.length > 0
@@ -45,12 +46,13 @@ export async function updateMemoryForCompletedRound(
   await logContext.logger?.log("memory_round_sources", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    groupIdsBefore: previous.groups.map((group) => group.id),
+    activeTaskBefore: previous.activeTask,
     sources: sources.map((source) => ({
       sourceId: source.sourceId,
       sourceKind: source.sourceKind,
       toolName: source.toolName ?? null,
       pointer: source.pointer ?? null,
+      payload: source.payload,
     })),
   });
 
@@ -70,19 +72,19 @@ export async function updateMemoryForCompletedRound(
   }
 
   const beforePieceIds = new Set(previous.pieces.map((piece) => piece.id));
-  const userPiecesForGroupIntent = sources
+  const userPiecesForTaskRoute = sources
     .filter((source) => source.sourceKind === "user")
     .map((source) => ({
       id: source.sourceId,
       sourceId: source.sourceId,
       content: source.payload,
-      previewText: previewForGroupIntent(source.payload),
+      previewText: previewForTaskRoute(source.payload),
       ...(source.pointer ? { pointer: source.pointer } : {}),
     }));
-  const [chunked, groupIntent] = await settledPair(
+  const [chunked, taskRoute] = await settledPair(
     [
       chunkRoundSources(sources, clients),
-      requestGroupIntent(previous, userPiecesForGroupIntent, clients),
+      requestTaskRoute(previous, userPiecesForTaskRoute, clients),
     ],
   );
 
@@ -100,14 +102,16 @@ export async function updateMemoryForCompletedRound(
       selector: piece.selector,
       byteSize: piece.byteSize,
       pointer: piece.pointer ?? null,
+      content: piece.content,
     })),
   });
 
-  const applied = await applyGroupUpdate(
+  const applied = await applyWorkingSetUpdate(
     previous,
     chunked.pieces,
-    groupIntent,
+    taskRoute,
     clients,
+    materializedPriorPieces,
   );
   const next = applied.memory;
   const afterPieceIds = new Set(next.pieces.map((piece) => piece.id));
@@ -118,16 +122,16 @@ export async function updateMemoryForCompletedRound(
   await logContext.logger?.log("memory_round_decision", {
     sessionKey: logContext.sessionKey,
     requestId: logContext.requestId,
-    groupsBefore: previous.groups,
-    groupsAfter: applied.groupIntent.groupsAfter,
-    closedGroupIds: applied.groupIntent.closedGroupIds,
-    replacedGroupIds: applied.groupIntent.replacedGroupIds,
-    pieceRetention: applied.pieceRetention.decisions,
-    prunedPieceIds: applied.retainedPiecePrune.dropPieceIds,
+    activeTaskBefore: previous.activeTask,
+    activeTaskAfter: next.activeTask,
+    taskRoute: applied.taskRoute,
+    newDropDecisions: applied.newDropDecisions.decisions,
+    oldDropDecisions: applied.oldDropDecisions.decisions,
     keptOldPieceIds: applied.keptOldPieceIds,
     droppedOldPieceIds: applied.droppedOldPieceIds,
     keptNewPieceIds: applied.keptNewPieceIds,
     droppedNewPieceIds: applied.droppedNewPieceIds,
+    duplicateDroppedPieceIds: applied.duplicateDroppedPieceIds,
   });
 
   await logContext.logger?.log("memory_round_updated", {
@@ -154,7 +158,7 @@ export function filterPersistableRoundSources(
   return sources.filter((source) => !processedSourceIds.has(source.sourceId));
 }
 
-function previewForGroupIntent(value: unknown): string {
+function previewForTaskRoute(value: unknown): string {
   const text = typeof value === "string" ? value : stableJson(value);
   return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }

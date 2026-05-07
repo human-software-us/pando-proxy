@@ -69,7 +69,14 @@ export async function extractAssistantSourcesFromResponse(
     }
     if (isRecord(item)) {
       const type = typeof item.type === "string" ? item.type : "";
-      if (isToolOutputItem(type)) {
+      if (isReasoningItem(type)) {
+        out.push({
+          sourceId: await responseItemId(item, response, index),
+          sourceKind: "assistant",
+          payload: item,
+          pointer: { itemType: type },
+        });
+      } else if (isToolOutputItem(type)) {
         const sourceId = await responseItemId(item, response, index);
         const callId = typeof item.call_id === "string" ? item.call_id : undefined;
         const toolName = (typeof item.name === "string" ? item.name : undefined) ??
@@ -247,6 +254,10 @@ function isToolCallItem(type: string): boolean {
     type === "mcp_tool_call";
 }
 
+function isReasoningItem(type: string): boolean {
+  return type === "reasoning" || type.endsWith("_reasoning");
+}
+
 function normalizeToolPayload(toolName: string | undefined, payload: unknown): unknown {
   if (toolName === "exec_command" && typeof payload === "string") {
     return normalizeExecCommandOutput(payload);
@@ -275,7 +286,7 @@ function isSyntheticMemoryItem(item: unknown): boolean {
     return false;
   }
   const text = extractInlineText(item);
-  return text.includes("<pando_group_memory>");
+  return text.includes("<pando_task_memory>");
 }
 
 function extractInlineText(item: Record<string, unknown>): string {

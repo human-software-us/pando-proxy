@@ -53,6 +53,7 @@ Serve/doctor options:
   --state-dir <path>                 Default: ~/.pando-proxy
   --codex-auto-compact-token-limit <n> Default: 280000
   --no-memory                        Bypass group/piece memory rewrite
+  --log                              Enable full JSONL data-flow logging to ~/.pando-proxy/logs
   --log-file <path>                  Write redacted proxy events as JSONL
 `);
 }

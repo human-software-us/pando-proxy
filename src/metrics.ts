@@ -117,8 +117,9 @@ export function requestContextMetrics(body: Record<string, unknown>): Record<str
 export function memoryStateMetrics(state: MemoryState): Record<string, unknown> {
   return {
     roundSeq: state.roundSeq,
-    groupCount: state.groups.length,
-    groupIds: state.groups.map((group) => group.id),
+    activeTaskId: state.activeTask?.id ?? null,
+    activeTaskPieceCount: state.activeTask?.pieceIds.length ?? 0,
+    archivedTaskCount: state.archivedTasks.length,
     pieceCount: state.pieces.length,
     pieceIds: state.pieces.map((piece) => piece.id),
     pieceBytes: state.pieces.reduce((total, piece) => total + piece.byteSize, 0),

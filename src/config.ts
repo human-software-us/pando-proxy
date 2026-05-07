@@ -22,6 +22,7 @@ export type CliOptions = {
   overflowStructuredModel?: string;
   stateDir?: string;
   memoryEnabled?: boolean;
+  logEnabled?: boolean;
   logFile?: string | null;
   codexAutoCompactTokenLimit?: number;
 };
@@ -40,6 +41,11 @@ export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
 export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 280_000;
 
 export function loadConfig(options: CliOptions = {}): ProxyConfig {
+  const stateDir = expandHome(
+    options.stateDir ?? Deno.env.get("PANDO_PROXY_STATE_DIR") ?? "~/.pando-proxy",
+  );
+  const logEnabled = options.logEnabled ?? parseBoolean(Deno.env.get("PANDO_PROXY_LOG"));
+  const explicitLogFile = options.logFile ?? Deno.env.get("PANDO_PROXY_LOG_FILE") ?? null;
   return {
     host: options.host ?? Deno.env.get("PANDO_PROXY_HOST") ?? DEFAULT_HOST,
     port: options.port ?? parsePort(Deno.env.get("PANDO_PROXY_PORT")) ?? DEFAULT_PORT,
@@ -69,12 +75,10 @@ export function loadConfig(options: CliOptions = {}): ProxyConfig {
         Deno.env.get("PANDO_PROXY_MAINTENANCE_TIMEOUT_MS"),
       DEFAULT_MODEL_TIMEOUT_MS,
     ),
-    stateDir: expandHome(
-      options.stateDir ?? Deno.env.get("PANDO_PROXY_STATE_DIR") ?? "~/.pando-proxy",
-    ),
+    stateDir,
     memoryEnabled: options.memoryEnabled ??
       !parseBoolean(Deno.env.get("PANDO_PROXY_DISABLE_MEMORY")),
-    logFile: options.logFile ?? Deno.env.get("PANDO_PROXY_LOG_FILE") ?? null,
+    logFile: explicitLogFile ?? (logEnabled ? defaultLogFile(stateDir) : null),
     codexAutoCompactTokenLimit: parsePositiveInt(
       options.codexAutoCompactTokenLimit !== undefined
         ? String(options.codexAutoCompactTokenLimit)
@@ -123,8 +127,13 @@ export function parseCliOptions(args: string[]): { command: string | null; optio
       options.memoryEnabled = false;
       continue;
     }
+    if (arg === "--log") {
+      options.logEnabled = true;
+      continue;
+    }
     if (arg === "--log-file") {
       options.logFile = requireValue(args, ++index, arg);
+      options.logEnabled = true;
       continue;
     }
     if (arg === "--codex-auto-compact-token-limit") {
@@ -154,6 +163,11 @@ export function expandHome(path: string): string {
     return home ? `${home}/${path.slice(2)}` : path;
   }
   return path;
+}
+
+function defaultLogFile(stateDir: string): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${expandHome(stateDir)}/logs/pando-proxy-${timestamp}-${crypto.randomUUID()}.jsonl`;
 }
 
 export function trimTrailingSlash(value: string): string {

@@ -8,25 +8,27 @@ These diagrams describe the current shipped design.
 new round sources
     |
     +--> source_chunk_batch
-    |      - user / assistant / tool sources
-    |      - Pando tool outputs may still split deterministically
+    |      - user / assistant talk+reasoning / tool-result sources
+    |      - returns exact selectors only
+    |      - omitted or oversized sources are kept whole
+    |      - tool calls are whole-piece structural sources
+    |
+    +--> task_route
+    |      - same_task, new_task, or revive_task(-N)
+    |      - no groups, statuses, or durable taxonomy
     |
     +--> materialize exact new pieces
     |
-    +--> group_intent
-    |      - decide active/closed/replaced groups
-    |      - maintain summaries only as temporary routing/grouping metadata
+    +--> deterministic filters
+    |      - duplicate content hashes
+    |      - supersession candidates by primaryKey
     |
-    +--> piece_retention_batch
-    |      - keep/drop new pieces
-    |      - assign group ids
-    |      - mark superseded old pieces
+    +--> piece_drop_batch over full-payload batches
+    |      - batch includes shared user context + manifest + evaluated payloads
+    |      - drop only with accepted concrete reason
+    |      - malformed, oversized, missing, or uncertain means keep
     |
-    +--> retained_piece_prune
-           - prune obsolete old kept pieces
-           - preview/anchor based, not full old payload based
-    |
-    +--> persist surviving exact pieces
+    +--> persist activeTask + surviving exact pieces
            - stored pieces == next prompt pieces
 ```
 
@@ -37,7 +39,7 @@ incoming request
     |
     +--> load state
     +--> materialize active piece payloads for prompt rendering
-    +--> inject <pando_group_memory>
+    +--> inject <pando_task_memory>
     +--> inject recall tool only if archived sources exist outside active memory
     +--> forward upstream
     +--> if model calls recall:
@@ -52,8 +54,7 @@ incoming request
 
 ```text
 ACTIVE MEMORY
-  - groups
-  - group summaries are routing/grouping metadata only
+  - one activeTask
   - exact surviving pieces
   - always shown next round
 
@@ -85,10 +86,11 @@ assistant decides exact older material is missing
 
 ## 5. Key invariants
 
-- one active memory tier only
+- one active task only
+- no groups
 - no projection layer
 - no hidden omitted-piece set
 - no summaries as source material
 - active stored pieces == active prompt pieces
 - archive is separate from active memory
-- semantic decisions come from structured manager calls, not local heuristics
+- semantic dropping requires full payload and concrete reason

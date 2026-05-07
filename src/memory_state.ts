@@ -5,17 +5,25 @@ export type ChunkSelector =
   | { kind: "text_spans"; spans: TextSpan[] }
   | { kind: "object_path"; path: Array<string | number> };
 
-export type MemoryGroup = {
+export type SourceKind = "user" | "assistant" | "tool" | "tool_call";
+
+export type ActiveTask = {
   id: string;
-  status: "active" | "closed";
-  routingLabel: string;
-  summary: string;
-  lastTouchedSeq: number;
+  pieceIds: string[];
+  startedRound: number;
+  lastRound: number;
+};
+
+export type ArchivedTaskBundle = {
+  id: string;
+  pieces: MemoryPiece[];
+  startedRound: number;
+  archivedRound: number;
 };
 
 export type PieceDraft = {
   id: string;
-  sourceKind: "user" | "assistant" | "tool" | "tool_call";
+  sourceKind: SourceKind;
   sourceId: string;
   toolName?: string;
   content: unknown;
@@ -27,8 +35,7 @@ export type PieceDraft = {
 
 export type MemoryPiece = {
   id: string;
-  groupId: string;
-  sourceKind: "user" | "assistant" | "tool" | "tool_call";
+  sourceKind: SourceKind;
   sourceId: string;
   toolName?: string;
   previewText: string;
@@ -36,6 +43,8 @@ export type MemoryPiece = {
   byteSize: number;
   createdSeq: number;
   selector: ChunkSelector;
+  contentHash: string;
+  primaryKey?: string;
 };
 
 export type MaterializedMemoryPiece = MemoryPiece & {
@@ -48,7 +57,8 @@ export type MaterializedMemoryState = Omit<MemoryState, "pieces"> & {
 
 export type MemoryState = {
   roundSeq: number;
-  groups: MemoryGroup[];
+  activeTask: ActiveTask | null;
+  archivedTasks: ArchivedTaskBundle[];
   pieces: MemoryPiece[];
   processedSourceIds: string[];
 };
@@ -60,7 +70,8 @@ export type SessionRecord = {
 export function emptyMemoryState(): MemoryState {
   return {
     roundSeq: 0,
-    groups: [],
+    activeTask: null,
+    archivedTasks: [],
     pieces: [],
     processedSourceIds: [],
   };
@@ -71,16 +82,32 @@ export function emptySessionRecord(): SessionRecord {
 }
 
 export function pruneMemoryState(state: MemoryState): MemoryState {
-  const groups = dedupeGroups(state.groups ?? []);
-  const groupIds = new Set(groups.map((group) => group.id));
-  const pieces = dedupePieces(
-    (state.pieces ?? []).filter((piece) =>
-      typeof piece?.groupId === "string" && groupIds.has(piece.groupId)
-    ),
-  );
+  const pieces = dedupePieces(state.pieces ?? []);
+  const pieceIds = new Set(pieces.map((piece) => piece.id));
+  const rawActiveTask = state.activeTask && typeof state.activeTask === "object"
+    ? state.activeTask
+    : null;
+  const activeTask = rawActiveTask
+    ? {
+      id: typeof rawActiveTask.id === "string" && rawActiveTask.id ? rawActiveTask.id : "task_1",
+      pieceIds: unique(
+        (rawActiveTask.pieceIds ?? []).filter((id): id is string =>
+          typeof id === "string" && pieceIds.has(id)
+        ),
+      ),
+      startedRound: nonNegativeInt(
+        typeof rawActiveTask.startedRound === "number"
+          ? rawActiveTask.startedRound
+          : rawActiveTask.lastRound,
+      ),
+      lastRound: nonNegativeInt(rawActiveTask.lastRound),
+    }
+    : null;
+  const archivedTasks = normalizeArchivedTasks(state.archivedTasks);
   return {
-    roundSeq: Math.max(0, Math.trunc(state.roundSeq ?? 0)),
-    groups,
+    roundSeq: nonNegativeInt(state.roundSeq),
+    activeTask,
+    archivedTasks,
     pieces,
     processedSourceIds: unique(
       (state.processedSourceIds ?? []).filter((id): id is string =>
@@ -88,6 +115,13 @@ export function pruneMemoryState(state: MemoryState): MemoryState {
       ),
     ),
   };
+}
+
+export function allKnownPieces(state: MemoryState): MemoryPiece[] {
+  return dedupePieces([
+    ...state.pieces,
+    ...state.archivedTasks.flatMap((task) => task.pieces),
+  ]);
 }
 
 export function chronologicalPieces<T extends { createdSeq: number; id: string }>(
@@ -100,23 +134,6 @@ export function chronologicalPieces<T extends { createdSeq: number; id: string }
   );
 }
 
-export function dedupeGroups(groups: MemoryGroup[]): MemoryGroup[] {
-  const byId = new Map<string, MemoryGroup>();
-  for (const group of groups) {
-    if (!group?.id) {
-      continue;
-    }
-    byId.set(group.id, {
-      ...group,
-      status: group.status === "closed" ? "closed" : "active",
-      routingLabel: typeof group.routingLabel === "string" ? group.routingLabel : "",
-      summary: typeof group.summary === "string" ? group.summary : "",
-      lastTouchedSeq: Math.max(0, Math.trunc(group.lastTouchedSeq ?? 0)),
-    });
-  }
-  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
-}
-
 export function dedupePieces(pieces: MemoryPiece[]): MemoryPiece[] {
   const byId = new Map<string, MemoryPiece>();
   for (const piece of pieces) {
@@ -125,15 +142,20 @@ export function dedupePieces(pieces: MemoryPiece[]): MemoryPiece[] {
     }
     byId.set(piece.id, {
       id: piece.id,
-      groupId: piece.groupId,
-      sourceKind: piece.sourceKind,
+      sourceKind: normalizeSourceKind(piece.sourceKind),
       sourceId: piece.sourceId,
       ...(piece.toolName ? { toolName: piece.toolName } : {}),
       previewText: typeof piece.previewText === "string" ? piece.previewText : "",
       ...(piece.pointer ? { pointer: piece.pointer } : {}),
-      byteSize: Math.max(0, Math.trunc(piece.byteSize ?? 0)),
-      createdSeq: Math.max(0, Math.trunc(piece.createdSeq ?? 0)),
+      byteSize: nonNegativeInt(piece.byteSize),
+      createdSeq: nonNegativeInt(piece.createdSeq),
       selector: piece.selector,
+      contentHash: typeof piece.contentHash === "string" && piece.contentHash
+        ? piece.contentHash
+        : piece.id,
+      ...(typeof piece.primaryKey === "string" && piece.primaryKey
+        ? { primaryKey: piece.primaryKey }
+        : {}),
     });
   }
   return chronologicalPieces([...byId.values()]);
@@ -146,32 +168,8 @@ export function piecePreview(piece: Pick<MemoryPiece, "previewText">): string {
   return "";
 }
 
-export function activeGroups(groups: MemoryGroup[]): MemoryGroup[] {
-  return groups.filter((group) => group.status === "active");
-}
-
 export function assertMemoryInvariant(state: MemoryState): void {
   const errors: string[] = [];
-  const groupIds = new Set<string>();
-  for (const group of state.groups) {
-    if (!group.id || groupIds.has(group.id)) {
-      errors.push(`Group id must be unique and non-empty: ${group.id}`);
-    }
-    groupIds.add(group.id);
-    if (group.status !== "active" && group.status !== "closed") {
-      errors.push(`Group ${group.id} has invalid status`);
-    }
-    if (!group.routingLabel || typeof group.routingLabel !== "string") {
-      errors.push(`Group ${group.id} is missing routingLabel`);
-    }
-    if (!group.summary || typeof group.summary !== "string") {
-      errors.push(`Group ${group.id} is missing summary`);
-    }
-    if (!Number.isInteger(group.lastTouchedSeq) || group.lastTouchedSeq < 0) {
-      errors.push(`Group ${group.id} has invalid lastTouchedSeq`);
-    }
-  }
-
   const pieceIds = new Set<string>();
   for (const piece of state.pieces) {
     if (!piece.id || pieceIds.has(piece.id)) {
@@ -181,11 +179,41 @@ export function assertMemoryInvariant(state: MemoryState): void {
     if (!piece.sourceId) {
       errors.push(`Piece ${piece.id} is missing sourceId`);
     }
-    if (!groupIds.has(piece.groupId)) {
-      errors.push(`Piece ${piece.id} references unknown group id`);
-    }
     if (piece.byteSize < 0) {
       errors.push(`Piece ${piece.id} has invalid byteSize`);
+    }
+    if (!piece.contentHash) {
+      errors.push(`Piece ${piece.id} is missing contentHash`);
+    }
+  }
+
+  if (state.activeTask) {
+    if (!state.activeTask.id) {
+      errors.push("activeTask must have an id");
+    }
+    for (const pieceId of state.activeTask.pieceIds) {
+      if (!pieceIds.has(pieceId)) {
+        errors.push(`activeTask references unknown piece ${pieceId}`);
+      }
+    }
+  }
+
+  for (const task of state.archivedTasks) {
+    if (!task.id) {
+      errors.push("archived task must have an id");
+    }
+    const archivedPieceIds = new Set<string>();
+    for (const piece of task.pieces) {
+      if (!piece.id || archivedPieceIds.has(piece.id)) {
+        errors.push(`Archived task ${task.id} has invalid piece id ${piece.id}`);
+      }
+      archivedPieceIds.add(piece.id);
+      if (!piece.sourceId) {
+        errors.push(`Archived task ${task.id} piece ${piece.id} is missing sourceId`);
+      }
+      if (!piece.contentHash) {
+        errors.push(`Archived task ${task.id} piece ${piece.id} is missing contentHash`);
+      }
     }
   }
 
@@ -204,4 +232,41 @@ export function unique<T>(values: T[]): T[] {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeSourceKind(value: unknown): SourceKind {
+  return value === "user" || value === "assistant" || value === "tool" || value === "tool_call"
+    ? value
+    : "assistant";
+}
+
+function normalizeArchivedTasks(value: unknown): ArchivedTaskBundle[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: ArchivedTaskBundle[] = [];
+  const seen = new Set<string>();
+  for (const task of value) {
+    if (!task || typeof task !== "object" || Array.isArray(task)) {
+      continue;
+    }
+    const record = task as Record<string, unknown>;
+    const id = typeof record.id === "string" && record.id ? record.id : "";
+    if (!id || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    const rawPieces = Array.isArray(record.pieces) ? record.pieces : [];
+    out.push({
+      id,
+      pieces: dedupePieces(rawPieces as MemoryPiece[]),
+      startedRound: nonNegativeInt(record.startedRound),
+      archivedRound: nonNegativeInt(record.archivedRound),
+    });
+  }
+  return out;
+}
+
+function nonNegativeInt(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }

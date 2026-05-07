@@ -1,17 +1,16 @@
 import { loadConfig, type ProxyConfig } from "./config.ts";
 import type {
-  GroupIntentRequest,
-  GroupIntentResponse,
-  PieceRetentionBatchRequest,
-  PieceRetentionBatchResponse,
-  RetainedPiecePruneRequest,
-  RetainedPiecePruneResponse,
+  DropReason,
+  PieceDropBatchRequest,
+  PieceDropBatchResponse,
   SourceChunkBatchRequest,
   SourceChunkBatchResponse,
-} from "./group_manager.ts";
+  TaskRouteRequest,
+  TaskRouteResponse,
+} from "./working_set_manager.ts";
 import { updateMemoryForCompletedRound } from "./memory_pipeline.ts";
 import { estimateTokensForValue, requestContextMetrics } from "./metrics.ts";
-import { emptyMemoryState, type MemoryGroup, type MemoryState } from "./memory_state.ts";
+import { emptyMemoryState, type MemoryState } from "./memory_state.ts";
 import { rewriteRequestWithMemory } from "./prompt_view.ts";
 import { type ArchivedSource, materializeMemoryFromArchivedSources } from "./store.ts";
 import {
@@ -46,7 +45,7 @@ export type ReplayTurnResult = {
   pandoApproxInputTokens: number;
   pandoInputItemCount: number;
   pandoMemoryPieceCount: number;
-  pandoGroupCount: number;
+  pandoActiveTaskId: string | null;
   pandoPieceCount: number;
   pandoPieceBytes: number;
   recordedInputTokens: number | null;
@@ -259,6 +258,7 @@ export async function replayRollout(
       [],
       clients,
       { sessionKey: `replay_${round.index}`, requestId: `replay_${round.index}` },
+      promptMemory.pieces,
     );
     for (const source of updated.sources) {
       archivedSources.set(source.sourceId, source);
@@ -274,7 +274,7 @@ export async function replayRollout(
       pandoApproxInputTokens: pandoMetrics.approxInputTokens as number,
       pandoInputItemCount: pandoMetrics.inputItemCount as number,
       pandoMemoryPieceCount: rewrite.diff.memoryPieceCount,
-      pandoGroupCount: memory.groups.length,
+      pandoActiveTaskId: memory.activeTask?.id ?? null,
       pandoPieceCount: memory.pieces.length,
       pandoPieceBytes: memory.pieces.reduce((total, piece) => total + piece.byteSize, 0),
       recordedInputTokens: round.recordedInputTokens,
@@ -327,8 +327,8 @@ export async function replayRollout(
 
 function buildStubClients(policy: StubPolicy): StructuredClients {
   return {
-    groupIntent: (request: GroupIntentRequest, _attempt = 1) =>
-      Promise.resolve(applyStubGroupIntent(request)),
+    taskRoute: (request: TaskRouteRequest, _attempt = 1) =>
+      Promise.resolve(applyStubTaskRoute(request)),
     sourceChunkBatch: (
       request: SourceChunkBatchRequest,
       _attempt = 1,
@@ -339,63 +339,50 @@ function buildStubClients(policy: StubPolicy): StructuredClients {
           selectors: [{ kind: "whole" }],
         })),
       }),
-    pieceRetentionBatch: (
-      request: PieceRetentionBatchRequest,
+    pieceDropBatch: (
+      request: PieceDropBatchRequest,
       _attempt = 1,
-    ): Promise<PieceRetentionBatchResponse> =>
-      Promise.resolve(applyStubRetentionPolicy(policy, request)),
-    retainedPiecePrune: (
-      request: RetainedPiecePruneRequest,
-      _attempt = 1,
-    ): Promise<RetainedPiecePruneResponse> =>
-      Promise.resolve(applyStubRetainedPiecePrune(policy, request)),
+    ): Promise<PieceDropBatchResponse> => Promise.resolve(applyStubDropPolicy(policy, request)),
   };
 }
 
-function applyStubGroupIntent(request: GroupIntentRequest): GroupIntentResponse {
-  const activeGroup = request.groups.find((group) => group.status === "active");
-  const group = activeGroup ?? deriveGroupFromRequest(request);
-  return {
-    groupsAfter: group ? [group] : [],
-    closedGroupIds: [],
-    replacedGroupIds: [],
-  };
+function applyStubTaskRoute(request: TaskRouteRequest): TaskRouteResponse {
+  if (request.activeTask) {
+    return { kind: "same_task" };
+  }
+  return { kind: "new_task" };
 }
 
-function applyStubRetentionPolicy(
+function applyStubDropPolicy(
   policy: StubPolicy,
-  request: PieceRetentionBatchRequest,
-): PieceRetentionBatchResponse {
-  const activeGroupId = request.groups.find((group) => group.status === "active")?.id ?? "group_1";
-  const keepIds = selectKeptNewPieceIds(policy, request);
-  return {
-    decisions: request.newPieces.map((piece) => ({
-      pieceId: piece.id,
-      keep: keepIds.includes(piece.id),
-      groupId: keepIds.includes(piece.id) ? activeGroupId : null,
-      supersedesPieceIds: [],
-      dropConfidence: keepIds.includes(piece.id) ? "uncertain" : "certain",
-      dropReason: keepIds.includes(piece.id) ? null : "tool_noise",
-    })),
-  };
+  request: PieceDropBatchRequest,
+): PieceDropBatchResponse {
+  const keepIds = selectKeptCandidateIds(policy, request);
+  return dropResponse(
+    request,
+    request.evaluatedPieces
+      .filter((piece) => !keepIds.includes(piece.id))
+      .map((piece) => piece.id),
+    "clearly_unrelated_to_current_work",
+  );
 }
 
-function selectKeptNewPieceIds(policy: StubPolicy, request: PieceRetentionBatchRequest): string[] {
+function selectKeptCandidateIds(policy: StubPolicy, request: PieceDropBatchRequest): string[] {
   switch (policy) {
     case "retain-all":
-      return request.newPieces.map((piece) => piece.id);
+      return request.evaluatedPieces.map((piece) => piece.id);
     case "drop-tools":
-      return request.newPieces.filter((piece) => piece.sourceKind === "user").map((piece) =>
+      return request.evaluatedPieces.filter((piece) => piece.sourceKind === "user").map((piece) =>
         piece.id
       );
     case "retain-recent":
-      return request.newPieces.slice(-12).map((piece) => piece.id);
+      return request.evaluatedPieces.slice(-12).map((piece) => piece.id);
     case "keep-none":
       return [];
     case "cap-bytes": {
       const keepIds: string[] = [];
       let used = 0;
-      for (const piece of [...request.newPieces].reverse()) {
+      for (const piece of [...request.evaluatedPieces].reverse()) {
         const bytes = piece.byteSize;
         if (used + bytes > 32_768) {
           continue;
@@ -408,120 +395,19 @@ function selectKeptNewPieceIds(policy: StubPolicy, request: PieceRetentionBatchR
   }
 }
 
-function applyStubRetainedPiecePrune(
-  policy: StubPolicy,
-  request: RetainedPiecePruneRequest,
-): RetainedPiecePruneResponse {
-  switch (policy) {
-    case "retain-all":
-      return { dropPieceIds: [], dropDecisions: [] };
-    case "keep-none":
-      return retainedDropResponse(request.retainedOldPieces.map((piece) => piece.id), "tool_noise");
-    case "drop-tools":
-      return retainedDropResponse(selectDropToolsPrunedIds(request), "tool_noise");
-    case "retain-recent":
-      return retainedDropResponse(selectRecentPrunedIds(request, 12, 32_768), "tool_noise");
-    case "cap-bytes":
-      return retainedDropResponse(
-        selectRecentPrunedIds(request, Number.POSITIVE_INFINITY, 32_768),
-        "tool_noise",
-      );
-  }
-}
-
-function retainedDropResponse(
+function dropResponse(
+  request: PieceDropBatchRequest,
   dropPieceIds: string[],
-  dropReason: "tool_noise",
-): RetainedPiecePruneResponse {
+  dropReason: DropReason,
+): PieceDropBatchResponse {
+  const dropIds = new Set(dropPieceIds);
   return {
-    dropPieceIds,
-    dropDecisions: dropPieceIds.map((pieceId) => ({
-      pieceId,
-      dropConfidence: "certain",
-      dropReason,
+    decisions: request.evaluatedPieces.map((piece) => ({
+      pieceId: piece.id,
+      drop: dropIds.has(piece.id),
+      reason: dropIds.has(piece.id) ? dropReason : null,
     })),
   };
-}
-
-function selectDropToolsPrunedIds(request: RetainedPiecePruneRequest): string[] {
-  if (request.keptNewPieces.length > 0) {
-    return request.retainedOldPieces.map((piece) => piece.id);
-  }
-  return selectRecentPrunedIds(request, 1, 8_192);
-}
-
-function selectRecentPrunedIds(
-  request: RetainedPiecePruneRequest,
-  maxPieces: number,
-  maxBytes: number,
-): string[] {
-  const keep = new Set<string>();
-  let used = sumOf(request.keptNewPieces.map((piece) => approxBytes(piece.previewText)));
-  let keptCount = 0;
-  for (const piece of [...request.retainedOldPieces].reverse()) {
-    if (keptCount >= maxPieces) {
-      continue;
-    }
-    const bytes = approxBytes(piece.previewText);
-    if (used + bytes > maxBytes) {
-      continue;
-    }
-    used += bytes;
-    keptCount += 1;
-    keep.add(piece.id);
-  }
-  return request.retainedOldPieces.filter((piece) => !keep.has(piece.id)).map((piece) => piece.id);
-}
-
-function deriveGroupFromRequest(request: GroupIntentRequest): MemoryGroup | null {
-  const text = firstLineOfNewUserText(request) ?? "Continue the current task";
-  return {
-    id: "group_1",
-    status: "active",
-    routingLabel: slug(text),
-    summary: text,
-    lastTouchedSeq: 0,
-  };
-}
-
-function firstLineOfNewUserText(
-  request: Pick<GroupIntentRequest, "newUserPieces">,
-): string | null {
-  const userPiece = request.newUserPieces[0];
-  if (!userPiece) {
-    return null;
-  }
-  const payload = userPiece.content;
-  if (typeof payload === "string") {
-    return payload.split("\n")[0]?.slice(0, 120) ?? null;
-  }
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  const content = (payload as Record<string, unknown>).content;
-  if (!Array.isArray(content)) {
-    return null;
-  }
-  for (const entry of content) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const text = typeof record.text === "string"
-      ? record.text
-      : typeof record.input_text === "string"
-      ? record.input_text
-      : "";
-    if (text) {
-      return text.split("\n")[0].slice(0, 120);
-    }
-  }
-  return null;
-}
-
-function slug(text: string): string {
-  const normalized = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return normalized || "current-work";
 }
 
 function isLikelyUserPrompt(item: Record<string, unknown>): boolean {
@@ -568,14 +454,6 @@ function extractUserText(item: Record<string, unknown>): string {
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function approxBytes(value: unknown): number {
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return 0;
-  }
 }
 
 function sumOf(values: number[]): number {
