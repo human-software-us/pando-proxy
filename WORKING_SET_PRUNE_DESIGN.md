@@ -305,8 +305,10 @@ missing archived payload -> keep that piece
 uncertain decision -> keep
 ```
 
-The chunker does not create deterministic fallback chunks. Exact chunks must be selected by the
-model and validated locally; otherwise the source remains whole.
+The chunker does not invent semantic fallback split points. Exact chunks must be selected by the
+model and validated locally; otherwise the source remains whole. For otherwise valid model chunks,
+local code trims whitespace for coverage checks, adds exact fallback pieces for meaningful text gaps
+left uncovered by the model, and assigns whitespace-only gaps to the next chunk.
 
 Manager outputs are requested with strict JSON schemas and validated again in local code before they
 are applied.

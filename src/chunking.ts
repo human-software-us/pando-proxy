@@ -306,11 +306,18 @@ function materializeModelChunkSelectors(
   const sortedRanges = ranges.sort((left, right) =>
     left.start - right.start || left.end - right.end
   );
-  const combinedSelector: ChunkSelector = { kind: "chunks", chunks: sortedRanges };
+  const trimmedRanges = sortedRanges
+    .map((range) => trimWhitespaceEdges(sourceText, range))
+    .filter((range): range is { start: number; end: number } => Boolean(range));
+  const combinedSelector: ChunkSelector = { kind: "chunks", chunks: trimmedRanges };
   if (!isValidMaterializedChunkSelector(combinedSelector, sourceText)) {
     return null;
   }
-  return sortedRanges.map((range): ChunkSelector => ({ kind: "chunks", chunks: [range] }));
+  const repairedRanges = repairChunkCoverage(sourceText, trimmedRanges);
+  return assignWhitespaceToChunks(sourceText, repairedRanges).map((range): ChunkSelector => ({
+    kind: "chunks",
+    chunks: [range],
+  }));
 }
 
 function findAllBoundaryOccurrences(
@@ -387,6 +394,52 @@ function isValidMaterializedChunkSelector(
 function isWholeSelector(value: unknown): boolean {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
     (value as Record<string, unknown>).kind === "whole";
+}
+
+function repairChunkCoverage(
+  sourceText: string,
+  selectedRanges: Array<{ start: number; end: number }>,
+): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const range of selectedRanges) {
+    const gap = trimWhitespaceEdges(sourceText, { start: cursor, end: range.start });
+    if (gap) {
+      out.push(gap);
+    }
+    out.push(range);
+    cursor = range.end;
+  }
+  const finalGap = trimWhitespaceEdges(sourceText, { start: cursor, end: sourceText.length });
+  if (finalGap) {
+    out.push(finalGap);
+  }
+  return out.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function assignWhitespaceToChunks(
+  sourceText: string,
+  meaningfulRanges: Array<{ start: number; end: number }>,
+): Array<{ start: number; end: number }> {
+  return meaningfulRanges.map((range, index) => ({
+    start: index === 0 ? 0 : meaningfulRanges[index - 1].end,
+    end: index === meaningfulRanges.length - 1 ? sourceText.length : range.end,
+  }));
+}
+
+function trimWhitespaceEdges(
+  text: string,
+  range: { start: number; end: number },
+): { start: number; end: number } | null {
+  let start = range.start;
+  let end = range.end;
+  while (start < end && /\s/.test(text[start] ?? "")) {
+    start += 1;
+  }
+  while (end > start && /\s/.test(text[end - 1] ?? "")) {
+    end -= 1;
+  }
+  return end > start ? { start, end } : null;
 }
 
 async function requestChunkBatchWithSingleRetry(

@@ -1146,6 +1146,7 @@ Rules:
 - Keep chunks in original order.
 - Cover the complete source. If you return chunks instead of whole, every non-whitespace part of the raw source body must be included in exactly one chunk. Do not leave headings, introductions, first sections, last sections, errors, paths, rows, or other content uncovered.
 - Whitespace-only gaps between chunks are acceptable; meaningful text gaps are not.
+- Treat leading and trailing whitespace around a chunk as incidental. Prefer startText and endText that begin and end with meaningful non-whitespace text. Local validation trims whitespace at chunk edges before checking for uncovered source text, then preserves whitespace deterministically: leading whitespace belongs to the first chunk, whitespace between chunks belongs to the next chunk, and trailing whitespace belongs to the last chunk.
 - If you cannot split a source without meaningful gaps, return whole for that source.
 - Do not invent, rewrite, truncate, or paraphrase boundary text.
 - Prefer boundary-safe exact pieces over one huge whole selector when the source is large.

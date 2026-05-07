@@ -125,14 +125,52 @@ Deno.test("chunkRoundSources materializes valid model chunk selectors", async ()
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 1);
-  assertEquals(result.pieces[0].selector, { kind: "chunks", chunks: [{ start: 6, end: 15 }] });
-  assertEquals(textSelectionContent(result.pieces[0].content), "keep-this");
+  assertEquals(result.pieces.length, 3);
+  assertEquals(result.pieces.map((piece) => textSelectionContent(piece.content)), [
+    "skip:",
+    " keep-this",
+    "; skip",
+  ]);
+  assertEquals(result.pieces[1].selector, { kind: "chunks", chunks: [{ start: 5, end: 15 }] });
   assertEquals(result.chunkedViaModelSourceCount, 1);
   assertEquals(result.chunkedDeterministicSourceCount, 0);
 });
 
-Deno.test("chunkRoundSources materializes exact payload block boundaries without wrapper text", async () => {
+Deno.test("chunkRoundSources trims chunk edges and keeps uncovered text", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () =>
+      Promise.resolve({
+        results: [{
+          sourceId: "trimmed",
+          selectors: [{
+            kind: "chunks",
+            chunks: [{ startText: "  keep this  ", endText: "  keep this  " }],
+          }],
+        }],
+      }),
+  };
+  const source: RoundSource = {
+    sourceId: "trimmed",
+    sourceKind: "user",
+    payload: "prefix\n  keep this  \n\nsuffix",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(result.pieces.map((piece) => textSelectionContent(piece.content)), [
+    "prefix",
+    "\n  keep this",
+    "  \n\nsuffix",
+  ]);
+  assertEquals(result.pieces.map((piece) => trimmedTextSelectionContent(piece.content)), [
+    "prefix",
+    "keep this",
+    "suffix",
+  ]);
+});
+
+Deno.test("chunkRoundSources materializes exact payload block boundaries and repairs uncovered wrapper text", async () => {
   const clients: StructuredClients = {
     ...keepWholeClients,
     sourceChunkBatch: () =>
@@ -162,12 +200,14 @@ Deno.test("chunkRoundSources materializes exact payload block boundaries without
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 1);
-  const text = textSelectionContent(result.pieces[0].content);
+  assertEquals(result.pieces.length, 3);
+  const text = textSelectionContent(result.pieces[1].content);
   assert(text.includes("API_TOKEN=live-alpha-123"));
   assert(text.includes("TIMEOUT_MS=12000"));
   assert(!text.includes("Please remember"));
   assert(!text.includes("Reply done"));
+  assert(textSelectionContent(result.pieces[0].content).includes("Please remember"));
+  assert(textSelectionContent(result.pieces[2].content).includes("Reply done"));
 });
 
 Deno.test("chunkRoundSources materializes JSON array conceptual boundary groups", async () => {
@@ -207,9 +247,11 @@ Deno.test("chunkRoundSources materializes JSON array conceptual boundary groups"
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 2);
-  assert(textSelectionContent(result.pieces[0].content).includes('"group": "alpha"'));
-  assert(textSelectionContent(result.pieces[1].content).includes('"group": "beta"'));
+  assertEquals(result.pieces.length, 4);
+  assertEquals(textSelectionContent(result.pieces[0].content), "[");
+  assert(textSelectionContent(result.pieces[1].content).includes('"group": "alpha"'));
+  assert(textSelectionContent(result.pieces[2].content).includes('"group": "beta"'));
+  assertEquals(textSelectionContent(result.pieces[3].content), "\n]");
 });
 
 Deno.test("chunkRoundSources materializes repeated XML elements from one boundary pair", async () => {
@@ -250,9 +292,11 @@ Deno.test("chunkRoundSources materializes repeated XML elements from one boundar
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 3);
-  assert(textSelectionContent(result.pieces[1].content).includes("KEEP_XML_BETA"));
-  assert(textSelectionContent(result.pieces[2].content).includes("KEEP_XML_GAMMA"));
+  assertEquals(result.pieces.length, 5);
+  assertEquals(textSelectionContent(result.pieces[0].content), "<catalog>");
+  assert(textSelectionContent(result.pieces[2].content).includes("KEEP_XML_BETA"));
+  assert(textSelectionContent(result.pieces[3].content).includes("KEEP_XML_GAMMA"));
+  assertEquals(textSelectionContent(result.pieces[4].content), "\n</catalog>");
 });
 
 Deno.test("chunkRoundSources materializes rg output boundary groups by path area", async () => {
@@ -344,10 +388,11 @@ Deno.test("chunkRoundSources materializes markdown section boundary chunks", asy
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 3);
-  assertEquals(textSelectionContent(result.pieces[0].content), install);
-  assertEquals(textSelectionContent(result.pieces[1].content), configure);
-  assertEquals(textSelectionContent(result.pieces[2].content), verify);
+  assertEquals(result.pieces.length, 4);
+  assertEquals(textSelectionContent(result.pieces[0].content), "# Live Chunking Guide");
+  assertEquals(textSelectionContent(result.pieces[1].content), `\n\n${install}`);
+  assertEquals(textSelectionContent(result.pieces[2].content), `\n\n${configure}`);
+  assertEquals(textSelectionContent(result.pieces[3].content), `\n\n${verify}`);
 });
 
 Deno.test("chunkRoundSources materializes all repeated boundary pair occurrences", async () => {
@@ -372,14 +417,16 @@ Deno.test("chunkRoundSources materializes all repeated boundary pair occurrences
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 2);
+  assertEquals(result.pieces.length, 3);
   assertEquals(result.pieces.map((piece) => textSelectionContent(piece.content)), [
     "DUPLICATE=alpha",
-    "DUPLICATE=alpha",
+    "\nmiddle",
+    "\nDUPLICATE=alpha",
   ]);
   assertEquals(result.pieces.map((piece) => piece.selector), [
     { kind: "chunks", chunks: [{ start: 0, end: 15 }] },
-    { kind: "chunks", chunks: [{ start: 23, end: 38 }] },
+    { kind: "chunks", chunks: [{ start: 15, end: 22 }] },
+    { kind: "chunks", chunks: [{ start: 22, end: 38 }] },
   ]);
   assertEquals(result.chunkedViaModelSourceCount, 1);
   assertEquals(result.chunkedDeterministicSourceCount, 0);
@@ -514,9 +561,11 @@ Deno.test("chunkRoundSources materializes exact XML item boundary chunks", async
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 2);
-  assert(textSelectionContent(result.pieces[0].content).includes("KEEP_XML_BETA"));
-  assert(textSelectionContent(result.pieces[1].content).includes("KEEP_XML_GAMMA"));
+  assertEquals(result.pieces.length, 4);
+  assert(textSelectionContent(result.pieces[0].content).includes("IGNORE"));
+  assert(textSelectionContent(result.pieces[1].content).includes("KEEP_XML_BETA"));
+  assert(textSelectionContent(result.pieces[2].content).includes("KEEP_XML_GAMMA"));
+  assertEquals(textSelectionContent(result.pieces[3].content), "\n</catalog>");
   assertEquals(result.chunkedViaModelSourceCount, 1);
   assertEquals(result.chunkedDeterministicSourceCount, 0);
 });
@@ -637,8 +686,10 @@ Deno.test("chunkRoundSources materializes random separator sections", async () =
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 1);
-  assertEquals(textSelectionContent(result.pieces[0].content), sectionB);
+  assertEquals(result.pieces.length, 3);
+  assert(textSelectionContent(result.pieces[0].content).includes("SECTION A"));
+  assertEquals(textSelectionContent(result.pieces[1].content), `\n${sectionB}`);
+  assert(textSelectionContent(result.pieces[2].content).includes("SECTION C"));
 });
 
 Deno.test("chunkRoundSources materializes large log failure boundary blocks", async () => {
@@ -689,9 +740,10 @@ Deno.test("chunkRoundSources materializes large log failure boundary blocks", as
 
   const result = await chunkRoundSources([source], clients);
 
-  assertEquals(result.pieces.length, 2);
-  assert(textSelectionContent(result.pieces[0].content).includes("FAILED test_alpha"));
-  assert(textSelectionContent(result.pieces[1].content).includes("FAILED test_beta"));
+  assertEquals(result.pieces.length, 3);
+  assert(textSelectionContent(result.pieces[0].content).includes("running test_ok"));
+  assert(textSelectionContent(result.pieces[1].content).includes("FAILED test_alpha"));
+  assert(textSelectionContent(result.pieces[2].content).includes("FAILED test_beta"));
 });
 
 Deno.test("chunkRoundSources keeps image-like opaque payloads whole when the model chooses whole", async () => {
@@ -871,4 +923,8 @@ function textSelectionContent(content: unknown): string {
     assert(typeof text === "string");
     return text;
   }).join("");
+}
+
+function trimmedTextSelectionContent(content: unknown): string {
+  return textSelectionContent(content).trim();
 }

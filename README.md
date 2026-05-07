@@ -43,8 +43,9 @@ Normal end-of-round flow:
 2. run `source_chunk_batch` and `task_route` in parallel
    - if chunking fails, returns malformed output, omits a requested source, or is too large for the
      structured window, that source is kept whole
-   - the chunker never creates deterministic fallback chunks; it only materializes model-selected
-     exact chunks or keeps the source whole
+   - valid model-selected text chunks are normalized locally: whitespace edges are trimmed for
+     coverage checks, meaningful uncovered gaps become exact fallback pieces, and whitespace-only
+     gaps are assigned to the next chunk so no whitespace-only pieces are created
 3. materialize exact new pieces
 4. apply the task route
 5. for `same_task` and `revive_task`, collapse exact duplicate new pieces by content hash while

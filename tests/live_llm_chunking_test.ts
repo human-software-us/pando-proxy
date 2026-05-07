@@ -14,16 +14,23 @@ const liveEnabled = runLiveChunkTests && liveApiKey.length > 0;
 let liveChunkRun: Promise<{ pieces: PieceDraft[] }> | null = null;
 
 liveChunkTest(
-  "live LLM chunking selects exact user payload blocks without wrapper text",
+  "live LLM chunking isolates exact user payload blocks and retains wrappers separately",
   async () => {
     const pieces = renderedPieces((await liveResult()).pieces, "exact_block");
     const text = pieces.join("\n");
+    const payloadPiece = pieces.find((piece) =>
+      piece.includes("API_TOKEN=live-alpha-123") &&
+      piece.includes("ENDPOINT=/v1/live/chunk") &&
+      piece.includes("TIMEOUT_MS=12000")
+    ) ?? "";
 
     assert(text.includes("API_TOKEN=live-alpha-123"), text);
     assert(text.includes("ENDPOINT=/v1/live/chunk"), text);
     assert(text.includes("TIMEOUT_MS=12000"), text);
-    assert(!text.includes("Please remember"), text);
-    assert(!text.includes("Reply done"), text);
+    assert(!payloadPiece.includes("Please remember"), payloadPiece);
+    assert(!payloadPiece.includes("Reply done"), payloadPiece);
+    assert(text.includes("Please remember"), text);
+    assert(text.includes("Reply done"), text);
   },
 );
 

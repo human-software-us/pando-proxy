@@ -36,9 +36,11 @@
    - model output is only `whole` or exact start/end boundary text
    - no summaries, labels, content types, or boundary classifications
    - local code maps exact start-to-next-end boundary pairs to persisted `[start,end)` selectors
+   - local code trims whitespace edges for coverage checks, repairs meaningful gaps, and assigns
+     whitespace-only gaps to the next chunk
    - repeated boundary pairs in one source materialize every matching occurrence
    - if returned chunks are not exact and valid, keep the source whole
-   - no deterministic fallback splitting
+   - no invented semantic fallback splitting
 
 7. Local code is structural only.
    - persistence

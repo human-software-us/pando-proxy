@@ -64,11 +64,15 @@ type ChunkSelector =
 ```
 
 For `chunks`, `startText` and `endText` are exact substrings from the raw source body. `startText`
-is the first text in the chunk and `endText` is the last text in the chunk; the chunk includes both.
-The model should prefer boundary text that is unique when possible. When the same boundary pair
-genuinely repeats, local code applies the same start-to-next-end match repeatedly and creates one
-chunk per matching occurrence. Later duplicate-piece collapse keeps one full copy and adds duplicate
-markers for the other locations.
+is the first meaningful text in the chunk and `endText` is the last meaningful text in the chunk.
+The model should prefer boundary text that is unique when possible and should not create
+whitespace-only chunks. When the same boundary pair genuinely repeats, local code applies the same
+start-to-next-end match repeatedly and creates one chunk per matching occurrence. Local validation
+trims whitespace at chunk edges before checking whether meaningful source text was missed. Any
+meaningful uncovered text is retained as exact fallback pieces. Whitespace itself is preserved with
+one deterministic rule: leading whitespace belongs to the first chunk, whitespace between chunks
+belongs to the next chunk, and trailing whitespace belongs to the last chunk. Later duplicate-piece
+collapse keeps one full copy and adds duplicate markers for the other locations.
 
 If the model cannot select valid coherent chunks, the source remains `whole`. Local validation
 rejects malformed, empty, missing, unmatched, overlapping, or otherwise unsafe boundary selections.
@@ -80,9 +84,11 @@ do not occur exactly or do not form clean source ranges. That is not repaired he
 source falls back to `whole`. Opaque payloads such as image/base64-like data should usually stay
 `whole` unless a small exact metadata or text block is clearly worth keeping.
 
-The chunker never creates deterministic fallback chunks. It only materializes model-selected exact
-chunks or keeps the source whole. Large `rg`, test, log, XML, JSON, image-like, or blob-like
-payloads stay whole unless the model selects exact chunks that local validation can materialize.
+The chunker never invents semantic split points. It materializes model-selected exact chunks, keeps
+the source whole on invalid model output, and only adds deterministic exact fallback pieces for
+meaningful text gaps left between otherwise valid model-selected chunks. Large `rg`, test, log, XML,
+JSON, image-like, or blob-like payloads stay whole unless the model selects exact chunks that local
+validation can materialize.
 
 On `new_task`, the old task identity is always archived as a complete task bundle. The old active
 pieces are still included as prune candidates for the fresh task, so pieces that remain relevant can

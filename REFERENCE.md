@@ -206,10 +206,14 @@ type SourceChunkBatchResponse = {
 ```
 
 For `chunks`, `startText` and `endText` must be exact substrings from the raw source body shown to
-the model. `startText` is the first text in the chunk and `endText` is the last text in the chunk;
-the chunk includes both. Local code resolves each boundary pair by matching `startText` to the next
-matching `endText`, repeats that same match for later occurrences, and converts the resulting ranges
-to persisted `[start,end)` selectors shown in `ChunkSelector`.
+the model. `startText` is the first meaningful text in the chunk and `endText` is the last
+meaningful text in the chunk; local code treats leading and trailing whitespace around model ranges
+as incidental. It resolves each boundary pair by matching `startText` to the next matching
+`endText`, repeats that same match for later occurrences, trims whitespace from both ends for
+coverage validation, repairs any meaningful uncovered text as exact fallback pieces, then converts
+the resulting ranges to persisted `[start,end)` selectors shown in `ChunkSelector`. Whitespace is
+preserved deterministically: leading whitespace belongs to the first chunk, whitespace between
+chunks belongs to the next chunk, and trailing whitespace belongs to the last chunk.
 
 Request shape:
 
