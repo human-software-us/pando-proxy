@@ -79,8 +79,8 @@ Dynamic checks that JSON Schema cannot fully express are handled conservatively:
 - malformed `task_route` output falls back to `same_task`
 - malformed `piece_drop_batch` output keeps every evaluated piece in that batch
 - accepted `piece_drop_batch` drops are still filtered by local applicability and sanity checks
-- omitted `source_chunk_batch` results for requested sources default to a `whole` selector
-- failed or malformed `source_chunk_batch` output keeps requested sources as `whole` selectors
+- omitted `source_chunk_batch` results for requested sources are kept as one whole chunk
+- failed or malformed `source_chunk_batch` output keeps requested sources as one whole chunk
 
 ### `task_route`
 
@@ -213,37 +213,33 @@ candidate set, and the piece was created before the new task's `startedRound`.
 
 ### `source_chunk_batch`
 
-Chunking asks the model for `whole` or exact start/end boundary text. It never asks for summaries,
-labels, content types, boundary classifications, character offsets, or copied full chunk payloads.
-The request representation shown to the model and the source representation used for materialization
-must be the same raw source text.
+Chunking asks the model for verbatim chunks copied from the raw source text. It never asks for
+summaries, labels, content types, boundary classifications, or character offsets. The request
+representation shown to the model and the source representation used for materialization must be the
+same raw source text.
+
+This classifier always uses the configured full/overflow structured model, currently `gpt-5.4`, with
+low reasoning effort when the selected model supports it, and `service_tier: "priority"`.
+`task_route` and `piece_drop_batch` remain cost-sensitive and use the configured small model,
+currently `gpt-5.4-mini`, when they fit.
 
 User messages are not sent to this classifier. Each user message becomes one inseparable `whole`
 piece before pruning.
 
-Selector contract:
+Chunk contract:
 
 ```ts
 type SourceChunkBatchResponse = {
   results: Array<{
     sourceId: string;
-    selectors: Array<
-      | { kind: "whole" }
-      | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> }
-    >;
+    chunks: string[];
   }>;
 };
 ```
 
-For `chunks`, `startText` and `endText` must be exact substrings from the raw source body shown to
-the model. `startText` is the first meaningful text in the chunk and `endText` is the last
-meaningful text in the chunk; local code treats leading and trailing whitespace around model ranges
-as incidental. It resolves each boundary pair by matching `startText` to the next matching
-`endText`, repeats that same match for later occurrences, trims whitespace from both ends for
-coverage validation, repairs any meaningful uncovered text as exact fallback pieces, then converts
-the resulting ranges to persisted `[start,end)` selectors shown in `ChunkSelector`. Whitespace is
-preserved deterministically: leading whitespace belongs to the first chunk, whitespace between
-chunks belongs to the next chunk, and trailing whitespace belongs to the last chunk.
+For `chunks`, every item must be exact text copied from the raw source body shown to the model. The
+chunk list is valid only when `chunks.join("")` equals the complete raw source body exactly. Local
+code converts the returned lossless chunk list to persisted `[start,end)` selectors.
 
 Request shape:
 
@@ -261,31 +257,25 @@ type SourceChunkBatchRequest = {
 type SourceChunkBatchResponse = {
   results: Array<{
     sourceId: string;
-    selectors: Array<
-      | { kind: "whole" }
-      | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> }
-    >;
+    chunks: string[];
   }>;
 };
 ```
 
-If coherent chunks cannot be selected and validated, the correct result is `whole`, not an
-approximate split.
+If coherent chunks cannot be selected and validated, the correct result is one chunk containing the
+whole source, not an approximate split.
 
 Validation rules:
 
 - returned `sourceId` values must be in the request
 - duplicate returned `sourceId` values are invalid
-- selectors must be structurally valid
-- `startText` and `endText` must be non-empty exact text from the raw source body
-- each resolvable start-to-next-end occurrence is materialized as a persisted chunk
-- malformed, missing, unmatched, overlapping, or unsafe boundary selections are invalid
-- boundary selections are not fuzzily repaired; long repeated XML/log/blob text with invalid
-  boundaries falls back to `whole`
-- if a requested source is omitted from `results`, the proxy creates a single `whole` selector for
-  that source
+- `chunks` must be a non-empty string array
+- `chunks.join("")` must equal the raw source body exactly
+- returned chunks are not fuzzily repaired; invalid XML/log/blob text falls back to one whole chunk
+- if a requested source is omitted from `results`, the proxy creates a single whole chunk for that
+  source
 - if the whole chunk request cannot fit even in the overflow structured window, the proxy skips the
-  model call and creates one `whole` selector for each requested source
+  model call and creates one whole chunk for each requested source
 - if the call fails after retry because returned entries are malformed, the memory update fails
   closed and prior memory remains unchanged
 

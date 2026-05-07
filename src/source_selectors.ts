@@ -74,29 +74,6 @@ export function exactByteSizeForSelection(selection: TextSpanSelection): number 
     .byteLength;
 }
 
-export function hasSafeTextChunkBoundaries(text: string, span: TextSpan): boolean {
-  return isSafeTextBoundary(text, span.start) && isSafeTextBoundary(text, span.end);
-}
-
-function isSafeTextBoundary(text: string, offset: number): boolean {
-  if (offset === 0 || offset === text.length) {
-    return true;
-  }
-  if (offset < 0 || offset > text.length) {
-    return false;
-  }
-  const before = text[offset - 1] ?? "";
-  const after = text[offset] ?? "";
-  if (/\s/.test(before) || /\s/.test(after)) {
-    return true;
-  }
-  return isBoundaryPunctuation(before) || isBoundaryPunctuation(after);
-}
-
-function isBoundaryPunctuation(char: string): boolean {
-  return char.length === 1 && /[()[\]{}<>,;:|]/.test(char);
-}
-
 function normalizeSpans(spans: TextSpan[], textLength: number): TextSpan[] {
   const normalized = spans
     .filter((span) => Number.isInteger(span.start) && Number.isInteger(span.end))

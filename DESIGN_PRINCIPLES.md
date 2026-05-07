@@ -31,18 +31,18 @@
    - `piece_drop_batch`
    - `source_chunk_batch`
 
-6. Chunking returns exact selectors only.
+6. Chunking returns exact text chunks only.
    - show the model the exact raw source text that local code will materialize
    - do not ask the model for character offsets
-   - model output is only `whole` or exact start/end boundary text
+   - model output is only verbatim chunks copied from the raw source text
+   - returned chunks must join exactly to the complete raw source text
    - user messages bypass model chunking and remain one whole atomic piece per message
    - no summaries, labels, content types, or boundary classifications
-   - local code maps exact start-to-next-end boundary pairs to persisted `[start,end)` selectors
-   - local code trims whitespace edges for coverage checks, repairs meaningful gaps, and assigns
-     whitespace-only gaps to the next chunk
-   - repeated boundary pairs in one source materialize every matching occurrence
+   - local code maps exact returned chunks to persisted `[start,end)` selectors
    - if returned chunks are not exact and valid, keep the source whole
    - no invented semantic fallback splitting
+   - `source_chunk_batch` always uses the configured full/overflow model with priority service tier;
+     routing and prune use the small model when they fit
 
 7. Local code is structural only.
    - persistence

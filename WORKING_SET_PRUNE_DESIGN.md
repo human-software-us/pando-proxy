@@ -303,19 +303,20 @@ Everything else means keep.
 malformed route -> same_task
 unresolvable revive route -> same_task
 malformed prune batch -> keep all pieces in that batch
-source_chunk_batch omits a requested source -> use whole selector for that source
-source_chunk_batch exceeds the overflow structured window -> use whole selectors for that batch
-source_chunk_batch fails or returns malformed ids/selectors after retry -> use whole selectors
-source_chunk_batch returns whole for any payload -> keep whole
+source_chunk_batch omits a requested source -> keep that source as one whole chunk
+source_chunk_batch exceeds the overflow structured window -> keep each source as one whole chunk
+source_chunk_batch fails or returns malformed ids/chunks after retry -> keep each requested source whole
+source_chunk_batch returns one whole-source chunk for any payload -> keep whole
 single-piece batch too large for overflow window -> keep unevaluated piece
 missing archived payload -> keep that piece
 uncertain decision -> keep
 ```
 
 The chunker does not invent semantic fallback split points. Exact chunks must be selected by the
-model and validated locally; otherwise the source remains whole. For otherwise valid model chunks,
-local code trims whitespace for coverage checks, adds exact fallback pieces for meaningful text gaps
-left uncovered by the model, and assigns whitespace-only gaps to the next chunk.
+model and validated locally; otherwise the source remains whole. For a model-selected split to be
+valid, returned chunks joined together must equal the raw source text exactly. `source_chunk_batch`
+uses the configured full/overflow model with priority service tier, while routing and prune use the
+small model when they fit.
 
 Manager outputs are requested with strict JSON schemas and validated again in local code before they
 are applied.

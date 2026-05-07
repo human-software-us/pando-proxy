@@ -465,14 +465,17 @@ function structuredResponse(classifier: string, body: Record<string, unknown>): 
         const start = source.contentText.indexOf("BEGIN_EXACT");
         const endMarker = "END_EXACT";
         const end = source.contentText.indexOf(endMarker);
+        const exactEnd = end >= 0 ? end + endMarker.length : -1;
+        const chunks = start >= 0 && exactEnd >= start
+          ? [
+            source.contentText.slice(0, start),
+            source.contentText.slice(start, exactEnd),
+            source.contentText.slice(exactEnd),
+          ].filter((chunk) => chunk.length > 0)
+          : [source.contentText];
         return {
           sourceId: source.sourceId,
-          selectors: start >= 0 && end >= start
-            ? [{
-              kind: "chunks",
-              chunks: [{ startText: "BEGIN_EXACT", endText: endMarker }],
-            }]
-            : [{ kind: "whole" }],
+          chunks,
         };
       }),
     };

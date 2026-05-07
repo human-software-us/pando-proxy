@@ -336,7 +336,7 @@ function buildStubClients(policy: StubPolicy): StructuredClients {
       Promise.resolve({
         results: request.sources.map((source) => ({
           sourceId: source.sourceId,
-          selectors: [{ kind: "whole" }],
+          chunks: [source.contentText],
         })),
       }),
     pieceDropBatch: (

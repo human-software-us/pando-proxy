@@ -42,11 +42,14 @@ Normal end-of-round flow:
    results
 2. run `source_chunk_batch` for non-user sources and `task_route` in parallel
    - user messages are never split; each user message is one atomic `whole` piece
+   - `source_chunk_batch` always uses the configured full/overflow structured model, currently
+     `gpt-5.4`, with low reasoning effort when the model supports it and priority service tier
+   - `task_route` and `piece_drop_batch` use the configured small structured model when the request
+     fits, currently `gpt-5.4-mini`, and overflow only when needed
    - if chunking fails, returns malformed output, omits a requested source, or is too large for the
      structured window, that source is kept whole
-   - valid model-selected text chunks are normalized locally: whitespace edges are trimmed for
-     coverage checks, meaningful uncovered gaps become exact fallback pieces, and whitespace-only
-     gaps are assigned to the next chunk so no whitespace-only pieces are created
+   - valid model-selected text chunks must be exact and lossless: returned chunks joined together
+     must equal the raw source text exactly
 3. materialize exact new pieces
 4. apply the task route
 5. for `same_task` and `revive_task`, collapse exact duplicate new pieces by content hash while

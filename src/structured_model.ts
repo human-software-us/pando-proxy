@@ -11,7 +11,6 @@ import {
 import { extractJsonObject, stableJson } from "./json.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
 import { extractUsageMetrics, type UsageMetrics } from "./metrics.ts";
-import { type ChunkSelector } from "./memory_state.ts";
 
 export type StructuredModelSelection = {
   classifier:
@@ -21,7 +20,7 @@ export type StructuredModelSelection = {
   requestModel: string | null;
   estimatedInputTokens: number;
   chosenModel: string;
-  selectionReason: "fits_small_window" | "overflow_to_large";
+  selectionReason: "fits_small_window" | "overflow_to_large" | "forced_source_chunk_full_model";
 };
 
 export type StructuredModelUsage = {
@@ -44,7 +43,7 @@ export type StructuredModelSkipped = {
   requestModel: string | null;
   estimatedInputTokens: number;
   reason: "exceeds_overflow_window";
-  fallback: "whole_selector_batch";
+  fallback: "whole_chunk_batch";
   sourceCount: number;
 };
 
@@ -192,13 +191,13 @@ export function createStructuredClients(
             sourceChunkBatchJsonSchema,
           ),
           reason: "exceeds_overflow_window",
-          fallback: "whole_selector_batch",
+          fallback: "whole_chunk_batch",
           sourceCount: request.sources.length,
         });
         return {
           results: request.sources.map((source) => ({
             sourceId: source.sourceId,
-            selectors: [{ kind: "whole" } satisfies ChunkSelector],
+            chunks: [source.contentText],
           })),
         };
       }
@@ -391,6 +390,7 @@ async function callStructuredJson<T>(
     instructions: system,
     stream: true,
     store: false,
+    ...structuredRequestOptions(selection),
     text: {
       format: {
         type: "json_schema",
@@ -672,6 +672,15 @@ function chooseStructuredModel(
   const estimatedInputTokens = inputTextOverride === undefined
     ? estimateStructuredInputTokens(system, payload, schema)
     : estimateStructuredInputTextTokens(system, inputTextOverride, schema);
+  if (classifier === "source_chunk_batch") {
+    return {
+      classifier,
+      requestModel,
+      estimatedInputTokens,
+      chosenModel: config.overflowStructuredModel,
+      selectionReason: "forced_source_chunk_full_model",
+    };
+  }
   if (estimatedInputTokens <= config.smallStructuredContextWindow - OUTPUT_TOKEN_RESERVE) {
     return {
       classifier,
@@ -688,6 +697,28 @@ function chooseStructuredModel(
     chosenModel: config.overflowStructuredModel,
     selectionReason: "overflow_to_large",
   };
+}
+
+function structuredRequestOptions(
+  selection: StructuredModelSelection,
+): Record<string, unknown> {
+  if (
+    selection.classifier === "source_chunk_batch" &&
+    supportsReasoningEffort(selection.chosenModel)
+  ) {
+    return {
+      reasoning: { effort: "low" },
+      service_tier: "priority",
+    };
+  }
+  if (selection.classifier === "source_chunk_batch") {
+    return { service_tier: "priority" };
+  }
+  return {};
+}
+
+function supportsReasoningEffort(model: string): boolean {
+  return /^gpt-5(?:[.-]|$)/.test(model);
 }
 
 function isEventStream(response: Response, body: string): boolean {
@@ -929,14 +960,15 @@ function byteLength(text: string): number {
 
 function renderSourceChunkBatchInput(request: SourceChunkBatchRequest): string {
   const lines = [
-    "Return chunk selectors for these sources.",
-    "For each source, return exactly one of:",
-    '- {"kind":"whole"}',
-    '- {"kind":"chunks","chunks":[{"startText":"exact first text in chunk","endText":"exact last text in chunk"}]}',
-    "For chunks, return exact boundary substrings from the raw source body. The selected chunk includes both boundaries.",
-    "Prefer unique boundary text when possible. If the same boundary pair genuinely repeats, use it consistently.",
-    "Do not return summaries, labels, content types, full chunk text, or character offsets.",
-    "If exact coherent chunks are not clear, return whole for that source.",
+    "Return verbatim chunks for these sources.",
+    'For each source, return {"sourceId":"...","chunks":["exact source text chunk", "..."]}.',
+    "Each chunk must be copied exactly from the raw source body.",
+    "Chunking must be lossless: chunks joined together must exactly equal the raw source body.",
+    "The delimiter newline after <raw_source_body> and before </raw_source_body> is not part of the raw source body unless the source itself begins or ends with a newline.",
+    "Do not trim, normalize, delete, add, or rewrite whitespace or any other character.",
+    "You may cut anywhere, including before or after whitespace.",
+    "Do not return summaries, labels, markers, selectors, boundary text, or character offsets.",
+    "If exact chunking is not clear, return the entire raw source body as one chunk.",
     "",
   ];
   for (const source of request.sources) {
@@ -961,36 +993,7 @@ function messageFor(error: unknown): string {
 }
 
 const chunkSelectorSchema = {
-  anyOf: [
-    {
-      type: "object",
-      properties: {
-        kind: { type: "string", enum: ["whole"] },
-      },
-      required: ["kind"],
-      additionalProperties: false,
-    },
-    {
-      type: "object",
-      properties: {
-        kind: { type: "string", enum: ["chunks"] },
-        chunks: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              startText: { type: "string" },
-              endText: { type: "string" },
-            },
-            required: ["startText", "endText"],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["kind", "chunks"],
-      additionalProperties: false,
-    },
-  ],
+  type: "string",
 };
 
 const taskRouteJsonSchema = {
@@ -1012,9 +1015,9 @@ const sourceChunkBatchJsonSchema = {
         type: "object",
         properties: {
           sourceId: { type: "string" },
-          selectors: { type: "array", items: chunkSelectorSchema },
+          chunks: { type: "array", items: chunkSelectorSchema },
         },
-        required: ["sourceId", "selectors"],
+        required: ["sourceId", "chunks"],
         additionalProperties: false,
       },
     },
@@ -1138,39 +1141,34 @@ Return JSON matching the supplied schema.
 Rules:
 - Process all listed sources together.
 - Do not summarize, paraphrase, or rewrite content.
-- Return only whole selectors or exact start/end boundary text. Never return summaries, labels, content types, boundary kinds, full chunk payloads, or character offsets.
-- Return exact selectors only:
-  - whole
-  - chunks with exact startText and endText substrings copied from the raw source body shown for that source
-- startText is the first text in the chunk; endText is the last text in the chunk; the chunk includes both.
-- Prefer boundary text that uniquely identifies the intended chunk when possible.
-- If the same boundary pair genuinely repeats, return the same pair once; local code will create a chunk for each consistent start-to-next-end occurrence and duplicate handling will collapse duplicate pieces later.
-- Each chunks selector may contain multiple ordered non-overlapping boundary pairs for one conceptual piece.
+- Return only verbatim chunks copied from the raw source body shown for that source.
+- For each source, chunks joined together must exactly equal the complete raw source body.
+- Never omit anything when chunking: every character must appear exactly once, in original order, including whitespace, blank lines, delimiters, wrappers, logs, prompts, errors, and headings.
+- The newline immediately after <raw_source_body> and the newline immediately before </raw_source_body> are delimiter formatting, not source content, unless the source content itself begins or ends with a newline.
+- Do not trim, normalize, delete, add, or rewrite whitespace or any other character.
+- You may cut anywhere, including before or after whitespace.
 - Keep chunks in original order.
-- Cover the complete source. If you return chunks instead of whole, every non-whitespace part of the raw source body must be included in exactly one chunk. Do not leave headings, introductions, first sections, last sections, errors, paths, rows, or other content uncovered.
-- Whitespace-only gaps between chunks are acceptable; meaningful text gaps are not.
-- Treat leading and trailing whitespace around a chunk as incidental. Prefer startText and endText that begin and end with meaningful non-whitespace text. Local validation trims whitespace at chunk edges before checking for uncovered source text, then preserves whitespace deterministically: leading whitespace belongs to the first chunk, whitespace between chunks belongs to the next chunk, and trailing whitespace belongs to the last chunk.
-- If you cannot split a source without meaningful gaps, return whole for that source.
-- Do not invent, rewrite, truncate, or paraphrase boundary text.
-- Prefer boundary-safe exact pieces over one huge whole selector when the source is large.
+- If you cannot split a source losslessly, return the entire raw source body as one chunk.
+- Do not invent, rewrite, truncate, paraphrase, summarize, label, add markers, return selectors, return boundary text, or return character offsets.
+- Prefer multiple coherent exact chunks over one huge chunk when the source is large and lossless splitting is clear.
 - For large shell/search/test/log outputs, first split on conceptual boundaries: command sections, failure blocks, stack traces, assertion blocks, test-case sections, file blocks, path-prefix groups, or other visible separators.
-- For 'rg --files ...' output, each line is a path. Prefer conceptual groups by top-level directory, package, namespace, or subsystem path, for example consecutive blocks for 'src/metabase/api/...', 'src/metabase/search/...', 'test/metabase/...', or 'enterprise/backend/...'. If no stable grouping is visible, return whole.
+- For 'rg --files ...' output, each line is a path. Prefer conceptual groups by top-level directory, package, namespace, or subsystem path, for example consecutive blocks for 'src/metabase/api/...', 'src/metabase/search/...', 'test/metabase/...', or 'enterprise/backend/...'. If no stable grouping is visible, return the entire raw source body as one chunk.
 - For 'rg -n "..." ...' output, lines are usually 'path:line:match'. Prefer grouping consecutive matches by file path first, then by nearby match clusters. Keep complete match lines intact.
 - For broad repository searches such as 'rg -n "namespace|module" /workspace ...', prefer groups by subsystem/path prefix, then by file.
 - For grep/rg outputs with headers, context lines, or separators, keep each match block intact and keep nearby context with its match.
 - Use contiguous regions around visible conceptual boundaries. Keep each line intact and keep related adjacent lines together.
 - For large JSON arrays, split on complete top-level array entries or small groups of adjacent entries. Never split inside a JSON string, object, array, number, or literal.
-- For large JSON objects with obvious top-level keys, split on complete top-level fields or small groups of adjacent fields when that is boundary-safe.
+- For large JSON objects with obvious top-level keys, split on complete top-level fields or small groups of adjacent fields when that is clear.
 - For XML/HTML/Markdown-like content, split on complete top-level sections, fenced blocks, headings, or repeated element boundaries when clear.
 - For code or diffs, split on complete files, hunks, top-level forms, declarations, or other syntax-visible boundaries when clear.
-- When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, select the payload block itself instead of the wrapper instructions.
+- When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, keep the wrappers too; split around the payload only if the complete source remains lossless.
 - User messages are not sent to this classifier; local code always keeps each user message as one whole atomic piece.
 - When the payload is delimited by clear markers such as fenced code blocks, BEGIN/END markers, XML-like tags, or repeated stanza boundaries, select the complete intended interior block instead of a partial prefix.
-- Exclude delimiter markers themselves when the user says they are wrapper text and not part of the exact retained content.
+- Keep delimiter markers, wrapper text, and surrounding text exactly as written.
 - When a clearly delimited block or stanza sequence is selected, include the full intended block boundaries. Do not truncate mid-line, mid-stanza, or mid-block.
-- For structured JSON data, prefer whole objects or boundary-safe chunks that keep complete fields/entries together.
-- For binary-like, base64-like, hex-dump-like, byte-array-like, image-metadata-like, or file-payload-like content, prefer whole unless there is an obvious safe boundary. Never split mid-token or mid-byte-sequence.
-- If splitting would be lossy or ambiguous, use whole; otherwise split large content so later pruning can keep useful regions without keeping the entire source.
+- For structured JSON data, prefer complete fields/entries or one chunk containing the entire raw source body.
+- For binary-like, base64-like, hex-dump-like, byte-array-like, image-metadata-like, or file-payload-like content, prefer one chunk containing the entire raw source body unless there is an obvious safe split. Never split mid-token or mid-byte-sequence.
+- If splitting would be lossy or ambiguous, return the entire raw source body as one chunk; otherwise split large content so later pruning can keep useful regions without keeping the entire source.
 - Return JSON only.
 `.trim();
 
@@ -1356,51 +1354,22 @@ function assertValidSourceChunkBatchResponse(
       throw new Error(`${label}.sourceId is duplicated`);
     }
     seen.add(item.sourceId);
-    if (!Array.isArray(item.selectors) || item.selectors.length === 0) {
-      throw new Error(`${label}.selectors must be a non-empty array`);
+    if (!Array.isArray(item.chunks) || item.chunks.length === 0) {
+      throw new Error(`${label}.chunks must be a non-empty array`);
     }
     const source = request.sources.find((candidate) => candidate.sourceId === item.sourceId);
-    for (const [selectorIndex, selector] of item.selectors.entries()) {
-      assertValidChunkSelector(
-        selector,
-        `${label}.selectors[${selectorIndex}]`,
-        source?.contentText ?? "",
-      );
-    }
+    assertValidChunkList(item.chunks, `${label}.chunks`, source?.contentText ?? "");
   }
 }
 
-function assertValidChunkSelector(value: unknown, label: string, sourceText: string): void {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  const record = value as Record<string, unknown>;
-  if (record.kind === "whole") {
-    return;
-  }
-  if (record.kind !== "chunks") {
-    throw new Error(`${label}.kind is invalid`);
-  }
-  if (!Array.isArray(record.chunks) || record.chunks.length === 0) {
-    throw new Error(`${label}.chunks must be a non-empty array`);
-  }
-  for (const [chunkIndex, chunk] of record.chunks.entries()) {
-    if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
-      throw new Error(`${label}.chunks[${chunkIndex}] must be an object`);
+function assertValidChunkList(value: unknown[], label: string, sourceText: string): void {
+  for (const [chunkIndex, chunk] of value.entries()) {
+    if (typeof chunk !== "string") {
+      throw new Error(`${label}[${chunkIndex}] must be a string`);
     }
-    const item = chunk as Record<string, unknown>;
-    if (
-      typeof item.startText !== "string" ||
-      typeof item.endText !== "string" ||
-      item.startText.length === 0 ||
-      item.endText.length === 0
-    ) {
-      throw new Error(`${label}.chunks[${chunkIndex}] must include non-empty boundary text`);
-    }
-    const start = sourceText.indexOf(item.startText);
-    if (start < 0 || sourceText.indexOf(item.endText, start) < 0) {
-      throw new Error(`${label}.chunks[${chunkIndex}] boundaries must resolve in source text`);
-    }
+  }
+  if (value.join("") !== sourceText) {
+    throw new Error(`${label} must join exactly to the source text`);
   }
 }
 
@@ -1416,7 +1385,7 @@ function normalizeSourceChunkBatchResponse(
     return defaultSourceChunkBatchResponse(request);
   }
   const requestedIds = new Set(request.sources.map((source) => source.sourceId));
-  const byId = new Map<string, SourceChunkBatchResponse["results"][number]["selectors"]>();
+  const byId = new Map<string, string[]>();
   for (const entry of record.results) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       continue;
@@ -1426,21 +1395,21 @@ function normalizeSourceChunkBatchResponse(
     if (!sourceId || !requestedIds.has(sourceId)) {
       continue;
     }
-    const selectors = Array.isArray(item.selectors)
-      ? item.selectors
-        .map(coerceChunkSelector)
-        .filter((
-          selector,
-        ): selector is SourceChunkBatchResponse["results"][number]["selectors"][number] =>
-          Boolean(selector)
-        )
+    const chunks = Array.isArray(item.chunks)
+      ? item.chunks.filter((chunk): chunk is string => typeof chunk === "string")
       : [];
-    byId.set(sourceId, selectors.length > 0 ? selectors : [{ kind: "whole" }]);
+    const source = request.sources.find((candidate) => candidate.sourceId === sourceId);
+    byId.set(
+      sourceId,
+      source && chunks.length > 0 && chunks.join("") === source.contentText
+        ? chunks
+        : [source?.contentText ?? ""],
+    );
   }
   return {
     results: request.sources.map((source) => ({
       sourceId: source.sourceId,
-      selectors: byId.get(source.sourceId) ?? [{ kind: "whole" }],
+      chunks: byId.get(source.sourceId) ?? [source.contentText],
     })),
   };
 }
@@ -1451,35 +1420,7 @@ function defaultSourceChunkBatchResponse(
   return {
     results: request.sources.map((source) => ({
       sourceId: source.sourceId,
-      selectors: [{ kind: "whole" }],
+      chunks: [source.contentText],
     })),
   };
-}
-
-function coerceChunkSelector(
-  value: unknown,
-): SourceChunkBatchResponse["results"][number]["selectors"][number] | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.kind === "whole") {
-    return { kind: "whole" };
-  }
-  if (
-    record.kind === "chunks" &&
-    Array.isArray(record.chunks)
-  ) {
-    const chunks = record.chunks
-      .filter((chunk): chunk is Record<string, unknown> =>
-        Boolean(chunk) && typeof chunk === "object" && !Array.isArray(chunk)
-      )
-      .map((chunk) => ({
-        startText: typeof chunk.startText === "string" ? chunk.startText : "",
-        endText: typeof chunk.endText === "string" ? chunk.endText : "",
-      }))
-      .filter((chunk) => chunk.startText.length > 0 && chunk.endText.length > 0);
-    return chunks.length > 0 ? { kind: "chunks", chunks } : null;
-  }
-  return null;
 }

@@ -45,55 +45,48 @@ only a five-card newest-first archive page. It can request the next linear page 
 task titles are needed for `revive_task`.
 
 If `source_chunk_batch` omits a requested source from its result array, the proxy keeps that source
-as one whole exact piece. Returned source ids and selectors still have to validate locally.
+as one whole exact piece. Returned source ids and verbatim chunks still have to validate locally.
 
 If a chunk request is too large for the overflow structured window, the proxy skips the model call
 and keeps each requested source whole.
 
-## Chunk boundary contract
+## Chunk contract
 
-Chunking returns `whole` or exact start/end boundary text. It never returns summaries, labels,
-content types, boundary classifications, character offsets, or model-generated rewrites.
+Chunking returns verbatim chunk strings. It never returns summaries, labels, content types, boundary
+classifications, selectors, character offsets, or model-generated rewrites.
 
-The model should see the exact raw source text it is being asked to select from, not a JSON-escaped
-serialization of that text. Any model-produced selector must be interpreted against that same raw
-source view. If the prompt representation and materialization representation differ, character
-offsets are not trustworthy and must not be accepted as exact chunks.
+The model should see the exact raw source text it is being asked to chunk, not a JSON-escaped
+serialization of that text. The returned chunks must be validated against that same raw source view.
+If the prompt representation and materialization representation differ, chunk equality is not
+trustworthy and must not be accepted as exact chunks.
 
 The model output for each source is only:
 
 ```ts
-type ChunkSelector =
-  | { kind: "whole" }
-  | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> };
+type SourceChunkBatchResponse = {
+  results: Array<{
+    sourceId: string;
+    chunks: string[];
+  }>;
+};
 ```
 
-For `chunks`, `startText` and `endText` are exact substrings from the raw source body. `startText`
-is the first meaningful text in the chunk and `endText` is the last meaningful text in the chunk.
-The model should prefer boundary text that is unique when possible and should not create
-whitespace-only chunks. When the same boundary pair genuinely repeats, local code applies the same
-start-to-next-end match repeatedly and creates one chunk per matching occurrence. Local validation
-trims whitespace at chunk edges before checking whether meaningful source text was missed. Any
-meaningful uncovered text is retained as exact fallback pieces. Whitespace itself is preserved with
-one deterministic rule: leading whitespace belongs to the first chunk, whitespace between chunks
-belongs to the next chunk, and trailing whitespace belongs to the last chunk. Later duplicate-piece
-collapse keeps one full copy and adds duplicate markers for the other locations.
+For `chunks`, every item must be exact text copied from the raw source body. Chunking is lossless:
+`chunks.join("")` must equal the complete raw source body exactly. The model may cut anywhere,
+including before or after whitespace, but it must not trim, normalize, delete, add, or rewrite any
+character. Empty chunks are ignored only after the joined output has passed the exact equality
+check.
 
-If the model cannot select valid coherent chunks, the source remains `whole`. Local validation
-rejects malformed, empty, missing, unmatched, overlapping, or otherwise unsafe boundary selections.
-Invalid selectors retry once with diagnostics; if they still cannot be validated, the proxy keeps
-that source whole.
+Local code converts the validated chunk list into persisted `[start,end)` selectors by cumulative
+offset. If the model cannot return valid coherent chunks, the source remains one whole exact piece.
+Invalid chunk output retries once with diagnostics; if it still cannot be validated, the proxy keeps
+that source whole. Opaque payloads such as image/base64-like data should usually be returned as one
+chunk containing the entire raw source body.
 
-For very long repeated structures, boundary text can still fail if the model chooses substrings that
-do not occur exactly or do not form clean source ranges. That is not repaired heuristically; the
-source falls back to `whole`. Opaque payloads such as image/base64-like data should usually stay
-`whole` unless a small exact metadata or text block is clearly worth keeping.
-
-The chunker never invents semantic split points. It materializes model-selected exact chunks, keeps
-the source whole on invalid model output, and only adds deterministic exact fallback pieces for
-meaningful text gaps left between otherwise valid model-selected chunks. Large `rg`, test, log, XML,
-JSON, image-like, or blob-like payloads stay whole unless the model selects exact chunks that local
-validation can materialize.
+The chunker never invents semantic split points. It materializes model-selected exact chunks and
+keeps the source whole on invalid model output. Large `rg`, test, log, XML, JSON, image-like, or
+blob-like payloads stay whole unless the model selects exact chunks that local validation can
+materialize.
 
 On `new_task`, the old task identity is always archived as a complete task bundle. The old active
 pieces are still included as prune candidates for the fresh task, so pieces that remain relevant can
@@ -119,7 +112,7 @@ round as `same_task`.
 - `source_chunk_batch` omits requested source -> keep that source whole
 - `source_chunk_batch` exceeds the overflow structured window -> keep the whole batch as whole
   sources
-- `source_chunk_batch` fails or returns malformed source ids/selectors after retry -> keep requested
+- `source_chunk_batch` fails or returns malformed source ids/chunks after retry -> keep requested
   sources whole
 - failed memory update -> keep prior memory unchanged
 - log failures and the full data flow when proxy logging is enabled

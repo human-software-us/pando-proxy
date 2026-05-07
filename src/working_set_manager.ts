@@ -121,10 +121,7 @@ export type SourceChunkBatchRequest = {
 export type SourceChunkBatchResponse = {
   results: Array<{
     sourceId: string;
-    selectors: Array<
-      | { kind: "whole" }
-      | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> }
-    >;
+    chunks: string[];
   }>;
 };
 

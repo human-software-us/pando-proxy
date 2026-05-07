@@ -9,7 +9,7 @@ new round sources
     |
     +--> source_chunk_batch
     |      - assistant talk+reasoning / tool-result sources
-    |      - returns exact selectors only
+    |      - returns verbatim chunks whose joined text exactly equals the source
     |      - user messages are one whole piece per message
     |      - failed, malformed, omitted, or oversized sources are kept whole
     |      - tool calls are whole-piece structural sources

@@ -1,7 +1,6 @@
 import type { ChunkSelector, PieceDraft } from "./memory_state.ts";
 import {
   exactByteSizeForSelection,
-  hasSafeTextChunkBoundaries,
   materializeTextSpans,
   previewForRenderedText,
   renderTextSelection,
@@ -235,7 +234,7 @@ async function chunkBatchWithModel(
       return wholeSelectorFallback(sources);
     }
     const source = sources.find((candidate) => candidate.sourceId === entry.sourceId);
-    const selectors = source ? materializeModelChunkSelectors(entry.selectors, source) : null;
+    const selectors = source ? materializeModelChunks(entry.chunks, source) : null;
     byId.set(
       entry.sourceId,
       selectors ?? [{ kind: "whole" }],
@@ -259,195 +258,40 @@ function wholeSelectorFallback(sources: RoundSource[]): {
   };
 }
 
-function materializeModelChunkSelectors(
+function materializeModelChunks(
   value: unknown,
   source: RoundSource,
 ): ChunkSelector[] | null {
   if (!Array.isArray(value) || value.length === 0) {
     return null;
   }
-  if (value.some((selector) => isWholeSelector(selector)) && value.length > 1) {
+  if (!value.every((chunk) => typeof chunk === "string")) {
     return null;
-  }
-  if (value.length === 1 && isWholeSelector(value[0])) {
-    return [{ kind: "whole" }];
   }
   const sourceText = sourceTextView(source);
-  const ranges: Array<{ start: number; end: number }> = [];
-  for (const selector of value) {
-    if (!selector || typeof selector !== "object" || Array.isArray(selector)) {
-      return null;
-    }
-    const record = selector as Record<string, unknown>;
-    if (record.kind !== "chunks" || !Array.isArray(record.chunks) || record.chunks.length === 0) {
-      return null;
-    }
-    for (const chunk of record.chunks) {
-      if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
-        return null;
-      }
-      const item = chunk as Record<string, unknown>;
-      const startText = item.startText;
-      const endText = item.endText;
-      if (
-        typeof startText !== "string" ||
-        typeof endText !== "string" ||
-        startText.length === 0 ||
-        endText.length === 0
-      ) {
-        return null;
-      }
-      const matches = findAllBoundaryOccurrences(sourceText, startText, endText);
-      if (matches.length === 0) {
-        return null;
-      }
-      ranges.push(...matches);
-    }
-  }
-  const sortedRanges = ranges.sort((left, right) =>
-    left.start - right.start || left.end - right.end
-  );
-  const trimmedRanges = sortedRanges
-    .map((range) => trimWhitespaceEdges(sourceText, range))
-    .filter((range): range is { start: number; end: number } => Boolean(range));
-  const combinedSelector: ChunkSelector = { kind: "chunks", chunks: trimmedRanges };
-  if (!isValidMaterializedChunkSelector(combinedSelector, sourceText)) {
+  const chunks = value as string[];
+  if (chunks.join("") !== sourceText) {
     return null;
   }
-  const repairedRanges = repairChunkCoverage(sourceText, trimmedRanges);
-  return assignWhitespaceToChunks(sourceText, repairedRanges).map((range): ChunkSelector => ({
-    kind: "chunks",
-    chunks: [range],
-  }));
-}
-
-function findAllBoundaryOccurrences(
-  text: string,
-  startText: string,
-  endText: string,
-): Array<{ start: number; end: number }> {
-  const out: Array<{ start: number; end: number }> = [];
+  const selectors: ChunkSelector[] = [];
   let cursor = 0;
-  while (cursor <= text.length) {
-    const start = text.indexOf(startText, cursor);
-    if (start < 0) {
-      break;
-    }
-    const endSearchStart = startText === endText ? start : start + startText.length;
-    const endStart = text.indexOf(endText, endSearchStart);
-    if (endStart < 0) {
-      break;
-    }
-    const end = endStart + endText.length;
-    out.push({ start, end });
+  for (const chunk of chunks) {
+    const start = cursor;
+    const end = start + chunk.length;
     cursor = end;
-  }
-  return out;
-}
-
-function isValidMaterializedChunkSelector(
-  value: unknown,
-  sourceText: string,
-): value is ChunkSelector {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.kind === "whole") {
-    return true;
-  }
-  if (record.kind !== "chunks" || !Array.isArray(record.chunks)) {
-    return false;
-  }
-  const textLength = sourceText.length;
-  let previousEnd = -1;
-  if (record.chunks.length === 0) {
-    return false;
-  }
-  for (const chunk of record.chunks) {
-    if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
-      return false;
+    if (chunk.length === 0) {
+      continue;
     }
-    const startValue = (chunk as Record<string, unknown>).start;
-    const endValue = (chunk as Record<string, unknown>).end;
-    if (
-      !Number.isInteger(startValue) ||
-      !Number.isInteger(endValue)
-    ) {
-      return false;
-    }
-    const start = startValue as number;
-    const end = endValue as number;
-    if (
-      start < 0 ||
-      end <= start ||
-      end > textLength ||
-      start < previousEnd ||
-      !hasSafeTextChunkBoundaries(sourceText, { start, end })
-    ) {
-      return false;
-    }
-    previousEnd = end;
+    selectors.push({ kind: "chunks", chunks: [{ start, end }] });
   }
-  return true;
-}
-
-function isWholeSelector(value: unknown): boolean {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
-    (value as Record<string, unknown>).kind === "whole";
-}
-
-function repairChunkCoverage(
-  sourceText: string,
-  selectedRanges: Array<{ start: number; end: number }>,
-): Array<{ start: number; end: number }> {
-  const out: Array<{ start: number; end: number }> = [];
-  let cursor = 0;
-  for (const range of selectedRanges) {
-    const gap = trimWhitespaceEdges(sourceText, { start: cursor, end: range.start });
-    if (gap) {
-      out.push(gap);
-    }
-    out.push(range);
-    cursor = range.end;
-  }
-  const finalGap = trimWhitespaceEdges(sourceText, { start: cursor, end: sourceText.length });
-  if (finalGap) {
-    out.push(finalGap);
-  }
-  return out.sort((left, right) => left.start - right.start || left.end - right.end);
-}
-
-function assignWhitespaceToChunks(
-  sourceText: string,
-  meaningfulRanges: Array<{ start: number; end: number }>,
-): Array<{ start: number; end: number }> {
-  return meaningfulRanges.map((range, index) => ({
-    start: index === 0 ? 0 : meaningfulRanges[index - 1].end,
-    end: index === meaningfulRanges.length - 1 ? sourceText.length : range.end,
-  }));
-}
-
-function trimWhitespaceEdges(
-  text: string,
-  range: { start: number; end: number },
-): { start: number; end: number } | null {
-  let start = range.start;
-  let end = range.end;
-  while (start < end && /\s/.test(text[start] ?? "")) {
-    start += 1;
-  }
-  while (end > start && /\s/.test(text[end - 1] ?? "")) {
-    end -= 1;
-  }
-  return end > start ? { start, end } : null;
+  return selectors.length > 0 ? selectors : null;
 }
 
 async function requestChunkBatchWithSingleRetry(
   invoke: (
     attempt: number,
-  ) => Promise<{ results?: Array<{ sourceId: string; selectors?: unknown }> }>,
-): Promise<{ results?: Array<{ sourceId: string; selectors?: unknown }> }> {
+  ) => Promise<{ results?: Array<{ sourceId: string; chunks?: unknown }> }>,
+): Promise<{ results?: Array<{ sourceId: string; chunks?: unknown }> }> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {

@@ -724,7 +724,7 @@ Deno.test("multi-round 17 oversized single candidate is unevaluated and kept", a
   assert(session.state.pieces.some((piece) => piece.id === "huge_tool:0"));
 });
 
-Deno.test("multi-round 18 omitted chunk result falls back to whole selector", async () => {
+Deno.test("multi-round 18 omitted chunk result falls back to a whole piece", async () => {
   const session = new ManualMemorySession();
   const chunkClients: StructuredClients = {
     taskRoute: () => Promise.resolve({ kind: "same_task" }),
@@ -732,7 +732,7 @@ Deno.test("multi-round 18 omitted chunk result falls back to whole selector", as
       Promise.resolve({
         results: [{
           sourceId: request.sources[0].sourceId,
-          selectors: [{ kind: "whole" }],
+          chunks: [request.sources[0].contentText],
         }],
       }),
     pieceDropBatch: (request) =>
@@ -768,7 +768,7 @@ Deno.test("multi-round 19 malformed chunk failure keeps the source whole", async
       Promise.resolve({
         results: request.sources.map((source) => ({
           sourceId: source.sourceId,
-          selectors: [{ kind: "whole" }],
+          chunks: [source.contentText],
         })),
       }),
     pieceDropBatch: (request) =>
@@ -952,13 +952,9 @@ Deno.test("multi-round 21 many chunked task switches do not lose or leak pieces"
           const taskIndex = Number(taskMatch[1]);
           return {
             sourceId: source.sourceId,
-            selectors: [{
-              kind: "chunks",
-              chunks: Array.from({ length: chunksPerTask }, (_, chunkIndex) => ({
-                startText: `BEGIN TASK ${taskIndex} CHUNK ${chunkIndex}`,
-                endText: `END TASK ${taskIndex} CHUNK ${chunkIndex}`,
-              })),
-            }],
+            chunks: chunkedTaskPayload(taskIndex, chunksPerTask)
+              .split("\n\n")
+              .flatMap((chunk, index) => index === chunksPerTask - 1 ? [chunk] : [`${chunk}\n\n`]),
           };
         }),
       }),
