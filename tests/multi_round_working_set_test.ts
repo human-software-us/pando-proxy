@@ -746,8 +746,8 @@ Deno.test("multi-round 18 omitted chunk result falls back to a whole piece", asy
   };
 
   const chunked = await chunkRoundSources([
-    { sourceId: "included", sourceKind: "user", payload: "INCLUDED_TEXT" },
-    { sourceId: "omitted", sourceKind: "user", payload: "OMITTED_WHOLE_TEXT" },
+    { sourceId: "included", sourceKind: "assistant", payload: "INCLUDED_TEXT" },
+    { sourceId: "omitted", sourceKind: "assistant", payload: "OMITTED_WHOLE_TEXT" },
   ], chunkClients);
   await session.roundMany(chunked.pieces, { kind: "new_task" });
   await session.round(draft("r2:0", "r2", "user", "continue"), { kind: "same_task" });

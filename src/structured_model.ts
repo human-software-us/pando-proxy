@@ -1377,50 +1377,15 @@ function normalizeSourceChunkBatchResponse(
   request: SourceChunkBatchRequest,
   value: unknown,
 ): SourceChunkBatchResponse {
-  if (!value || typeof value !== "object") {
-    return defaultSourceChunkBatchResponse(request);
-  }
-  const record = value as Record<string, unknown>;
-  if (!Array.isArray(record.results)) {
-    return defaultSourceChunkBatchResponse(request);
-  }
-  const requestedIds = new Set(request.sources.map((source) => source.sourceId));
+  const record = value as SourceChunkBatchResponse;
   const byId = new Map<string, string[]>();
   for (const entry of record.results) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      continue;
-    }
-    const item = entry as Record<string, unknown>;
-    const sourceId = typeof item.sourceId === "string" ? item.sourceId : "";
-    if (!sourceId || !requestedIds.has(sourceId)) {
-      continue;
-    }
-    const chunks = Array.isArray(item.chunks)
-      ? item.chunks.filter((chunk): chunk is string => typeof chunk === "string")
-      : [];
-    const source = request.sources.find((candidate) => candidate.sourceId === sourceId);
-    byId.set(
-      sourceId,
-      source && chunks.length > 0 && chunks.join("") === source.contentText
-        ? chunks
-        : [source?.contentText ?? ""],
-    );
+    byId.set(entry.sourceId, entry.chunks);
   }
   return {
     results: request.sources.map((source) => ({
       sourceId: source.sourceId,
       chunks: byId.get(source.sourceId) ?? [source.contentText],
-    })),
-  };
-}
-
-function defaultSourceChunkBatchResponse(
-  request: SourceChunkBatchRequest,
-): SourceChunkBatchResponse {
-  return {
-    results: request.sources.map((source) => ({
-      sourceId: source.sourceId,
-      chunks: [source.contentText],
     })),
   };
 }

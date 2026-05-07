@@ -137,6 +137,43 @@ Deno.test("source_chunk_batch rejects chunks that do not join to the source text
   }
 });
 
+Deno.test("source_chunk_batch fills omitted requested sources with one whole verbatim chunk", async () => {
+  const upstream = Deno.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen: () => {},
+  }, () =>
+    jsonStructuredResponse({
+      results: [{
+        sourceId: "s1",
+        chunks: ["alpha\n"],
+      }],
+    }));
+  const clients = createStructuredClients(
+    testConfig(`http://127.0.0.1:${upstream.addr.port}`),
+    "codex-request-model",
+    "Bearer sk-test",
+  );
+
+  try {
+    const result = await clients.sourceChunkBatch({
+      sources: [
+        { sourceId: "s1", sourceKind: "tool", contentText: "alpha\n" },
+        { sourceId: "s2", sourceKind: "assistant", contentText: "beta\n" },
+      ],
+    });
+
+    assertEquals(result, {
+      results: [
+        { sourceId: "s1", chunks: ["alpha\n"] },
+        { sourceId: "s2", chunks: ["beta\n"] },
+      ],
+    });
+  } finally {
+    await upstream.shutdown();
+  }
+});
+
 Deno.test("source_chunk_batch overflow fallback returns one whole verbatim chunk per source", async () => {
   const clients = createStructuredClients(
     {

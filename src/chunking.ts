@@ -215,7 +215,7 @@ async function chunkBatchWithModel(
     (attempt) => clients.sourceChunkBatch(request, attempt),
   ).catch(() => null);
   if (!response || !Array.isArray(response.results)) {
-    return wholeSelectorFallback(sources);
+    return wholePieceFallback(sources);
   }
   const byId = new Map<string, ChunkSelector[]>();
   const requestedIds = new Set(sources.map((source) => source.sourceId));
@@ -231,7 +231,7 @@ async function chunkBatchWithModel(
       continue;
     }
     if (byId.has(entry.sourceId)) {
-      return wholeSelectorFallback(sources);
+      return wholePieceFallback(sources);
     }
     const source = sources.find((candidate) => candidate.sourceId === entry.sourceId);
     const selectors = source ? materializeModelChunks(entry.chunks, source) : null;
@@ -246,7 +246,7 @@ async function chunkBatchWithModel(
   return { selectorsBySourceId: byId, modelSelectedSourceIds };
 }
 
-function wholeSelectorFallback(sources: RoundSource[]): {
+function wholePieceFallback(sources: RoundSource[]): {
   selectorsBySourceId: Map<string, ChunkSelector[]>;
   modelSelectedSourceIds: Set<string>;
 } {
