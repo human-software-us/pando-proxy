@@ -12,9 +12,11 @@
    - stored active pieces == prompt-visible active pieces
 
 3. Dropping requires positive proof.
-   - exact duplicate content hash, with a duplicate source marker kept on the canonical piece
+   - exact duplicate content hash, with a duplicate source marker kept on the canonical piece and
+     rendered where the duplicate appeared
    - explicit invalidation
    - certain structured drop decision
+   - reason-specific applicability checks for narrow reasons like confirmed old-task switch drops
    - if uncertain, keep
 
 4. Archive is separate.

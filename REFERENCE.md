@@ -39,6 +39,7 @@ type MemoryPiece = {
     pieceId: string;
     sourceId: string;
     sourceKind: "user" | "assistant" | "tool" | "tool_call";
+    createdSeq?: number;
     toolName?: string;
     pointer?: Record<string, unknown>;
   }>;
@@ -61,7 +62,8 @@ Important invariant:
 - raw payloads live in the lossless archive
 - pieces reference exact original sources through selectors
 - exact duplicate content is stored once in active memory, with duplicate source markers attached to
-  the canonical kept piece
+  the canonical kept piece; duplicate markers preserve the duplicate piece id, source identity,
+  creation order when known, and a pointer or selector fallback for where the duplicate appeared
 - there are no memory groups, summaries, or visibility tiers
 
 ## Structured Manager Calls
@@ -172,6 +174,10 @@ drop=true + accepted reason => drop
 anything else => keep
 ```
 
+`old_task_after_confirmed_task_switch` has an extra local applicability check. It is accepted only
+when the effective route is `new_task`, the target piece came from the previous active task candidate
+set, and the piece was created before the new task's `startedRound`.
+
 ### `source_chunk_batch`
 
 ```ts
@@ -226,6 +232,7 @@ taskId=task_2_abcd1234 startedRound=2 lastRound=5
 <piece pieceId="..." sourceKind="tool">
 ...exact materialized source span(s)...
 </piece>
+<duplicate_marker duplicatePieceId="..." duplicateSourceId="..." duplicateSourceKind="user" canonicalPieceId="..." canonicalSourceId="..." canonicalSourceKind="tool" duplicatePointer="..." />
 </exact_pieces>
 <archive>
 archivedSourceCount=12

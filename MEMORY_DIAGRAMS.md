@@ -20,12 +20,17 @@ new round sources
     +--> materialize exact new pieces
     |
     +--> deterministic filters
-    |      - duplicate content hashes become duplicate source markers
+    |      - same-task duplicate content hashes become duplicate source markers before prune
+    |      - on new_task, old/new duplicates wait until after prune so old chunks can be rescued
     |
     +--> piece_drop_batch over full-payload batches
     |      - batch includes shared user context + manifest + evaluated payloads
     |      - drop only with accepted concrete reason
     |      - malformed, oversized, missing, or uncertain means keep
+    |
+    +--> post-prune duplicate collapse
+    |      - exact duplicate survivors become duplicate source markers
+    |      - new_task old/new duplicates prefer the new piece as canonical
     |
     +--> persist activeTask + surviving exact pieces
            - stored pieces == next prompt pieces
@@ -55,7 +60,7 @@ incoming request
 ACTIVE MEMORY
   - one activeTask
   - exact surviving pieces
-  - duplicate source markers on canonical duplicate content
+  - duplicate source markers on canonical duplicate content, rendered at the duplicate's timeline spot
   - always shown next round
 
 ARCHIVE

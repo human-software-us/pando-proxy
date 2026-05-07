@@ -156,6 +156,12 @@ bundle and in the current active task.
 If prune fails after a confirmed `new_task`, the old task identity still stays archived. The
 fail-closed behavior is only that old pieces remain active as candidates under the new task.
 
+Exact old/new duplicate pieces are intentionally not collapsed before prune on `new_task`. They are
+both included as prune candidates first, so the manager can rescue or drop old-task chunks with full
+context. After prune, any exact duplicate survivors are collapsed deterministically, preferring the
+new-task piece over the old-task piece and leaving a duplicate source marker at the removed old
+location.
+
 ## Full-Payload Prune Batches
 
 `piece_drop_batch` sees full payloads, not cards, for the pieces it is allowed to decide on.
@@ -255,6 +261,14 @@ drop=true
 + the piece full payload was included in this batch
 ```
 
+For `old_task_after_confirmed_task_switch`, the reason must also apply to the specific piece:
+
+```text
+effective route is new_task
+piece id came from the previous active task candidate set
+piece.createdSeq < activeTask.startedRound for the new task
+```
+
 Allowed reasons:
 
 ```ts
@@ -296,8 +310,13 @@ active-memory loss hard.
 
 ## Duplicate Content
 
-Exact duplicate payloads are not repeated in active memory. The first retained piece stays as the
-canonical source for that content, and later duplicate pieces are represented as `duplicateSources`
-markers on that canonical piece.
+Exact duplicate payloads are not repeated in active memory. For same-task duplicate collapse, the
+first retained piece stays as the canonical source for that content. For new-task old/new duplicate
+collapse after prune, the new-task piece is preferred over the old-task piece.
+
+Removed duplicate pieces are represented as `duplicateSources` markers on the canonical kept piece.
+Those markers preserve the removed duplicate's piece id, source id, source kind, creation order when
+known, tool name when present, and a pointer or selector fallback showing where the duplicate
+appeared.
 
 This keeps prompt data compact without hiding the fact that the same content appeared elsewhere.
