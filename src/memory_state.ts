@@ -15,7 +15,7 @@ export type MemoryGroup = {
 
 export type PieceDraft = {
   id: string;
-  sourceKind: "user" | "assistant" | "tool";
+  sourceKind: "user" | "assistant" | "tool" | "tool_call";
   sourceId: string;
   toolName?: string;
   content: unknown;
@@ -28,7 +28,7 @@ export type PieceDraft = {
 export type MemoryPiece = {
   id: string;
   groupId: string;
-  sourceKind: "user" | "assistant" | "tool";
+  sourceKind: "user" | "assistant" | "tool" | "tool_call";
   sourceId: string;
   toolName?: string;
   previewText: string;

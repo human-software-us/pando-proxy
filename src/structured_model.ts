@@ -1,5 +1,7 @@
 import { ProxyConfig, resolveUpstreamBaseUrl, responsesUrl } from "./config.ts";
 import {
+  type DropConfidence,
+  type DropReason,
   type GroupIntentRequest,
   type GroupIntentResponse,
   type PieceRetentionBatchRequest,
@@ -229,7 +231,7 @@ export function createStructuredClients(
         onWireResponse,
       );
       await emitUsage(result, onUsage);
-      return result.value;
+      return normalizeRetainedPiecePruneResponse(request, result.value);
     },
   };
 }
@@ -916,8 +918,26 @@ function pieceRetentionBatchJsonSchema(request: PieceRetentionBatchRequest): Jso
         ],
       },
       supersedesPieceIds: { type: "array", items: { type: "string" } },
+      dropConfidence: { type: "string", enum: ["certain", "probable", "uncertain"] },
+      dropReason: {
+        anyOf: [
+          {
+            type: "string",
+            enum: [
+              "duplicate",
+              "transient_formatting",
+              "ack_only",
+              "tool_noise",
+              "superseded",
+              "synthetic_memory",
+              "empty_or_invalid",
+            ],
+          },
+          { type: "null" },
+        ],
+      },
     },
-    required: ["keep", "groupId", "supersedesPieceIds"],
+    required: ["keep", "groupId", "supersedesPieceIds", "dropConfidence", "dropReason"],
     additionalProperties: false,
   };
 
@@ -941,9 +961,32 @@ function pieceRetentionBatchJsonSchema(request: PieceRetentionBatchRequest): Jso
 const retainedPiecePruneJsonSchema = {
   type: "object",
   properties: {
-    dropPieceIds: { type: "array", items: { type: "string" } },
+    dropDecisions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          pieceId: { type: "string" },
+          dropConfidence: { type: "string", enum: ["certain", "probable", "uncertain"] },
+          dropReason: {
+            type: "string",
+            enum: [
+              "duplicate",
+              "transient_formatting",
+              "ack_only",
+              "tool_noise",
+              "superseded",
+              "synthetic_memory",
+              "empty_or_invalid",
+            ],
+          },
+        },
+        required: ["pieceId", "dropConfidence", "dropReason"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ["dropPieceIds"],
+  required: ["dropDecisions"],
   additionalProperties: false,
 };
 
@@ -1005,20 +1048,24 @@ Return JSON matching the supplied schema.
 Rules:
 - You are given post-round groups, retained anchors, and preview/pointer/selector anchors for all new exact pieces.
 - Return a decision for every new piece id under decisionsByPieceId.
-- Keep only exact pieces that materially matter later.
+- Keep every piece unless it is certainly useless.
+- Set keep=false only when dropConfidence="certain" and dropReason is one of the allowed known-useless reasons.
+- If a piece might matter later, might be needed for recall targeting, or you are unsure, set keep=true.
 - Prefer original user literals and original tool results over assistant restatements.
 - Keep original raw sources when they may matter later for verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction.
 - Do not treat a group summary as a replacement for a canonical raw source when exact reproduction of the original text may matter later.
-- Do not retain transient one-turn response-formatting instructions such as "reply X only", "answer UNKNOWN only", or "do not reveal it this round" unless they also contain durable facts that will matter later.
-- Do not retain current-turn answer-shape requests that only specify how to format this response, such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" instructions, when the underlying durable evidence already exists elsewhere.
-- Queries, questions, and answer-shape prompts with placeholders such as "...", "<...>", "<full ...>", or requested key names are not durable evidence and must keep=false unless they also introduce brand-new exact source material to remember.
+- You may drop transient one-turn response-formatting instructions such as "reply X only", "answer UNKNOWN only", or "do not reveal it this round" only when they contain no durable facts that could matter later.
+- You may drop current-turn answer-shape requests that only specify how to format this response, such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" instructions, only when the underlying durable evidence already exists elsewhere.
+- Queries, questions, and answer-shape prompts with placeholders such as "...", "<...>", "<full ...>", or requested key names are usually not durable evidence, but keep them if they introduce brand-new exact source material or uncertainty exists.
 - Example of keep=false: a piece whose only purpose is "Return exact JSON only: {\"a\":\"<...>\",\"c\":\"<...>\"}" or similar current-turn output-shape instructions.
 - Also keep=false for a current-turn output template that embeds concrete values but is still only asking for this round's answer shape, for example "Return exact JSON only: {\"alpha_token\":\"ALPHA-7741\",\"beta_port\":9443}". That is not a new remembered source unless the user explicitly says to remember/store it.
 - When a round contains both durable exact evidence and transient answer-formatting instructions, keep the durable evidence and drop the transient control chatter.
 - groupId must be an active group when keep=true.
-- When keep=false, set groupId to null and supersedesPieceIds to [].
+- When keep=true, set dropConfidence="uncertain" and dropReason=null unless this kept piece certainly supersedes older retained pieces.
+- When keep=false, set groupId=null, supersedesPieceIds=[], dropConfidence="certain", and a concrete dropReason.
 - supersedesPieceIds should only list older retained pieces or earlier same-round new pieces made obsolete by the new piece.
 - Never supersede older retained pieces with a query, question, or answer-shape request. Only supersede when the new piece itself contains replacement exact evidence that should now be remembered instead.
+- To supersede old pieces, keep the replacement piece and set dropConfidence="certain", dropReason="superseded", and supersedesPieceIds to the exact older piece ids.
 - Return JSON only.
 `.trim();
 
@@ -1026,8 +1073,18 @@ function normalizePieceRetentionBatchResponse(
   request: PieceRetentionBatchRequest,
   value: unknown,
 ): PieceRetentionBatchResponse {
+  const fallbackGroupId = request.groups.find((group) => group.status === "active")?.id ?? null;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { decisions: [] };
+    return {
+      decisions: request.newPieces.map((piece) => ({
+        pieceId: piece.id,
+        keep: true,
+        groupId: fallbackGroupId,
+        supersedesPieceIds: [],
+        dropConfidence: "uncertain",
+        dropReason: null,
+      })),
+    };
   }
   const record = value as Record<string, unknown>;
   const decisionsByPieceId = (
@@ -1046,14 +1103,61 @@ function normalizePieceRetentionBatchResponse(
         : {};
       return {
         pieceId: piece.id,
-        keep: decision.keep === true,
-        groupId: typeof decision.groupId === "string" ? decision.groupId : null,
+        keep: decision.keep === false ? false : true,
+        groupId: typeof decision.groupId === "string" ? decision.groupId : fallbackGroupId,
         supersedesPieceIds: Array.isArray(decision.supersedesPieceIds)
           ? decision.supersedesPieceIds.map(String)
           : [],
+        dropConfidence: coerceDropConfidence(decision.dropConfidence),
+        dropReason: coerceDropReason(decision.dropReason),
       };
     }),
   };
+}
+
+function normalizeRetainedPiecePruneResponse(
+  request: RetainedPiecePruneRequest,
+  value: unknown,
+): RetainedPiecePruneResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { dropPieceIds: [], dropDecisions: [] };
+  }
+  const record = value as Record<string, unknown>;
+  const retainedOldIds = new Set(request.retainedOldPieces.map((piece) => piece.id));
+  const dropDecisions = Array.isArray(record.dropDecisions)
+    ? record.dropDecisions
+      .filter((decision): decision is Record<string, unknown> =>
+        Boolean(decision) && typeof decision === "object" && !Array.isArray(decision)
+      )
+      .map((decision) => ({
+        pieceId: String(decision.pieceId ?? ""),
+        dropConfidence: coerceDropConfidence(decision.dropConfidence),
+        dropReason: coerceDropReason(decision.dropReason) ?? "empty_or_invalid",
+      }))
+      .filter((decision) => retainedOldIds.has(decision.pieceId))
+    : [];
+  return {
+    dropPieceIds: dropDecisions.map((decision) => decision.pieceId),
+    dropDecisions,
+  };
+}
+
+function coerceDropConfidence(value: unknown): DropConfidence {
+  return value === "certain" || value === "probable" || value === "uncertain" ? value : "uncertain";
+}
+
+function coerceDropReason(value: unknown): DropReason | null {
+  return typeof value === "string" && (
+      value === "duplicate" ||
+      value === "transient_formatting" ||
+      value === "ack_only" ||
+      value === "tool_noise" ||
+      value === "superseded" ||
+      value === "synthetic_memory" ||
+      value === "empty_or_invalid"
+    )
+    ? value
+    : null;
 }
 
 const retainedPiecePruneSystemPrompt = `
@@ -1063,17 +1167,19 @@ Return JSON matching the supplied schema.
 
 Rules:
 - You are given the current groups, surviving old pieces, and newly kept pieces.
-- dropPieceIds must be a subset of ids from retainedOldPieces only.
+- dropDecisions must contain only ids from retainedOldPieces.
 - Newly kept pieces are shown as context only; do not drop them in this call.
-- Drop only old pieces that are clearly obsolete now.
+- Drop only old pieces that are certainly useless now.
+- If a retained old piece might matter later, might be needed for exact reproduction, or you are unsure, do not include it in dropDecisions.
 - Prefer to keep earlier original user literals, tokens, constraints, and exact values when later rounds may still depend on them.
-- Prefer to drop transient response-formatting, acknowledgment, or answer-shape pieces before dropping earlier durable exact evidence.
-- Drop current-turn answer-shape requests such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" prompts before dropping durable exact evidence.
-- Drop queries/questions whose only purpose is to ask for already-known values in a specific shape, especially when they contain placeholders like "...", "<...>", or "<full ...>".
-- Drop current-turn output templates even when they embed concrete values, unless the user explicitly framed that template itself as new exact source material to remember later.
+- You may drop transient response-formatting, acknowledgment, or answer-shape pieces before dropping earlier durable exact evidence, but only with dropConfidence="certain".
+- You may drop current-turn answer-shape requests such as exact JSON wrappers, requested output key names, placeholder templates, or "return X only" prompts before dropping durable exact evidence, but only with dropConfidence="certain".
+- You may drop queries/questions whose only purpose is to ask for already-known values in a specific shape, especially when they contain placeholders like "...", "<...>", or "<full ...>", but keep them if they contain any new exact source material.
+- You may drop current-turn output templates even when they embed concrete values, unless the user explicitly framed that template itself as new exact source material to remember later.
 - Do not drop the only remaining canonical raw source for material that may need verbatim, byte-sensitive, spacing-sensitive, punctuation-sensitive, indentation-sensitive, or line-break-exact reproduction later.
 - For formatting-sensitive blocks or snippets, prefer to keep the original raw source piece rather than relying on the group summary alone.
 - If unsure, keep the old piece.
+- Every drop decision must include dropConfidence="certain" and a concrete dropReason.
 - Return JSON only.
 `.trim();
 

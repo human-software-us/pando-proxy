@@ -4,7 +4,7 @@ import { isRecord } from "./memory_state.ts";
 
 export type RoundSource = {
   sourceId: string;
-  sourceKind: "user" | "assistant" | "tool";
+  sourceKind: "user" | "assistant" | "tool" | "tool_call";
   payload: unknown;
   toolName?: string;
   pointer?: Record<string, unknown>;
@@ -78,6 +78,24 @@ export async function extractAssistantSourcesFromResponse(
           sourceId,
           sourceKind: "tool",
           payload: normalizeToolPayload(toolName, "output" in item ? item.output : item),
+          ...(toolName ? { toolName } : {}),
+          pointer: {
+            ...(callId ? { callId } : {}),
+            itemType: type,
+          },
+        });
+      } else if (isToolCallItem(type)) {
+        // The agent's invocation of a tool (function_call / *_tool_call). One source
+        // per call; later treated as one chunk and always-kept on first capture.
+        // Disambiguate from the matching function_call_output (which shares call_id):
+        // prefix the call's sourceId with "tool_call:" so they don't collide.
+        const baseId = await responseItemId(item, response, index);
+        const callId = typeof item.call_id === "string" ? item.call_id : undefined;
+        const toolName = typeof item.name === "string" ? item.name : undefined;
+        out.push({
+          sourceId: `tool_call:${baseId}`,
+          sourceKind: "tool_call",
+          payload: item,
           ...(toolName ? { toolName } : {}),
           pointer: {
             ...(callId ? { callId } : {}),
@@ -217,6 +235,16 @@ function isToolOutputItem(type: string): boolean {
     type.endsWith("_tool_call_output") ||
     type === "custom_tool_call_output" ||
     type === "mcp_tool_call_output";
+}
+
+function isToolCallItem(type: string): boolean {
+  if (isToolOutputItem(type)) {
+    return false;
+  }
+  return type === "function_call" ||
+    type.endsWith("_tool_call") ||
+    type === "custom_tool_call" ||
+    type === "mcp_tool_call";
 }
 
 function normalizeToolPayload(toolName: string | undefined, payload: unknown): unknown {

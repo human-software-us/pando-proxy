@@ -31,16 +31,22 @@ export async function chunkRoundSources(
 ): Promise<ChunkRoundSourcesResult> {
   const out: PieceDraft[] = [];
   const batchedSources = sources.filter((source) =>
-    !(source.sourceKind === "tool" && isPandoToolName(source.toolName))
+    !(source.sourceKind === "tool" && isPandoToolName(source.toolName)) &&
+    source.sourceKind !== "tool_call"
   );
   const batchedSelectors = batchedSources.length > 0
     ? await chunkBatchWithModel(batchedSources, clients)
     : new Map<string, ChunkSelector[]>();
 
   for (const source of sources) {
-    const selectors = source.sourceKind === "tool" && isPandoToolName(source.toolName)
-      ? deterministicPandoSelectors(source.payload)
-      : batchedSelectors.get(source.sourceId) ?? [{ kind: "whole" } satisfies ChunkSelector];
+    let selectors: ChunkSelector[];
+    if (source.sourceKind === "tool_call") {
+      selectors = [{ kind: "whole" } satisfies ChunkSelector];
+    } else if (source.sourceKind === "tool" && isPandoToolName(source.toolName)) {
+      selectors = deterministicPandoSelectors(source.payload);
+    } else {
+      selectors = batchedSelectors.get(source.sourceId) ?? [{ kind: "whole" } satisfies ChunkSelector];
+    }
     const pieces = materializeSourceSelectors(source, selectors);
     out.push(
       ...(pieces.length > 0 ? pieces : materializeSourceSelectors(source, [{ kind: "whole" }])),

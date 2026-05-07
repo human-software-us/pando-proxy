@@ -374,6 +374,8 @@ function applyStubRetentionPolicy(
       keep: keepIds.includes(piece.id),
       groupId: keepIds.includes(piece.id) ? activeGroupId : null,
       supersedesPieceIds: [],
+      dropConfidence: keepIds.includes(piece.id) ? "uncertain" : "certain",
+      dropReason: keepIds.includes(piece.id) ? null : "tool_noise",
     })),
   };
 }
@@ -412,16 +414,33 @@ function applyStubRetainedPiecePrune(
 ): RetainedPiecePruneResponse {
   switch (policy) {
     case "retain-all":
-      return { dropPieceIds: [] };
+      return { dropPieceIds: [], dropDecisions: [] };
     case "keep-none":
-      return { dropPieceIds: request.retainedOldPieces.map((piece) => piece.id) };
+      return retainedDropResponse(request.retainedOldPieces.map((piece) => piece.id), "tool_noise");
     case "drop-tools":
-      return { dropPieceIds: selectDropToolsPrunedIds(request) };
+      return retainedDropResponse(selectDropToolsPrunedIds(request), "tool_noise");
     case "retain-recent":
-      return { dropPieceIds: selectRecentPrunedIds(request, 12, 32_768) };
+      return retainedDropResponse(selectRecentPrunedIds(request, 12, 32_768), "tool_noise");
     case "cap-bytes":
-      return { dropPieceIds: selectRecentPrunedIds(request, Number.POSITIVE_INFINITY, 32_768) };
+      return retainedDropResponse(
+        selectRecentPrunedIds(request, Number.POSITIVE_INFINITY, 32_768),
+        "tool_noise",
+      );
   }
+}
+
+function retainedDropResponse(
+  dropPieceIds: string[],
+  dropReason: "tool_noise",
+): RetainedPiecePruneResponse {
+  return {
+    dropPieceIds,
+    dropDecisions: dropPieceIds.map((pieceId) => ({
+      pieceId,
+      dropConfidence: "certain",
+      dropReason,
+    })),
+  };
 }
 
 function selectDropToolsPrunedIds(request: RetainedPiecePruneRequest): string[] {
