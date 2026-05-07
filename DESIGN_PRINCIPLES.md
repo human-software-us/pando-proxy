@@ -33,12 +33,12 @@
 6. Chunking returns exact selectors only.
    - show the model the exact raw source text that local code will materialize
    - do not ask the model for character offsets
-   - model output is only `whole` or exact copied chunk text
+   - model output is only `whole` or exact start/end boundary text
    - no summaries, labels, content types, or boundary classifications
-   - local code maps exact chunk text to persisted `[start,end)` selectors
-   - repeated exact chunk text in one source materializes every occurrence
+   - local code maps exact start-to-next-end boundary pairs to persisted `[start,end)` selectors
+   - repeated boundary pairs in one source materialize every matching occurrence
    - if returned chunks are not exact and valid, keep the source whole
-   - line/window splitting is only an oversized deterministic fallback, not the semantic goal
+   - no deterministic fallback splitting
 
 7. Local code is structural only.
    - persistence

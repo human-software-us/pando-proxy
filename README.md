@@ -43,11 +43,8 @@ Normal end-of-round flow:
 2. run `source_chunk_batch` and `task_route` in parallel
    - if chunking fails, returns malformed output, omits a requested source, or is too large for the
      structured window, that source is kept whole
-   - if chunking returns `whole` for a large text payload, the proxy deterministically splits it on
-     exact JSON-array boundaries or bounded line windows before active retention
-   - for large `rg` output, the chunk prompt asks for conceptual boundaries first: path-prefix
-     groups for `rg --files ...`, file groups for `rg -n "..." ...`, then line ranges only as a
-     fallback
+   - the chunker never creates deterministic fallback chunks; it only materializes model-selected
+     exact chunks or keeps the source whole
 3. materialize exact new pieces
 4. apply the task route
 5. for `same_task` and `revive_task`, collapse exact duplicate new pieces by content hash while

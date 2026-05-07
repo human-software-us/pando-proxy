@@ -19,8 +19,6 @@ const PANDO_ARRAY_KEYS = [
   "namespaces",
   "edges",
 ];
-const LARGE_WHOLE_SPLIT_BYTES = 64_000;
-const MAX_DETERMINISTIC_SPAN_BYTES = 48_000;
 
 export type ChunkRoundSourcesResult = {
   pieces: PieceDraft[];
@@ -55,7 +53,6 @@ export async function chunkRoundSources(
       selectors = chunkedWithModel.selectorsBySourceId.get(source.sourceId) ??
         [{ kind: "whole" } satisfies ChunkSelector];
     }
-    selectors = expandLargeWholeSelectors(source, selectors);
     const pieces = materializeSourceSelectors(source, selectors);
     out.push(
       ...(pieces.length > 0 ? pieces : materializeSourceSelectors(source, [{ kind: "whole" }])),
@@ -89,166 +86,6 @@ export function deterministicPandoSelectors(payload: unknown): ChunkSelector[] {
   }
 
   return [{ kind: "whole" }];
-}
-
-function expandLargeWholeSelectors(
-  source: RoundSource,
-  selectors: ChunkSelector[],
-): ChunkSelector[] {
-  const out: ChunkSelector[] = [];
-  for (const selector of selectors) {
-    if (selector.kind !== "whole") {
-      out.push(selector);
-      continue;
-    }
-    const text = sourceTextView(source);
-    if (byteSize(text) <= LARGE_WHOLE_SPLIT_BYTES) {
-      out.push(selector);
-      continue;
-    }
-    const spans = splitLargeTextIntoBoundarySpans(text);
-    if (spans.length > 1) {
-      out.push(...spans.map((span): ChunkSelector => ({ kind: "chunks", chunks: [span] })));
-    } else {
-      out.push(selector);
-    }
-  }
-  return out;
-}
-
-function splitLargeTextIntoBoundarySpans(text: string): Array<{ start: number; end: number }> {
-  const jsonArraySpans = topLevelJsonArrayElementSpans(text);
-  if (jsonArraySpans.length > 1) {
-    return packSpansByApproxBytes(jsonArraySpans, text);
-  }
-  return lineWindowSpans(text);
-}
-
-function topLevelJsonArrayElementSpans(text: string): Array<{ start: number; end: number }> {
-  const trimmedStart = text.search(/\S/);
-  if (trimmedStart < 0 || text[trimmedStart] !== "[") {
-    return [];
-  }
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  let elementStart = -1;
-  let rootClosedAt = -1;
-  const spans: Array<{ start: number; end: number }> = [];
-
-  for (let index = trimmedStart; index < text.length; index += 1) {
-    const char = text[index];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-    if (char === "[" || char === "{") {
-      depth += 1;
-      if (depth === 1 && char === "[") {
-        elementStart = index + 1;
-      }
-      continue;
-    }
-    if (char === "]" || char === "}") {
-      if (depth === 1 && char === "]") {
-        pushTrimmedSpan(spans, text, elementStart, index);
-        rootClosedAt = index;
-      }
-      depth -= 1;
-      if (depth < 0) {
-        return [];
-      }
-      continue;
-    }
-    if (char === "," && depth === 1) {
-      pushTrimmedSpan(spans, text, elementStart, index);
-      elementStart = index + 1;
-    }
-  }
-  if (depth !== 0 || rootClosedAt < 0) {
-    return [];
-  }
-  return text.slice(rootClosedAt + 1).trim() === "" ? spans : [];
-}
-
-function pushTrimmedSpan(
-  spans: Array<{ start: number; end: number }>,
-  text: string,
-  start: number,
-  end: number,
-): void {
-  let spanStart = start;
-  let spanEnd = end;
-  while (spanStart < spanEnd && /\s/.test(text[spanStart])) {
-    spanStart += 1;
-  }
-  while (spanEnd > spanStart && /\s/.test(text[spanEnd - 1])) {
-    spanEnd -= 1;
-  }
-  if (spanEnd > spanStart) {
-    spans.push({ start: spanStart, end: spanEnd });
-  }
-}
-
-function packSpansByApproxBytes(
-  spans: Array<{ start: number; end: number }>,
-  text: string,
-): Array<{ start: number; end: number }> {
-  const out: Array<{ start: number; end: number }> = [];
-  let current: { start: number; end: number } | null = null;
-  for (const span of spans) {
-    if (!current) {
-      current = { ...span };
-      continue;
-    }
-    const packedBytes = byteSize(text.slice(current.start, span.end));
-    if (packedBytes > MAX_DETERMINISTIC_SPAN_BYTES) {
-      out.push(current);
-      current = { ...span };
-      continue;
-    }
-    current.end = span.end;
-  }
-  if (current) {
-    out.push(current);
-  }
-  return out;
-}
-
-function lineWindowSpans(text: string): Array<{ start: number; end: number }> {
-  if (!text.includes("\n")) {
-    return [];
-  }
-  const spans: Array<{ start: number; end: number }> = [];
-  let windowStart = 0;
-  let cursor = 0;
-  while (cursor < text.length) {
-    const nextNewline = text.indexOf("\n", cursor);
-    const lineEnd = nextNewline < 0 ? text.length : nextNewline + 1;
-    if (
-      lineEnd > windowStart &&
-      byteSize(text.slice(windowStart, lineEnd)) > MAX_DETERMINISTIC_SPAN_BYTES &&
-      cursor > windowStart
-    ) {
-      spans.push({ start: windowStart, end: cursor });
-      windowStart = cursor;
-    }
-    cursor = lineEnd;
-  }
-  if (windowStart < text.length) {
-    spans.push({ start: windowStart, end: text.length });
-  }
-  return spans.length > 1 ? spans : [];
 }
 
 export function materializeSourceSelectors(
@@ -448,39 +285,54 @@ function materializeModelChunkSelectors(
       if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
         return null;
       }
-      const text = (chunk as Record<string, unknown>).text;
-      if (typeof text !== "string" || text.length === 0) {
+      const item = chunk as Record<string, unknown>;
+      const startText = item.startText;
+      const endText = item.endText;
+      if (
+        typeof startText !== "string" ||
+        typeof endText !== "string" ||
+        startText.length === 0 ||
+        endText.length === 0
+      ) {
         return null;
       }
-      const matches = findAllExactOccurrences(sourceText, text);
+      const matches = findAllBoundaryOccurrences(sourceText, startText, endText);
       if (matches.length === 0) {
         return null;
       }
       ranges.push(...matches);
     }
   }
-  const selectors = ranges
-    .sort((left, right) => left.start - right.start || left.end - right.end)
-    .map((range): ChunkSelector => ({ kind: "chunks", chunks: [range] }));
-  if (!selectors.every((selector) => isValidMaterializedChunkSelector(selector, sourceText))) {
+  const sortedRanges = ranges.sort((left, right) =>
+    left.start - right.start || left.end - right.end
+  );
+  const combinedSelector: ChunkSelector = { kind: "chunks", chunks: sortedRanges };
+  if (!isValidMaterializedChunkSelector(combinedSelector, sourceText)) {
     return null;
   }
-  return selectors;
+  return sortedRanges.map((range): ChunkSelector => ({ kind: "chunks", chunks: [range] }));
 }
 
-function findAllExactOccurrences(
+function findAllBoundaryOccurrences(
   text: string,
-  needle: string,
+  startText: string,
+  endText: string,
 ): Array<{ start: number; end: number }> {
   const out: Array<{ start: number; end: number }> = [];
   let cursor = 0;
   while (cursor <= text.length) {
-    const start = text.indexOf(needle, cursor);
+    const start = text.indexOf(startText, cursor);
     if (start < 0) {
       break;
     }
-    out.push({ start, end: start + needle.length });
-    cursor = start + Math.max(needle.length, 1);
+    const endSearchStart = startText === endText ? start : start + startText.length;
+    const endStart = text.indexOf(endText, endSearchStart);
+    if (endStart < 0) {
+      break;
+    }
+    const end = endStart + endText.length;
+    out.push({ start, end });
+    cursor = end;
   }
   return out;
 }

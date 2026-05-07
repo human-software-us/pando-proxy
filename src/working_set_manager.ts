@@ -102,7 +102,7 @@ export type SourceChunkBatchResponse = {
     sourceId: string;
     selectors: Array<
       | { kind: "whole" }
-      | { kind: "chunks"; chunks: Array<{ text: string }> }
+      | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> }
     >;
   }>;
 };

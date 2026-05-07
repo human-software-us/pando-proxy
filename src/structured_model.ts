@@ -853,9 +853,10 @@ function renderSourceChunkBatchInput(request: SourceChunkBatchRequest): string {
     "Return chunk selectors for these sources.",
     "For each source, return exactly one of:",
     '- {"kind":"whole"}',
-    '- {"kind":"chunks","chunks":[{"text":"exact chunk copied from the source"}]}',
-    "For chunks, return the whole chunk text exactly as it appears in the raw source body.",
-    "Do not return summaries, labels, content types, or character offsets.",
+    '- {"kind":"chunks","chunks":[{"startText":"exact first text in chunk","endText":"exact last text in chunk"}]}',
+    "For chunks, return exact boundary substrings from the raw source body. The selected chunk includes both boundaries.",
+    "Prefer unique boundary text when possible. If the same boundary pair genuinely repeats, use it consistently.",
+    "Do not return summaries, labels, content types, full chunk text, or character offsets.",
     "If exact coherent chunks are not clear, return whole for that source.",
     "",
   ];
@@ -899,9 +900,10 @@ const chunkSelectorSchema = {
           items: {
             type: "object",
             properties: {
-              text: { type: "string" },
+              startText: { type: "string" },
+              endText: { type: "string" },
             },
-            required: ["text"],
+            required: ["startText", "endText"],
             additionalProperties: false,
           },
         },
@@ -1054,20 +1056,23 @@ Return JSON matching the supplied schema.
 Rules:
 - Process all listed sources together.
 - Do not summarize, paraphrase, or rewrite content.
-- Return only whole selectors or exact copied chunk text. Never return summaries, labels, content types, boundary kinds, or character offsets.
+- Return only whole selectors or exact start/end boundary text. Never return summaries, labels, content types, boundary kinds, full chunk payloads, or character offsets.
 - Return exact selectors only:
   - whole
-  - chunks with the complete exact chunk text copied from the raw source body shown for that source
-- Each chunks selector may contain multiple ordered non-overlapping chunks for one conceptual piece.
+  - chunks with exact startText and endText substrings copied from the raw source body shown for that source
+- startText is the first text in the chunk; endText is the last text in the chunk; the chunk includes both.
+- Prefer boundary text that uniquely identifies the intended chunk when possible.
+- If the same boundary pair genuinely repeats, return the same pair once; local code will create a chunk for each consistent start-to-next-end occurrence and duplicate handling will collapse duplicate pieces later.
+- Each chunks selector may contain multiple ordered non-overlapping boundary pairs for one conceptual piece.
 - Keep chunks in original order.
-- Do not invent, rewrite, truncate, or paraphrase chunk text.
+- Do not invent, rewrite, truncate, or paraphrase boundary text.
 - Prefer boundary-safe exact pieces over one huge whole selector when the source is large.
 - For large shell/search/test/log outputs, first split on conceptual boundaries: command sections, failure blocks, stack traces, assertion blocks, test-case sections, file blocks, path-prefix groups, or other visible separators.
-- For 'rg --files ...' output, each line is a path. Prefer conceptual groups by top-level directory, package, namespace, or subsystem path, for example consecutive blocks for 'src/metabase/api/...', 'src/metabase/search/...', 'test/metabase/...', or 'enterprise/backend/...'. Only fall back to bounded contiguous line ranges when no stable path grouping is visible.
-- For 'rg -n "..." ...' output, lines are usually 'path:line:match'. Prefer grouping consecutive matches by file path first. For very large files, split by contiguous line-number ranges or nearby match clusters. Keep complete match lines intact.
-- For broad repository searches such as 'rg -n "namespace|module" /workspace ...', prefer groups by subsystem/path prefix, then by file, then by contiguous line ranges.
+- For 'rg --files ...' output, each line is a path. Prefer conceptual groups by top-level directory, package, namespace, or subsystem path, for example consecutive blocks for 'src/metabase/api/...', 'src/metabase/search/...', 'test/metabase/...', or 'enterprise/backend/...'. If no stable grouping is visible, return whole.
+- For 'rg -n "..." ...' output, lines are usually 'path:line:match'. Prefer grouping consecutive matches by file path first, then by nearby match clusters. Keep complete match lines intact.
+- For broad repository searches such as 'rg -n "namespace|module" /workspace ...', prefer groups by subsystem/path prefix, then by file.
 - For grep/rg outputs with headers, context lines, or separators, keep each match block intact and keep nearby context with its match.
-- Line/window splitting is the fallback: use size-bounded contiguous line ranges only after conceptual separators are not clear. Keep each line intact and keep related adjacent lines together.
+- Use contiguous regions around visible conceptual boundaries. Keep each line intact and keep related adjacent lines together.
 - For large JSON arrays, split on complete top-level array entries or small groups of adjacent entries. Never split inside a JSON string, object, array, number, or literal.
 - For large JSON objects with obvious top-level keys, split on complete top-level fields or small groups of adjacent fields when that is boundary-safe.
 - For XML/HTML/Markdown-like content, split on complete top-level sections, fenced blocks, headings, or repeated element boundaries when clear.
@@ -1285,9 +1290,16 @@ function assertValidChunkSelector(value: unknown, label: string, sourceText: str
     }
     const item = chunk as Record<string, unknown>;
     if (
-      typeof item.text !== "string" || item.text.length === 0 || !sourceText.includes(item.text)
+      typeof item.startText !== "string" ||
+      typeof item.endText !== "string" ||
+      item.startText.length === 0 ||
+      item.endText.length === 0
     ) {
-      throw new Error(`${label}.chunks[${chunkIndex}].text must be exact source text`);
+      throw new Error(`${label}.chunks[${chunkIndex}] must include non-empty boundary text`);
+    }
+    const start = sourceText.indexOf(item.startText);
+    if (start < 0 || sourceText.indexOf(item.endText, start) < 0) {
+      throw new Error(`${label}.chunks[${chunkIndex}] boundaries must resolve in source text`);
     }
   }
 }
@@ -1363,9 +1375,10 @@ function coerceChunkSelector(
         Boolean(chunk) && typeof chunk === "object" && !Array.isArray(chunk)
       )
       .map((chunk) => ({
-        text: typeof chunk.text === "string" ? chunk.text : "",
+        startText: typeof chunk.startText === "string" ? chunk.startText : "",
+        endText: typeof chunk.endText === "string" ? chunk.endText : "",
       }))
-      .filter((chunk) => chunk.text.length > 0);
+      .filter((chunk) => chunk.startText.length > 0 && chunk.endText.length > 0);
     return chunks.length > 0 ? { kind: "chunks", chunks } : null;
   }
   return null;

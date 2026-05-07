@@ -46,6 +46,22 @@ liveChunkTest("live LLM chunking splits JSON arrays into multiple retained piece
   );
 });
 
+liveChunkTest("live LLM chunking splits XML repeated elements on complete elements", async () => {
+  const result = await liveResult();
+  const pieces = renderedPieces(result.pieces, "xml_items");
+
+  assert(pieces.length > 1, diagnostic("xml_items", pieces));
+  assert(
+    pieces.some((piece) => piece.includes('id="beta"') && piece.includes("KEEP_XML_BETA")),
+    diagnostic("xml_items", pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes('id="gamma"') && piece.includes("KEEP_XML_GAMMA")),
+    diagnostic("xml_items", pieces),
+  );
+  assert(chunksRespectSafeBoundaries(result.pieces, "xml_items"), diagnostic("xml_items", pieces));
+});
+
 liveChunkTest("live LLM chunking keeps test log failure blocks together", async () => {
   const result = await liveResult();
   const pieces = renderedPieces(result.pieces, "test_log");
@@ -111,6 +127,7 @@ liveChunkTest(
     const result = await liveResult();
     const checks = [
       conceptualCheck(result.pieces, "json_array", ['"group"', "src/alpha/", "src/beta/"]),
+      conceptualCheck(result.pieces, "xml_items", ['id="beta"', "KEEP_XML_BETA", "KEEP_XML_GAMMA"]),
       conceptualCheck(result.pieces, "test_log", ["AssertionError", "TypeError"]),
       conceptualCheck(result.pieces, "rg_output", ["src/api/", "src/search/", "tests/api/"]),
       conceptualCheck(result.pieces, "markdown_sections", [
@@ -271,6 +288,27 @@ function liveChunkSources(): RoundSource[] {
         null,
         2,
       ),
+    },
+    {
+      sourceId: "xml_items",
+      sourceKind: "tool",
+      toolName: "exec_command",
+      payload: [
+        "<catalog>",
+        '  <item id="alpha">',
+        "    <name>alpha</name>",
+        `    <body>${"ignore alpha ".repeat(60)}</body>`,
+        "  </item>",
+        '  <item id="beta">',
+        "    <name>beta</name>",
+        `    <body>KEEP_XML_BETA ${"beta details ".repeat(60)}</body>`,
+        "  </item>",
+        '  <item id="gamma">',
+        "    <name>gamma</name>",
+        `    <body>KEEP_XML_GAMMA ${"gamma details ".repeat(60)}</body>`,
+        "  </item>",
+        "</catalog>",
+      ].join("\n"),
     },
     {
       sourceId: "test_log",

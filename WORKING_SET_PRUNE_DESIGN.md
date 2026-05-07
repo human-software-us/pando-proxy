@@ -299,22 +299,14 @@ malformed prune batch -> keep all pieces in that batch
 source_chunk_batch omits a requested source -> use whole selector for that source
 source_chunk_batch exceeds the overflow structured window -> use whole selectors for that batch
 source_chunk_batch fails or returns malformed ids/selectors after retry -> use whole selectors
-source_chunk_batch returns whole for a large text payload -> split deterministically before
-materializing active pieces
+source_chunk_batch returns whole for any payload -> keep whole
 single-piece batch too large for overflow window -> keep unevaluated piece
 missing archived payload -> keep that piece
 uncertain decision -> keep
 ```
 
-The large-text split fallback is deterministic:
-
-1. If the text is a complete top-level JSON array, find exact top-level element chunks.
-2. Pack adjacent array-element chunks under the deterministic byte budget.
-3. Otherwise, create bounded contiguous line windows under the byte budget.
-4. If neither path creates more than one span, keep the source whole.
-
-For large `rg` output, the chunk prompt asks for conceptual groups before this fallback, such as
-`rg --files` path-prefix groups and `rg -n` file/match groups.
+The chunker does not create deterministic fallback chunks. Exact chunks must be selected by the
+model and validated locally; otherwise the source remains whole.
 
 Manager outputs are requested with strict JSON schemas and validated again in local code before they
 are applied.

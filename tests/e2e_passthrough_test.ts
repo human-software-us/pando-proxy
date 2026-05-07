@@ -390,7 +390,7 @@ function structuredResponse(classifier: string, body: Record<string, unknown>): 
           selectors: start >= 0 && end >= start
             ? [{
               kind: "chunks",
-              chunks: [{ text: source.contentText.slice(start, end + endMarker.length) }],
+              chunks: [{ startText: "BEGIN_EXACT", endText: endMarker }],
             }]
             : [{ kind: "whole" }],
         };

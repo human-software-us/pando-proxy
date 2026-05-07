@@ -186,9 +186,10 @@ candidate set, and the piece was created before the new task's `startedRound`.
 
 ### `source_chunk_batch`
 
-Chunking asks the model for `whole` or exact copied chunk text. It never asks for summaries, labels,
-content types, boundary classifications, or character offsets. The request representation shown to
-the model and the source representation used for materialization must be the same raw source text.
+Chunking asks the model for `whole` or exact start/end boundary text. It never asks for summaries,
+labels, content types, boundary classifications, character offsets, or copied full chunk payloads.
+The request representation shown to the model and the source representation used for materialization
+must be the same raw source text.
 
 Selector contract:
 
@@ -198,15 +199,17 @@ type SourceChunkBatchResponse = {
     sourceId: string;
     selectors: Array<
       | { kind: "whole" }
-      | { kind: "chunks"; chunks: Array<{ text: string }> }
+      | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> }
     >;
   }>;
 };
 ```
 
-For `chunks`, `text` must be the complete chunk copied exactly from the raw source body shown to the
-model. Local code finds every exact occurrence of each quoted chunk and converts those matches to
-the persisted `[start,end)` selectors shown in `ChunkSelector`.
+For `chunks`, `startText` and `endText` must be exact substrings from the raw source body shown to
+the model. `startText` is the first text in the chunk and `endText` is the last text in the chunk;
+the chunk includes both. Local code resolves each boundary pair by matching `startText` to the next
+matching `endText`, repeats that same match for later occurrences, and converts the resulting ranges
+to persisted `[start,end)` selectors shown in `ChunkSelector`.
 
 Request shape:
 
@@ -226,7 +229,7 @@ type SourceChunkBatchResponse = {
     sourceId: string;
     selectors: Array<
       | { kind: "whole" }
-      | { kind: "chunks"; chunks: Array<{ text: string }> }
+      | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> }
     >;
   }>;
 };
@@ -240,9 +243,11 @@ Validation rules:
 - returned `sourceId` values must be in the request
 - duplicate returned `sourceId` values are invalid
 - selectors must be structurally valid
-- chunk text must be non-empty exact text from the raw source body
-- each exact occurrence of quoted chunk text is materialized as a persisted chunk
-- malformed, missing, changed, overlapping, or otherwise non-exact chunks are invalid
+- `startText` and `endText` must be non-empty exact text from the raw source body
+- each resolvable start-to-next-end occurrence is materialized as a persisted chunk
+- malformed, missing, unmatched, overlapping, or unsafe boundary selections are invalid
+- boundary selections are not fuzzily repaired; long repeated XML/log/blob text with invalid
+  boundaries falls back to `whole`
 - if a requested source is omitted from `results`, the proxy creates a single `whole` selector for
   that source
 - if the whole chunk request cannot fit even in the overflow structured window, the proxy skips the

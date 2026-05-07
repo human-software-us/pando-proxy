@@ -47,8 +47,8 @@ and keeps each requested source whole.
 
 ## Chunk boundary contract
 
-Chunking returns `whole` or exact copied chunk text. It never returns summaries, labels, content
-types, boundary classifications, or model-generated rewrites.
+Chunking returns `whole` or exact start/end boundary text. It never returns summaries, labels,
+content types, boundary classifications, character offsets, or model-generated rewrites.
 
 The model should see the exact raw source text it is being asked to select from, not a JSON-escaped
 serialization of that text. Any model-produced selector must be interpreted against that same raw
@@ -60,44 +60,29 @@ The model output for each source is only:
 ```ts
 type ChunkSelector =
   | { kind: "whole" }
-  | { kind: "chunks"; chunks: Array<{ text: string }> };
+  | { kind: "chunks"; chunks: Array<{ startText: string; endText: string }> };
 ```
 
-For `chunks`, `text` must be the complete chunk copied exactly from the raw source body shown to the
-model. Local code finds every exact occurrence of each quoted chunk and converts those occurrences
-to persisted `[start,end)` chunk selectors. If the same quoted chunk appears multiple times in one
-source, all matching occurrences become chunks; later duplicate-piece collapse keeps one full copy
-and adds duplicate markers for the other locations.
+For `chunks`, `startText` and `endText` are exact substrings from the raw source body. `startText`
+is the first text in the chunk and `endText` is the last text in the chunk; the chunk includes both.
+The model should prefer boundary text that is unique when possible. When the same boundary pair
+genuinely repeats, local code applies the same start-to-next-end match repeatedly and creates one
+chunk per matching occurrence. Later duplicate-piece collapse keeps one full copy and adds duplicate
+markers for the other locations.
 
 If the model cannot select valid coherent chunks, the source remains `whole`. Local validation
-rejects malformed, empty, missing, changed, overlapping, or otherwise non-exact quoted chunks.
+rejects malformed, empty, missing, unmatched, overlapping, or otherwise unsafe boundary selections.
 Invalid selectors retry once with diagnostics; if they still cannot be validated, the proxy keeps
 that source whole.
 
-If the chunk model returns `whole` for a large text source, the proxy applies a deterministic exact
-split before creating pieces. It prefers complete top-level JSON array entries when the text is a
-JSON array. Otherwise it uses bounded line windows: contiguous line ranges under the byte budget,
-with each line kept intact. This is a fallback for cases where the model did not already split on a
-better conceptual boundary.
+For very long repeated structures, boundary text can still fail if the model chooses substrings that
+do not occur exactly or do not form clean source ranges. That is not repaired heuristically; the
+source falls back to `whole`. Opaque payloads such as image/base64-like data should usually stay
+`whole` unless a small exact metadata or text block is clearly worth keeping.
 
-The split fallback is deterministic:
-
-1. if the text is a complete top-level JSON array, find exact element chunks
-2. pack adjacent element chunks under the deterministic byte budget
-3. otherwise split into contiguous line windows under the byte budget
-4. if neither path produces multiple chunks, keep the source whole
-
-For large `rg` outputs, the model prompt asks for conceptual split points before line windows:
-
-- `rg --files ...`: group consecutive paths by directory, package, namespace, or subsystem path,
-  such as `src/metabase/api/...`, `src/metabase/search/...`, `test/metabase/...`, or
-  `enterprise/backend/...`
-- `rg -n "..." ...`: group by file path first, then by line-number ranges or nearby match clusters
-  for very large files
-- broad repository searches: group by subsystem/path prefix, then by file, then by line range
-
-This keeps the archive lossless while avoiding all-or-nothing active pieces for large `rg`, test, or
-log outputs.
+The chunker never creates deterministic fallback chunks. It only materializes model-selected exact
+chunks or keeps the source whole. Large `rg`, test, log, XML, JSON, image-like, or blob-like
+payloads stay whole unless the model selects exact chunks that local validation can materialize.
 
 On `new_task`, the old task identity is always archived as a complete task bundle. The old active
 pieces are still included as prune candidates for the fresh task, so pieces that remain relevant can
