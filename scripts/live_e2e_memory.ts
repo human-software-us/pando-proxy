@@ -1,7 +1,13 @@
 #!/usr/bin/env -S deno run --allow-net --allow-env --allow-read --allow-write
 
 import { createHandler } from "../src/server.ts";
-import { type ProxyConfig } from "../src/config.ts";
+import {
+  DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW,
+  DEFAULT_OVERFLOW_STRUCTURED_MODEL,
+  DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW,
+  DEFAULT_SMALL_STRUCTURED_MODEL,
+  type ProxyConfig,
+} from "../src/config.ts";
 import { SessionStore } from "../src/store.ts";
 
 type RoundSpec = {
@@ -475,10 +481,10 @@ function testConfig(overrides: Partial<ProxyConfig> = {}): ProxyConfig {
     port: 8787,
     upstreamBaseUrl: "auto",
     apiKey: null,
-    smallStructuredModel: "gpt-5.4-mini",
-    overflowStructuredModel: "gpt-5.4",
-    smallStructuredContextWindow: 272_000,
-    overflowStructuredContextWindow: 1_000_000,
+    smallStructuredModel: DEFAULT_SMALL_STRUCTURED_MODEL,
+    overflowStructuredModel: DEFAULT_OVERFLOW_STRUCTURED_MODEL,
+    smallStructuredContextWindow: DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW,
+    overflowStructuredContextWindow: DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW,
     modelTimeoutMs: 60_000,
     stateDir: "/tmp/pando-live-memory",
     memoryEnabled: true,

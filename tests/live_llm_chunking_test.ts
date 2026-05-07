@@ -1,7 +1,13 @@
 import { assert } from "@std/assert";
 
 import { chunkRoundSources } from "../src/chunking.ts";
-import type { ProxyConfig } from "../src/config.ts";
+import {
+  DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW,
+  DEFAULT_OVERFLOW_STRUCTURED_MODEL,
+  DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW,
+  DEFAULT_SMALL_STRUCTURED_MODEL,
+  type ProxyConfig,
+} from "../src/config.ts";
 import type { PieceDraft } from "../src/memory_state.ts";
 import { renderTextSelection } from "../src/source_selectors.ts";
 import { createStructuredClients } from "../src/structured_model.ts";
@@ -268,7 +274,7 @@ async function liveResult(): Promise<{ pieces: PieceDraft[] }> {
 }
 
 async function runLiveChunking(): Promise<{ pieces: PieceDraft[] }> {
-  const model = Deno.env.get("PANDO_LIVE_LLM_CHUNK_MODEL") ?? "gpt-5.4";
+  const model = Deno.env.get("PANDO_LIVE_LLM_CHUNK_MODEL") ?? DEFAULT_SMALL_STRUCTURED_MODEL;
   const clients = createStructuredClients(
     liveProxyConfig(model),
     model,
@@ -278,7 +284,7 @@ async function runLiveChunking(): Promise<{ pieces: PieceDraft[] }> {
 }
 
 async function liveSingleSourceResult(source: RoundSource): Promise<{ pieces: PieceDraft[] }> {
-  const model = Deno.env.get("PANDO_LIVE_LLM_CHUNK_MODEL") ?? "gpt-5.4";
+  const model = Deno.env.get("PANDO_LIVE_LLM_CHUNK_MODEL") ?? DEFAULT_SMALL_STRUCTURED_MODEL;
   const clients = createStructuredClients(
     liveProxyConfig(model),
     model,
@@ -295,9 +301,10 @@ function liveProxyConfig(model: string): ProxyConfig {
       "https://api.openai.com/v1",
     apiKey: null,
     smallStructuredModel: model,
-    overflowStructuredModel: Deno.env.get("PANDO_LIVE_LLM_CHUNK_OVERFLOW_MODEL") ?? "gpt-5.4",
-    smallStructuredContextWindow: 272_000,
-    overflowStructuredContextWindow: 1_000_000,
+    overflowStructuredModel: Deno.env.get("PANDO_LIVE_LLM_CHUNK_OVERFLOW_MODEL") ??
+      DEFAULT_OVERFLOW_STRUCTURED_MODEL,
+    smallStructuredContextWindow: DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW,
+    overflowStructuredContextWindow: DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW,
     modelTimeoutMs: 60_000,
     stateDir: "/tmp",
     memoryEnabled: true,
