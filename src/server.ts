@@ -24,6 +24,7 @@ import { type ArchiveRecall, forwardResponsesRequest, runResponsesLoop } from ".
 
 const OBSERVED_TURN_SOURCES_TIMEOUT_MS = 3_000;
 const FINALIZATION_DRAIN_TIMEOUT_MS = 10_000;
+const PENDING_FINALIZATION_WAIT_TIMEOUT_MS = 5_000;
 
 export type StartedProxyServer = {
   server: Deno.HttpServer;
@@ -300,15 +301,25 @@ export function createHandler(
   const fallbackSessionKey = `wrapper_${crypto.randomUUID()}`;
   const pendingFinalizations = new Map<string, Promise<void>>();
 
-  const waitForPendingFinalization = async (sessionKey: string): Promise<void> => {
+  const waitForPendingFinalization = async (
+    sessionKey: string,
+    logger: ReturnType<typeof createLogger>,
+  ): Promise<void> => {
     const pending = pendingFinalizations.get(sessionKey);
     if (!pending) {
       return;
     }
+    const startedAt = Date.now();
     try {
-      await pending;
-    } catch {
+      await promiseWithTimeout(pending, PENDING_FINALIZATION_WAIT_TIMEOUT_MS);
+    } catch (error) {
       // Prior round failures are logged on the round itself. New requests should still proceed.
+      await logger.log("pending_finalization_wait_limited", {
+        sessionKey,
+        timeoutMs: PENDING_FINALIZATION_WAIT_TIMEOUT_MS,
+        waitedMs: Date.now() - startedAt,
+        message: messageFor(error),
+      });
     }
   };
 
@@ -359,7 +370,7 @@ export function createHandler(
       body,
       fallbackSessionKeyForRequest?.() ?? fallbackSessionKey,
     );
-    await waitForPendingFinalization(sessionKey);
+    await waitForPendingFinalization(sessionKey, logger);
     const requestId = crypto.randomUUID();
 
     await logger.log("incoming_request", {

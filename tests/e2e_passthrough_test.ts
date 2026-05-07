@@ -117,6 +117,86 @@ Deno.test("E2E pass-through mode forwards Codex-like request auth and SSE unchan
   }
 });
 
+Deno.test("E2E pass-through retries one retryable upstream response", async () => {
+  const tempDir = await Deno.makeTempDir();
+  const logFile = `${tempDir}/proxy.jsonl`;
+  let requestCount = 0;
+
+  const upstream = Deno.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen: () => {},
+  }, async () => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      return new Response("rate limited", { status: 429 });
+    }
+    return Response.json({
+      id: "resp_retry_success",
+      output_text: "retry ok",
+      output: [{
+        id: "msg_retry_success",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "retry ok" }],
+      }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    });
+  });
+
+  const proxyConfig: ProxyConfig = {
+    host: "127.0.0.1",
+    port: 0,
+    upstreamBaseUrl: `http://127.0.0.1:${upstream.addr.port}`,
+    apiKey: null,
+    smallStructuredModel: "gpt-4.1-mini",
+    overflowStructuredModel: "gpt-5-mini",
+    smallStructuredContextWindow: 32_000,
+    overflowStructuredContextWindow: 128_000,
+    modelTimeoutMs: 5_000,
+    stateDir: tempDir,
+    memoryEnabled: false,
+    logFile,
+    codexAutoCompactTokenLimit: 280_000,
+  };
+  const proxyHandler = createHandler(proxyConfig, new SessionStore(tempDir));
+  const proxy = Deno.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    onListen: () => {},
+  }, proxyHandler.handler);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.addr.port}/v1/responses`, {
+      method: "POST",
+      headers: {
+        "authorization": "Bearer codex-existing-auth",
+        "content-type": "application/json",
+        "x-pando-session-id": "retry-session",
+      },
+      body: JSON.stringify({
+        model: "gpt-test",
+        stream: false,
+        input: [{ type: "message", role: "user", content: "retry please" }],
+      }),
+    });
+
+    assertEquals(response.status, 200);
+    assertEquals((await response.json()).output_text, "retry ok");
+    assertEquals(requestCount, 2);
+
+    const logEntries = await waitForLogEvent(logFile, "upstream_retry");
+    const retry = logEntries.find((entry) => entry.event === "upstream_retry");
+    assertEquals(retry?.reason, "retryable_status");
+    assertEquals(retry?.status, 429);
+    assertEquals(retry?.body, "rate limited");
+  } finally {
+    await proxy.shutdown();
+    await upstream.shutdown();
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
 Deno.test("E2E full logging captures synthetic memory, structured, task switch, and recall flows", async () => {
   const tempDir = await Deno.makeTempDir();
   const logFile = `${tempDir}/proxy.jsonl`;

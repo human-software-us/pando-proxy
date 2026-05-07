@@ -23,7 +23,6 @@ export const WRAPPER_PREFERENCES_RELATIVE_PATH = ".pando-proxy/wrapper-preferenc
 export const WRAPPER_LAST_THREAD_RELATIVE_PATH = "wrapper-last-thread.json";
 const SIGNAL_PROXY_SHUTDOWN_TIMEOUT_MS = 1_500;
 const NORMAL_PROXY_SUMMARY_TIMEOUT_MS = 10_000;
-const FINALIZATION_RETRY_MARGIN_MS = 15_000;
 const INTERACTIVE_CODEX_HOME_DIRNAME = "codex-home";
 const SHARED_CODEX_HOME_ENTRIES = [
   "config.toml",
@@ -257,10 +256,7 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
       ? (sessionKey, timeoutMs) => observer.waitForExecTurn(sessionKey, timeoutMs)
       : undefined,
   );
-  const finalizationDrainTimeoutMs = Math.max(
-    NORMAL_PROXY_SUMMARY_TIMEOUT_MS,
-    started.config.modelTimeoutMs * 2 + FINALIZATION_RETRY_MARGIN_MS,
-  );
+  const finalizationDrainTimeoutMs = NORMAL_PROXY_SUMMARY_TIMEOUT_MS;
   let sessionSummaryPrinted = false;
   const flushAndPrintSessionSummary = async (
     timeoutMs = finalizationDrainTimeoutMs,
@@ -268,7 +264,12 @@ export async function runCodexWrapper(args: string[]): Promise<number> {
     if (sessionSummaryPrinted) {
       return;
     }
-    await started.awaitIdle(timeoutMs).catch(() => {});
+    await started.awaitIdle(timeoutMs).catch(async (error) => {
+      await logger.log("wrapper_finalization_wait_limited", {
+        timeoutMs,
+        message: messageFor(error),
+      });
+    });
     const threadId = observer.latestExecThreadId() ?? interactiveSessionKeyHint;
     await saveLatestWrapperThreadId(baseConfig.stateDir, threadId);
     printTokenUsageSummary(

@@ -21,6 +21,8 @@ const hopByHopHeaders = new Set([
 ]);
 
 const MAX_LOCAL_RECALLS_PER_ROUND = 3;
+const MAX_UPSTREAM_ATTEMPTS = 2;
+const UPSTREAM_RETRY_DELAY_MS = 500;
 
 export type UpstreamOptions = {
   authHeader: string | null;
@@ -60,16 +62,13 @@ export async function forwardResponsesRequest(
     headers.set("authorization", options.authHeader);
   }
   const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, options.authHeader));
-  await options.logger?.log("upstream_request", {
+  const bodyText = JSON.stringify(options.body);
+  const upstream = await fetchResponsesWithRetry({
     url,
-    headers: redactHeaders(headers),
-    body: loggableBody(options.body),
-  });
-
-  const upstream = await fetch(url, {
-    method: "POST",
     headers,
-    body: JSON.stringify(options.body),
+    bodyText,
+    logger: options.logger,
+    logBody: options.body,
   });
 
   let responseBody = upstream.body;
@@ -337,40 +336,194 @@ async function postResponsesJson(
     headers.set("authorization", authHeader);
   }
   const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
-  await logger?.log("upstream_request", {
-    url,
-    headers: redactHeaders(headers),
-    body: loggableBody(body),
-  });
+  const bodyText = JSON.stringify(body);
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= MAX_UPSTREAM_ATTEMPTS; attempt += 1) {
+    await logger?.log("upstream_request", {
+      attempt,
+      maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+      url,
+      headers: redactHeaders(headers),
+      body: loggableBody(body),
+    });
+    let upstream: Response;
+    try {
+      upstream = await fetch(url, {
+        method: "POST",
+        headers,
+        body: bodyText,
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === MAX_UPSTREAM_ATTEMPTS) {
+        await logger?.log("upstream_failed", {
+          attempt,
+          maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+          reason: "fetch_error",
+          message: messageFor(error),
+        });
+        throw error;
+      }
+      await logger?.log("upstream_retry", {
+        attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+        reason: "fetch_error",
+        message: messageFor(error),
+        delayMs: UPSTREAM_RETRY_DELAY_MS,
+      });
+      await delay(UPSTREAM_RETRY_DELAY_MS);
+      continue;
+    }
 
-  const upstream = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-  const text = await upstream.text();
-  await logger?.log("upstream_response", {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    contentType: upstream.headers.get("content-type"),
-    headers: redactHeaders(upstream.headers),
-    body: text,
-  });
+    const text = await upstream.text();
+    await logger?.log("upstream_response", {
+      attempt,
+      maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+      status: upstream.status,
+      statusText: upstream.statusText,
+      contentType: upstream.headers.get("content-type"),
+      headers: redactHeaders(upstream.headers),
+      body: text,
+    });
 
-  const response = new Response(text, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
-  });
-  if (!upstream.ok) {
-    return { ok: false, response };
+    const response = new Response(text, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
+    });
+    if (!upstream.ok) {
+      if (isRetryableUpstreamStatus(upstream.status) && attempt < MAX_UPSTREAM_ATTEMPTS) {
+        await logger?.log("upstream_retry", {
+          attempt,
+          nextAttempt: attempt + 1,
+          maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+          reason: "retryable_status",
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: redactHeaders(upstream.headers),
+          body: text,
+          delayMs: UPSTREAM_RETRY_DELAY_MS,
+        });
+        await delay(UPSTREAM_RETRY_DELAY_MS);
+        continue;
+      }
+      return { ok: false, response };
+    }
+
+    try {
+      const parsed = parseResponsesBody(upstream.headers.get("content-type"), text);
+      if (!isRecord(parsed)) {
+        throw new Error("Upstream response was not a JSON object");
+      }
+      return { ok: true, body: parsed, response };
+    } catch (error) {
+      lastError = error;
+      if (attempt === MAX_UPSTREAM_ATTEMPTS) {
+        await logger?.log("upstream_failed", {
+          attempt,
+          maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+          reason: "invalid_response_body",
+          message: messageFor(error),
+          status: upstream.status,
+          statusText: upstream.statusText,
+          contentType: upstream.headers.get("content-type"),
+          headers: redactHeaders(upstream.headers),
+          body: text,
+        });
+        throw error;
+      }
+      await logger?.log("upstream_retry", {
+        attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+        reason: "invalid_response_body",
+        message: messageFor(error),
+        status: upstream.status,
+        statusText: upstream.statusText,
+        contentType: upstream.headers.get("content-type"),
+        headers: redactHeaders(upstream.headers),
+        body: text,
+        delayMs: UPSTREAM_RETRY_DELAY_MS,
+      });
+      await delay(UPSTREAM_RETRY_DELAY_MS);
+    }
   }
+  throw lastError ?? new Error("Upstream response was not parseable");
+}
 
-  const parsed = parseResponsesBody(upstream.headers.get("content-type"), text);
-  if (!isRecord(parsed)) {
-    throw new Error("Upstream response was not a JSON object");
+async function fetchResponsesWithRetry(options: {
+  url: string;
+  headers: Headers;
+  bodyText: string;
+  logger?: ProxyLogger;
+  logBody: Record<string, unknown>;
+}): Promise<Response> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= MAX_UPSTREAM_ATTEMPTS; attempt += 1) {
+    await options.logger?.log("upstream_request", {
+      attempt,
+      maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+      url: options.url,
+      headers: redactHeaders(options.headers),
+      body: loggableBody(options.logBody),
+    });
+    try {
+      const response = await fetch(options.url, {
+        method: "POST",
+        headers: options.headers,
+        body: options.bodyText,
+      });
+      if (!isRetryableUpstreamStatus(response.status) || attempt === MAX_UPSTREAM_ATTEMPTS) {
+        return response;
+      }
+      const retryBody = await response.text().catch(() => "");
+      await options.logger?.log("upstream_retry", {
+        attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+        reason: "retryable_status",
+        status: response.status,
+        statusText: response.statusText,
+        headers: redactHeaders(response.headers),
+        body: retryBody,
+        delayMs: UPSTREAM_RETRY_DELAY_MS,
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt === MAX_UPSTREAM_ATTEMPTS) {
+        await options.logger?.log("upstream_failed", {
+          attempt,
+          maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+          reason: "fetch_error",
+          message: messageFor(error),
+        });
+        throw error;
+      }
+      await options.logger?.log("upstream_retry", {
+        attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts: MAX_UPSTREAM_ATTEMPTS,
+        reason: "fetch_error",
+        message: messageFor(error),
+        delayMs: UPSTREAM_RETRY_DELAY_MS,
+      });
+    }
+    await delay(UPSTREAM_RETRY_DELAY_MS);
   }
-  return { ok: true, body: parsed, response };
+  throw lastError ?? new Error("Upstream request failed without a response");
+}
+
+function isRetryableUpstreamStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function messageFor(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function responseForClient(body: Record<string, unknown>, stream: boolean): Response {
