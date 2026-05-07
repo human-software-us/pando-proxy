@@ -5,8 +5,8 @@ import {
   type PieceDropBatchResponse,
   type SourceChunkBatchRequest,
   type SourceChunkBatchResponse,
+  type TaskRouteModelResponse,
   type TaskRouteRequest,
-  type TaskRouteResponse,
 } from "./working_set_manager.ts";
 import { extractJsonObject, stableJson } from "./json.ts";
 import { loggableBody, redactHeaders } from "./logger.ts";
@@ -96,7 +96,7 @@ export type StructuredModelWireLog = {
   durationMs?: number;
 };
 export type StructuredClients = {
-  taskRoute: (request: TaskRouteRequest, attempt?: number) => Promise<TaskRouteResponse>;
+  taskRoute: (request: TaskRouteRequest, attempt?: number) => Promise<TaskRouteModelResponse>;
   sourceChunkBatch: (
     request: SourceChunkBatchRequest,
     attempt?: number,
@@ -145,7 +145,7 @@ export function createStructuredClients(
 ): StructuredClients {
   return {
     taskRoute: async (request, attempt = 1) => {
-      const result = await callStructuredJson<TaskRouteResponse>(
+      const result = await callStructuredJson<TaskRouteModelResponse>(
         config,
         requestModel,
         authHeader,
@@ -996,7 +996,7 @@ const chunkSelectorSchema = {
 const taskRouteJsonSchema = {
   type: "object",
   properties: {
-    kind: { type: "string", enum: ["same_task", "new_task", "revive_task"] },
+    kind: { type: "string", enum: ["same_task", "new_task", "revive_task", "more_archived_tasks"] },
     relativeIndex: { type: "integer" },
   },
   required: ["kind", "relativeIndex"],
@@ -1120,15 +1120,18 @@ Return JSON matching the supplied schema.
 
 Rules:
 - Return same_task unless the new user turn clearly starts a different standalone task.
-- Return new_task only when the new turn can be completed independently and needs a different active working set.
-- Return revive_task only when the user clearly asks to return to a prior task. Use relativeIndex from the supplied archivedTasks list, such as -1 for the most recent previous task.
+- Return new_task only when the new turn clearly starts a standalone task that can be completed independently. Prior exact pieces may still be relevant and can be reused after routing.
+- activePieces contains the full exact active working set. Use it, the active task title, and the full new user messages to decide continuity.
+- archivedTasks contains at most five archived task cards, newest first. Use relativeIndex from that list, such as -1 for the most recent previous task, when returning revive_task.
+- Return more_archived_tasks only when the user clearly asks to return to a prior task and none of the supplied archivedTasks matches, but archivePage.hasMore is true.
+- Return revive_task only when the user clearly asks to return to a supplied prior task.
 - Follow-up questions, refinements, debugging, verification, and requests about prior facts are same_task.
-- For same_task and new_task, set relativeIndex to 0.
+- For same_task, new_task, and more_archived_tasks, set relativeIndex to 0.
 - Return JSON only.
 `.trim();
 
 const sourceChunkBatchSystemPrompt = `
-You split user, assistant talk/reasoning, and tool-result payloads into exact retained pieces.
+You split non-user assistant talk/reasoning and tool-result payloads into exact retained pieces.
 
 Return JSON matching the supplied schema.
 
@@ -1161,7 +1164,7 @@ Rules:
 - For XML/HTML/Markdown-like content, split on complete top-level sections, fenced blocks, headings, or repeated element boundaries when clear.
 - For code or diffs, split on complete files, hunks, top-level forms, declarations, or other syntax-visible boundaries when clear.
 - When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, select the payload block itself instead of the wrapper instructions.
-- For user messages that say things like "remember this exact block" or "use this exact snippet", prefer chunks covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
+- User messages are not sent to this classifier; local code always keeps each user message as one whole atomic piece.
 - When the payload is delimited by clear markers such as fenced code blocks, BEGIN/END markers, XML-like tags, or repeated stanza boundaries, select the complete intended interior block instead of a partial prefix.
 - Exclude delimiter markers themselves when the user says they are wrapper text and not part of the exact retained content.
 - When a clearly delimited block or stanza sequence is selected, include the full intended block boundaries. Do not truncate mid-line, mid-stanza, or mid-block.
@@ -1195,13 +1198,16 @@ Rules:
 - Return JSON only.
 `.trim();
 
-function normalizeTaskRouteResponse(value: unknown): TaskRouteResponse {
+function normalizeTaskRouteResponse(value: unknown): TaskRouteModelResponse {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { kind: "same_task" };
   }
   const record = value as Record<string, unknown>;
   if (record.kind === "new_task") {
     return { kind: "new_task" };
+  }
+  if (record.kind === "more_archived_tasks") {
+    return { kind: "more_archived_tasks" };
   }
   if (record.kind === "revive_task") {
     const relativeIndex = typeof record.relativeIndex === "number"
@@ -1217,14 +1223,25 @@ function assertValidTaskRouteResponse(value: unknown): void {
     throw new Error("task_route response must be an object");
   }
   const record = value as Record<string, unknown>;
-  if (record.kind !== "same_task" && record.kind !== "new_task" && record.kind !== "revive_task") {
+  if (
+    record.kind !== "same_task" &&
+    record.kind !== "new_task" &&
+    record.kind !== "revive_task" &&
+    record.kind !== "more_archived_tasks"
+  ) {
     throw new Error("task_route.kind is invalid");
   }
   if (typeof record.relativeIndex !== "number" || !Number.isInteger(record.relativeIndex)) {
     throw new Error("task_route.relativeIndex must be an integer");
   }
-  if ((record.kind === "same_task" || record.kind === "new_task") && record.relativeIndex !== 0) {
-    throw new Error("task_route.relativeIndex must be 0 for same_task/new_task");
+  if (
+    (record.kind === "same_task" ||
+      record.kind === "new_task" ||
+      record.kind === "more_archived_tasks") && record.relativeIndex !== 0
+  ) {
+    throw new Error(
+      "task_route.relativeIndex must be 0 for same_task/new_task/more_archived_tasks",
+    );
   }
   if (record.kind === "revive_task" && record.relativeIndex >= 0) {
     throw new Error("task_route.relativeIndex must be negative for revive_task");

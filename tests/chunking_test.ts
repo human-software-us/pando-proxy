@@ -103,6 +103,31 @@ Deno.test("chunkRoundSources keeps small whole payloads whole", async () => {
   assertEquals(result.chunkedDeterministicSourceCount, 0);
 });
 
+Deno.test("chunkRoundSources keeps user messages whole without calling source_chunk_batch", async () => {
+  let calls = 0;
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () => {
+      calls += 1;
+      return Promise.resolve({ results: [] });
+    },
+  };
+  const source: RoundSource = {
+    sourceId: "user_atomic",
+    sourceKind: "user",
+    payload: "remember exact block\nALPHA=1\nBETA=2",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(calls, 0);
+  assertEquals(result.pieces.length, 1);
+  assertEquals(result.pieces[0].selector, { kind: "whole" });
+  assertEquals(result.pieces[0].content, "remember exact block\nALPHA=1\nBETA=2");
+  assertEquals(result.chunkedViaModelSourceCount, 0);
+  assertEquals(result.chunkedDeterministicSourceCount, 1);
+});
+
 Deno.test("chunkRoundSources materializes valid model chunk selectors", async () => {
   const clients: StructuredClients = {
     ...keepWholeClients,
@@ -119,7 +144,7 @@ Deno.test("chunkRoundSources materializes valid model chunk selectors", async ()
   };
   const source: RoundSource = {
     sourceId: "chunked_user",
-    sourceKind: "user",
+    sourceKind: "assistant",
     payload: "skip: keep-this; skip",
   };
 
@@ -152,7 +177,7 @@ Deno.test("chunkRoundSources trims chunk edges and keeps uncovered text", async 
   };
   const source: RoundSource = {
     sourceId: "trimmed",
-    sourceKind: "user",
+    sourceKind: "assistant",
     payload: "prefix\n  keep this  \n\nsuffix",
   };
 
@@ -297,7 +322,7 @@ Deno.test("chunkRoundSources materializes exact payload block boundaries and rep
   };
   const source: RoundSource = {
     sourceId: "exact_block",
-    sourceKind: "user",
+    sourceKind: "assistant",
     payload: [
       "Please remember this exact block and ignore the wrapper.",
       "BEGIN LIVE CHUNK PAYLOAD",
@@ -522,7 +547,7 @@ Deno.test("chunkRoundSources materializes all repeated boundary pair occurrences
   };
   const source: RoundSource = {
     sourceId: "repeated_user",
-    sourceKind: "user",
+    sourceKind: "assistant",
     payload: "DUPLICATE=alpha\nmiddle\nDUPLICATE=alpha",
   };
 
@@ -791,7 +816,7 @@ Deno.test("chunkRoundSources materializes random separator sections", async () =
   };
   const source: RoundSource = {
     sourceId: "separator_sections",
-    sourceKind: "user",
+    sourceKind: "assistant",
     payload,
   };
 
@@ -892,8 +917,9 @@ Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch fails a
     },
   };
   const source: RoundSource = {
-    sourceId: "user_1",
-    sourceKind: "user",
+    sourceId: "tool_1",
+    sourceKind: "tool",
+    toolName: "exec_command",
     payload: "keep this exact text",
   };
 

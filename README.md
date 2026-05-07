@@ -30,9 +30,9 @@ Unit tests are still useful for local regressions in the state transition code.
 
 The runtime is built around:
 
-- `activeTask`: the single current executable task and its active piece ids
-- `archivedTasks`: previous task bundles, revivable by negative relative index
-- `pieces`: exact retained user/assistant reasoning/talk/tool-result/tool-call chunks
+- `activeTask`: the single current executable task, its title, and its active piece ids
+- `archivedTasks`: previous titled task bundles, revivable by negative relative index
+- `pieces`: exact retained user messages plus assistant reasoning/talk/tool-result/tool-call chunks
 - `processedSourceIds`: source ids already seen and archived
 - `archive`: raw original sources kept for explicit recovery, not normal prompt memory
 
@@ -40,7 +40,8 @@ Normal end-of-round flow:
 
 1. collect new round sources, including user input, assistant talk/reasoning, tool calls, and tool
    results
-2. run `source_chunk_batch` and `task_route` in parallel
+2. run `source_chunk_batch` for non-user sources and `task_route` in parallel
+   - user messages are never split; each user message is one atomic `whole` piece
    - if chunking fails, returns malformed output, omits a requested source, or is too large for the
      structured window, that source is kept whole
    - valid model-selected text chunks are normalized locally: whitespace edges are trimmed for
@@ -57,12 +58,17 @@ Normal end-of-round flow:
    evidence existed
 9. collapse surviving exact duplicates; on `new_task`, old/new duplicates are intentionally
    collapsed only after prune and prefer the new piece as canonical
-10. persist the active task, archived task bundles, and surviving exact pieces
+10. persist the active task title, archived task bundles, and surviving exact pieces
 
 Task switching is structural. On `new_task`, the previous active task identity is always archived as
 a complete bundle and a fresh active task is created. The old task's exact pieces are still
 evaluated alongside the new round pieces; any old piece that still belongs to the new task is copied
 into the new active working set. The old task itself is never kept active.
+
+Task routing sees the current task title, the full exact active pieces, full new user messages, and
+only the five newest archived task cards by default. Archived cards are shown newest-first with
+relative indexes `-1` through `-5`; the route model can request the next linear page when it needs
+older task titles.
 
 Normal request flow:
 

@@ -8,14 +8,16 @@ These diagrams describe the current shipped design.
 new round sources
     |
     +--> source_chunk_batch
-    |      - user / assistant talk+reasoning / tool-result sources
+    |      - assistant talk+reasoning / tool-result sources
     |      - returns exact selectors only
+    |      - user messages are one whole piece per message
     |      - failed, malformed, omitted, or oversized sources are kept whole
     |      - tool calls are whole-piece structural sources
     |
     +--> task_route
     |      - same_task, new_task, or revive_task(-N)
-    |      - no groups, statuses, or durable taxonomy
+    |      - sees active task title, full active pieces, full new user messages
+    |      - sees at most five archived task titles per newest-first page
     |
     +--> materialize exact new pieces
     |

@@ -84,7 +84,7 @@ export async function updateMemoryForCompletedRound(
   const [chunked, taskRoute] = await settledPair(
     [
       chunkRoundSources(sources, clients),
-      requestTaskRoute(previous, userPiecesForTaskRoute, clients),
+      requestTaskRoute(previous, userPiecesForTaskRoute, clients, materializedPriorPieces),
     ],
   );
 

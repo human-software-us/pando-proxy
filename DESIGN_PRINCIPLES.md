@@ -8,6 +8,7 @@
 
 2. Active memory is one task.
    - at most one `activeTask`
+   - task identity includes a short title for routing and archive revive
    - the task owns the exact piece ids needed for current execution
    - stored active pieces == prompt-visible active pieces
 
@@ -34,6 +35,7 @@
    - show the model the exact raw source text that local code will materialize
    - do not ask the model for character offsets
    - model output is only `whole` or exact start/end boundary text
+   - user messages bypass model chunking and remain one whole atomic piece per message
    - no summaries, labels, content types, or boundary classifications
    - local code maps exact start-to-next-end boundary pairs to persisted `[start,end)` selectors
    - local code trims whitespace edges for coverage checks, repairs meaningful gaps, and assigns

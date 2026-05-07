@@ -9,6 +9,7 @@ export type SourceKind = "user" | "assistant" | "tool" | "tool_call";
 
 export type ActiveTask = {
   id: string;
+  title: string;
   pieceIds: string[];
   startedRound: number;
   lastRound: number;
@@ -16,6 +17,7 @@ export type ActiveTask = {
 
 export type ArchivedTaskBundle = {
   id: string;
+  title: string;
   pieces: MemoryPiece[];
   startedRound: number;
   archivedRound: number;
@@ -99,6 +101,7 @@ export function pruneMemoryState(state: MemoryState): MemoryState {
   const activeTask = rawActiveTask
     ? {
       id: typeof rawActiveTask.id === "string" && rawActiveTask.id ? rawActiveTask.id : "task_1",
+      title: normalizeTaskTitle(rawActiveTask.title, rawActiveTask.id),
       pieceIds: unique(
         (rawActiveTask.pieceIds ?? []).filter((id): id is string =>
           typeof id === "string" && pieceIds.has(id)
@@ -203,6 +206,9 @@ export function assertMemoryInvariant(state: MemoryState): void {
     if (!state.activeTask.id) {
       errors.push("activeTask must have an id");
     }
+    if (!state.activeTask.title) {
+      errors.push("activeTask must have a title");
+    }
     for (const pieceId of state.activeTask.pieceIds) {
       if (!pieceIds.has(pieceId)) {
         errors.push(`activeTask references unknown piece ${pieceId}`);
@@ -213,6 +219,9 @@ export function assertMemoryInvariant(state: MemoryState): void {
   for (const task of state.archivedTasks) {
     if (!task.id) {
       errors.push("archived task must have an id");
+    }
+    if (!task.title) {
+      errors.push(`archived task ${task.id} must have a title`);
     }
     const archivedPieceIds = new Set<string>();
     for (const piece of task.pieces) {
@@ -271,6 +280,7 @@ function normalizeArchivedTasks(value: unknown): ArchivedTaskBundle[] {
     const rawPieces = Array.isArray(record.pieces) ? record.pieces : [];
     out.push({
       id,
+      title: normalizeTaskTitle(record.title, id),
       pieces: dedupePieces(rawPieces as MemoryPiece[]),
       startedRound: nonNegativeInt(record.startedRound),
       archivedRound: nonNegativeInt(record.archivedRound),
@@ -314,4 +324,14 @@ function normalizedDuplicateSources(value: unknown): { duplicateSources?: Duplic
 
 function nonNegativeInt(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function normalizeTaskTitle(value: unknown, fallback: unknown): string {
+  const raw = typeof value === "string" && value.trim()
+    ? value
+    : typeof fallback === "string" && fallback.trim()
+    ? fallback
+    : "Untitled task";
+  const collapsed = raw.replace(/\s+/g, " ").trim();
+  return collapsed.length > 120 ? `${collapsed.slice(0, 117)}...` : collapsed;
 }

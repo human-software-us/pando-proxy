@@ -53,8 +53,8 @@ Deno.test("loadConfig defaults to current structured model pair and context wind
   assertEquals(config.overflowStructuredModel, DEFAULT_OVERFLOW_STRUCTURED_MODEL);
   assertEquals(config.smallStructuredContextWindow, DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW);
   assertEquals(config.overflowStructuredContextWindow, DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW);
-  assertEquals(config.smallStructuredModel, "gpt-5.4-nano");
-  assertEquals(config.overflowStructuredModel, "gpt-4.1-nano");
+  assertEquals(config.smallStructuredModel, "gpt-5.4-mini");
+  assertEquals(config.overflowStructuredModel, "gpt-5.4");
   assertEquals(config.smallStructuredContextWindow, 400_000);
   assertEquals(config.overflowStructuredContextWindow, 1_047_576);
 });

@@ -68,6 +68,7 @@ type ActiveTask = {
 
 type ArchivedTaskBundle = {
   id: string;
+  title: string;
   pieces: MemoryPiece[];
   startedRound: number;
   archivedRound: number;
@@ -90,12 +91,16 @@ type MemoryState = {
 -3 = three tasks back
 ```
 
+Route prompts expose archived tasks in newest-first pages of five cards. The first page is `-1..-5`;
+if the model needs older task titles it can request the next page, then the proxy supplies
+`-6..-10`, and so on.
+
 ## Round Sequence
 
 ```text
 1. collect new sources
 2. materialize prior active/task-bundle pieces from archive for prune context
-3. chunk new sources into exact pieces
+3. chunk new sources into exact pieces; user messages are kept as one atomic `whole` piece each
 4. route task
 5. build candidate active set
 6. prune candidate set in full-payload batches
@@ -117,7 +122,9 @@ type TaskRoute =
   | { kind: "revive_task"; relativeIndex: number };
 ```
 
-No title, summary, objective, or durable label is created.
+Each active task has a short title derived from the first user message that created it. Archived
+task bundles keep that title so routing can revive by a bounded title list without loading every
+archived task.
 
 Route behavior:
 

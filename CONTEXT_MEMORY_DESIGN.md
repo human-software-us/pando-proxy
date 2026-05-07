@@ -5,7 +5,8 @@ The proxy is a one-task sieve.
 Each round:
 
 1. take the raw prompt/history Codex would send
-2. chunk new user, assistant, tool-call, and tool-result sources into exact pieces
+2. chunk non-user assistant/tool sources into exact pieces; keep each user message as one whole
+   atomic piece
 3. decide whether the new user input continues, starts, or revives an executable task
 4. keep the active task's exact working set
 5. drop only pieces with positive proof that they are unnecessary
@@ -22,6 +23,7 @@ There is one active memory tier only:
 
 - `activeTask`
 - exact surviving `pieces`
+- a short task title used for routing and archive revive
 
 There are no groups. The model may make ad-hoc semantic judgments in `piece_drop_batch`, but those
 judgments do not create durable routing objects. They only answer: can this candidate be dropped

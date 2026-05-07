@@ -21,7 +21,8 @@ If the model calls `recall({offset,limit})`:
 ## End of round
 
 1. extract new sources
-2. chunk non-Pando user, assistant talk/reasoning, and tool-result sources with `source_chunk_batch`
+2. chunk non-user assistant talk/reasoning and tool-result sources with `source_chunk_batch`; each
+   user message is kept as one inseparable `whole` piece
 3. decide `same_task` vs `new_task` vs `revive_task(relativeIndex)` with `task_route`
 4. materialize exact new pieces
 5. apply the task route
@@ -34,10 +35,14 @@ If the model calls `recall({offset,limit})`:
 10. collapse surviving exact duplicates; on `new_task`, old/new duplicate collapse is deferred until
     after prune and prefers the new piece as canonical
 11. archive raw round sources
-12. persist the active task, archived task bundles, and surviving exact pieces
+12. persist the active task title, archived task bundles, and surviving exact pieces
 
-Tool-call sources are chunked as whole pieces. They are still eligible for later full-payload prune
-decisions; nothing is protected forever.
+User-message and tool-call sources are chunked as whole pieces. They are still eligible for later
+full-payload prune decisions; nothing is protected forever.
+
+Task routing receives the active task title, full exact active pieces, full new user messages, and
+only a five-card newest-first archive page. It can request the next linear page when older archived
+task titles are needed for `revive_task`.
 
 If `source_chunk_batch` omits a requested source from its result array, the proxy keeps that source
 as one whole exact piece. Returned source ids and selectors still have to validate locally.

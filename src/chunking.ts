@@ -32,6 +32,7 @@ export async function chunkRoundSources(
 ): Promise<ChunkRoundSourcesResult> {
   const out: PieceDraft[] = [];
   const batchedSources = sources.filter((source) =>
+    source.sourceKind !== "user" &&
     !(source.sourceKind === "tool" && isPandoToolName(source.toolName)) &&
     source.sourceKind !== "tool_call"
   );
@@ -45,7 +46,7 @@ export async function chunkRoundSources(
 
   for (const source of sources) {
     let selectors: ChunkSelector[];
-    if (source.sourceKind === "tool_call") {
+    if (source.sourceKind === "user" || source.sourceKind === "tool_call") {
       selectors = [{ kind: "whole" } satisfies ChunkSelector];
     } else if (source.sourceKind === "tool" && isPandoToolName(source.toolName)) {
       selectors = deterministicPandoSelectors(source.payload);

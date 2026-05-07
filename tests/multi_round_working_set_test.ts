@@ -8,9 +8,11 @@ import {
   type MemoryManagerClients,
   type PieceDropBatchRequest,
   requestTaskRoute,
+  type TaskRouteRequest,
 } from "../src/working_set_manager.ts";
 import type {
   MaterializedMemoryPiece,
+  MemoryPiece,
   MemoryState,
   PieceDraft,
   SourceKind,
@@ -101,6 +103,127 @@ Deno.test("multi-round 02 route failure falls back to same task without losing p
   assertEquals(session.state.archivedTasks.length, 0);
   assertEquals(session.pieceIds(), ["a1:0", "a2:0", "a3:0", "a4:0"]);
   assert(session.state.pieces.some((piece) => piece.previewText.includes("TASK_A_TOKEN")));
+});
+
+Deno.test("task routing sees full active piece content and task title", async () => {
+  const session = new ManualMemorySession();
+  const first = await session.round(
+    draft("route_active:0", "route_active", "user", "Fix route full-content visibility bug"),
+    { kind: "new_task" },
+  );
+  const seen: TaskRouteRequest[] = [];
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    taskRoute: (request) => {
+      seen.push(request);
+      return Promise.resolve({ kind: "same_task" });
+    },
+  };
+
+  const route = await requestTaskRoute(
+    session.state,
+    [{
+      id: "route_followup",
+      sourceId: "route_followup",
+      content: "continue with exact ACTIVE_SECRET=alpha",
+      previewText: "continue with exact ACTIVE_SECRET=alpha",
+    }],
+    clients,
+    session.materializedPriorPieces(),
+  );
+
+  assertEquals(route, { kind: "same_task" });
+  assertEquals(first.memory.activeTask?.title, "Fix route full-content visibility bug");
+  assertEquals(seen.length, 1);
+  assertEquals(seen[0].activeTask?.title, "Fix route full-content visibility bug");
+  assertEquals(seen[0].activePieces.map((piece) => piece.id), ["route_active:0"]);
+  assertEquals(seen[0].activePieces[0].contentText, "Fix route full-content visibility bug");
+  assertEquals(seen[0].newUserPieces[0].content, "continue with exact ACTIVE_SECRET=alpha");
+});
+
+Deno.test("task routing pages archived task cards newest-first in batches of five", async () => {
+  const activePiece = memoryPiece("active_route:0", "active_route", "ACTIVE_ROUTE_PAYLOAD", 8);
+  const archivedTasks = Array.from({ length: 7 }, (_, index) => {
+    const taskNumber = index + 1;
+    return {
+      id: `task_${taskNumber}`,
+      title: `Archived Task ${taskNumber}`,
+      pieces: [
+        memoryPiece(
+          `archived_${taskNumber}:0`,
+          `archived_${taskNumber}`,
+          `payload ${taskNumber}`,
+          taskNumber,
+        ),
+      ],
+      startedRound: taskNumber,
+      archivedRound: taskNumber + 1,
+    };
+  });
+  const state: MemoryState = {
+    roundSeq: 8,
+    activeTask: {
+      id: "active_task",
+      title: "Active Route Task",
+      pieceIds: [activePiece.id],
+      startedRound: 8,
+      lastRound: 8,
+    },
+    archivedTasks,
+    pieces: [activePiece],
+    processedSourceIds: [activePiece.sourceId],
+  };
+  const seen: TaskRouteRequest[] = [];
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    taskRoute: (request) => {
+      seen.push(request);
+      return Promise.resolve(
+        request.archivePage.offset === 0
+          ? { kind: "more_archived_tasks" }
+          : { kind: "revive_task", relativeIndex: -6 },
+      );
+    },
+  };
+
+  const route = await requestTaskRoute(
+    state,
+    [{
+      id: "new_user",
+      sourceId: "new_user",
+      content: "revive older task",
+      previewText: "revive older task",
+    }],
+    clients,
+    [{ ...activePiece, renderText: "ACTIVE_ROUTE_PAYLOAD" }],
+  );
+
+  assertEquals(route, { kind: "revive_task", relativeIndex: -6 });
+  assertEquals(seen.length, 2);
+  assertEquals(seen[0].archivePage, {
+    offset: 0,
+    pageSize: 5,
+    hasMore: true,
+    nextRelativeIndex: -6,
+  });
+  assertEquals(seen[0].archivedTasks.map((task) => [task.relativeIndex, task.title]), [
+    [-1, "Archived Task 7"],
+    [-2, "Archived Task 6"],
+    [-3, "Archived Task 5"],
+    [-4, "Archived Task 4"],
+    [-5, "Archived Task 3"],
+  ]);
+  assertEquals(seen[1].archivePage, {
+    offset: 5,
+    pageSize: 5,
+    hasMore: false,
+    nextRelativeIndex: null,
+  });
+  assertEquals(seen[1].archivedTasks.map((task) => [task.relativeIndex, task.title]), [
+    [-6, "Archived Task 2"],
+    [-7, "Archived Task 1"],
+  ]);
+  assertEquals(seen[1].activePieces[0].contentText, "ACTIVE_ROUTE_PAYLOAD");
 });
 
 Deno.test("multi-round 03 new task archives old identity and rescues shared old pieces", async () => {
@@ -213,7 +336,7 @@ Deno.test("multi-round 05 revive selects the previous archived task and archives
   assertEquals(session.state.activeTask?.id, taskB);
   assert(session.state.archivedTasks.some((task) => task.id === taskA));
   assert(session.state.archivedTasks.some((task) => task.id === taskC));
-  assertEquals(session.pieceIds(), ["b_piece:0", "revive_b:0"]);
+  assertEquals(session.pieceIds(), ["b_piece:0", "c_piece:0", "revive_b:0"]);
   assert(session.state.pieces.some((piece) => piece.previewText.includes("TASK_B_VALUE")));
 });
 
@@ -1022,6 +1145,10 @@ Deno.test("multi-round 21 many chunked task switches do not lose or leak pieces"
     "task_7_source:1",
     "task_7_source:2",
     "task_7_source:3",
+    "task_8_source:0",
+    "task_8_source:1",
+    "task_8_source:2",
+    "task_8_source:3",
     "revive_task_7:0",
   ]);
   const revivedPrompt = session.prompt();
@@ -1031,7 +1158,7 @@ Deno.test("multi-round 21 many chunked task switches do not lose or leak pieces"
       `revived prompt missing task 7 chunk ${chunkIndex}`,
     );
   }
-  assert(!revivedPrompt.includes("TASK_8_CHUNK_0_VALUE"));
+  assert(revivedPrompt.includes("TASK_8_CHUNK_0_VALUE"));
   assert(
     session.state.archivedTasks.some((task) =>
       task.id === taskIdBySource.get("task_8_source") &&
@@ -1173,6 +1300,24 @@ function testProxyConfig(upstreamBaseUrl: string): ProxyConfig {
 
 function renderDraft(piece: PieceDraft): string {
   return typeof piece.content === "string" ? piece.content : JSON.stringify(piece.content);
+}
+
+function memoryPiece(
+  id: string,
+  sourceId: string,
+  previewText: string,
+  createdSeq: number,
+): MemoryPiece {
+  return {
+    id,
+    sourceKind: "user",
+    sourceId,
+    previewText,
+    byteSize: previewText.length,
+    createdSeq,
+    selector: { kind: "whole" },
+    contentHash: `${sourceId}_hash`,
+  };
 }
 
 function dropPieceIdsClient(pieceIds: string[]): MemoryManagerClients {

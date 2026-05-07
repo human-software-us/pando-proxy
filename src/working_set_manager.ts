@@ -17,9 +17,25 @@ import { renderTextSelection, type TextSpanSelection } from "./source_selectors.
 
 export type TaskRouteRequest = {
   activeTask: ActiveTask | null;
+  activePieces: Array<{
+    id: string;
+    sourceKind: SourceKind;
+    sourceId: string;
+    toolName?: string;
+    createdSeq: number;
+    byteSize: number;
+    contentText: string;
+  }>;
+  archivePage: {
+    offset: number;
+    pageSize: number;
+    hasMore: boolean;
+    nextRelativeIndex: number | null;
+  };
   archivedTasks: Array<{
     relativeIndex: number;
     id: string;
+    title: string;
     pieceCount: number;
     startedRound: number;
     archivedRound: number;
@@ -37,6 +53,10 @@ export type TaskRouteResponse =
   | { kind: "same_task" }
   | { kind: "new_task" }
   | { kind: "revive_task"; relativeIndex: number };
+
+export type TaskRouteModelResponse =
+  | TaskRouteResponse
+  | { kind: "more_archived_tasks" };
 
 export type DropReason =
   | "exact_duplicate"
@@ -157,11 +177,13 @@ const STRUCTURAL_DROP_REASONS = new Set<DropReason>([
 const DEFAULT_PRUNE_BATCH_TOKEN_LIMIT = 180_000;
 const DEFAULT_PRUNE_SINGLE_BATCH_TOKEN_LIMIT = 996_000;
 const APPROX_CHARS_PER_TOKEN = 4;
+const ARCHIVED_TASK_ROUTE_PAGE_SIZE = 5;
 
 export async function requestTaskRoute(
   state: MemoryState,
   newUserPieces: TaskRouteRequest["newUserPieces"],
   clients: MemoryManagerClients,
+  materializedPriorPieces: MaterializedMemoryPiece[] = [],
 ): Promise<TaskRouteResponse> {
   if (!state.activeTask) {
     return { kind: "new_task" };
@@ -169,17 +191,29 @@ export async function requestTaskRoute(
   if (newUserPieces.length === 0) {
     return { kind: "same_task" };
   }
+  let archiveOffset = 0;
   try {
-    return await requestWithSingleRetry(
-      (attempt) =>
-        clients.taskRoute({
-          activeTask: state.activeTask,
-          archivedTasks: archivedTaskRouteCards(state.archivedTasks),
-          newUserPieces,
-        }, attempt),
-      parseAndValidateTaskRoute,
-      "task_route",
-    );
+    while (true) {
+      const routeRequest = {
+        activeTask: state.activeTask,
+        activePieces: activePieceRoutePayload(state, materializedPriorPieces),
+        archivePage: archivedTaskRoutePage(state.archivedTasks, archiveOffset),
+        archivedTasks: archivedTaskRouteCards(state.archivedTasks, archiveOffset),
+        newUserPieces,
+      };
+      const response = await requestWithSingleRetry(
+        (attempt) => clients.taskRoute(routeRequest, attempt),
+        parseAndValidateTaskRoute,
+        "task_route",
+      );
+      if (response.kind !== "more_archived_tasks") {
+        return response;
+      }
+      if (!routeRequest.archivePage.hasMore) {
+        return { kind: "same_task" };
+      }
+      archiveOffset += ARCHIVED_TASK_ROUTE_PAGE_SIZE;
+    }
   } catch {
     return { kind: "same_task" };
   }
@@ -209,15 +243,21 @@ export async function applyWorkingSetUpdate(
     }
   }
 
-  const routed = applyTaskRoute(state, taskRoute, nextSeq);
+  const routed = applyTaskRoute(state, taskRoute, nextSeq, titleFromNewPieces(newPieces, nextSeq));
   const collapseDuplicatesAfterPrune = routed.effectiveRoute.kind === "new_task";
+  const baseDeduped = routed.prePruneDuplicatePreferredPieceIds.size > 0
+    ? collapseDuplicatePiecesPreferNew(
+      routed.baseOldPieces,
+      routed.prePruneDuplicatePreferredPieceIds,
+    )
+    : { pieces: routed.baseOldPieces.map(cloneMemoryPiece), duplicateIds: new Set<string>() };
   const deduped = collapseDuplicatesAfterPrune
     ? {
-      oldPieces: routed.baseOldPieces.map(cloneMemoryPiece),
+      oldPieces: baseDeduped.pieces,
       newPieces: newMemoryPieces.map(cloneMemoryPiece),
       duplicateIds: new Set<string>(),
     }
-    : markDuplicateNewPieces(routed.baseOldPieces, newMemoryPieces);
+    : markDuplicateNewPieces(baseDeduped.pieces, newMemoryPieces);
   const duplicateNewIds = deduped.duplicateIds;
   const nonDuplicateNewPieces = deduped.newPieces.filter((piece) => !duplicateNewIds.has(piece.id));
   const candidateBaseOldPieces = deduped.oldPieces;
@@ -294,6 +334,7 @@ export async function applyWorkingSetUpdate(
   );
   const postPruneDuplicateIds = postPruneDeduped.duplicateIds;
   const allDuplicateDropIds = new Set([
+    ...baseDeduped.duplicateIds,
     ...duplicateNewIds,
     ...postPruneDuplicateIds,
     ...verifiedModelExactDuplicates.duplicateIds,
@@ -382,11 +423,13 @@ function applyTaskRoute(
   state: MemoryState,
   route: TaskRouteResponse,
   nextSeq: number,
+  newTaskTitle: string,
 ): {
   activeTask: ActiveTask;
   archivedTasks: ArchivedTaskBundle[];
   baseOldPieces: MemoryPiece[];
   effectiveRoute: TaskRouteResponse;
+  prePruneDuplicatePreferredPieceIds: Set<string>;
 } {
   if (route.kind === "same_task" && state.activeTask) {
     return {
@@ -394,6 +437,7 @@ function applyTaskRoute(
       archivedTasks: state.archivedTasks,
       baseOldPieces: state.pieces,
       effectiveRoute: route,
+      prePruneDuplicatePreferredPieceIds: new Set(),
     };
   }
 
@@ -410,13 +454,20 @@ function applyTaskRoute(
       return {
         activeTask: {
           id: resolved.task.id,
+          title: resolved.task.title,
           pieceIds: resolved.task.pieces.map((piece) => piece.id),
           startedRound: resolved.task.startedRound,
           lastRound: nextSeq,
         },
         archivedTasks: withCurrentArchived,
-        baseOldPieces: resolved.task.pieces,
+        baseOldPieces: chronologicalPieces([
+          ...resolved.task.pieces,
+          ...state.pieces,
+        ]),
         effectiveRoute: route,
+        prePruneDuplicatePreferredPieceIds: new Set(
+          resolved.task.pieces.map((piece) => piece.id),
+        ),
       };
     }
     if (state.activeTask) {
@@ -425,6 +476,7 @@ function applyTaskRoute(
         archivedTasks: state.archivedTasks,
         baseOldPieces: state.pieces,
         effectiveRoute: { kind: "same_task" },
+        prePruneDuplicatePreferredPieceIds: new Set(),
       };
     }
   }
@@ -432,6 +484,7 @@ function applyTaskRoute(
   return {
     activeTask: {
       id: `task_${nextSeq}_${crypto.randomUUID().slice(0, 8)}`,
+      title: newTaskTitle,
       pieceIds: [],
       startedRound: nextSeq,
       lastRound: nextSeq,
@@ -439,6 +492,7 @@ function applyTaskRoute(
     archivedTasks: archiveCurrentTask(state.archivedTasks, state.activeTask, state.pieces, nextSeq),
     baseOldPieces: state.pieces,
     effectiveRoute: route.kind === "new_task" ? route : { kind: "new_task" },
+    prePruneDuplicatePreferredPieceIds: new Set(),
   };
 }
 
@@ -455,6 +509,7 @@ function archiveCurrentTask(
     ...archivedTasks.filter((task) => task.id !== activeTask.id),
     {
       id: activeTask.id,
+      title: activeTask.title,
       pieces: chronologicalPieces(activePieces),
       startedRound: activeTask.startedRound,
       archivedRound: nextSeq,
@@ -846,7 +901,7 @@ async function requestPruneBatchKeepOnFailure(
 
 function parseAndValidateTaskRoute(
   value: unknown,
-): { ok: true; value: TaskRouteResponse } | { ok: false; errors: string[] } {
+): { ok: true; value: TaskRouteModelResponse } | { ok: false; errors: string[] } {
   const response = coerceTaskRoute(value);
   if (!response) {
     return { ok: false, errors: ["task_route response must be an object"] };
@@ -854,13 +909,16 @@ function parseAndValidateTaskRoute(
   return { ok: true, value: response };
 }
 
-function coerceTaskRoute(value: unknown): TaskRouteResponse | null {
+function coerceTaskRoute(value: unknown): TaskRouteModelResponse | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   const record = value as Record<string, unknown>;
   if (record.kind === "new_task") {
     return { kind: "new_task" };
+  }
+  if (record.kind === "more_archived_tasks") {
+    return { kind: "more_archived_tasks" };
   }
   if (record.kind === "revive_task") {
     const relativeIndex = typeof record.relativeIndex === "number"
@@ -981,16 +1039,57 @@ function collapsesToAssistantOnly(
     survivors.every((piece) => piece.sourceKind === "assistant");
 }
 
+function activePieceRoutePayload(
+  state: MemoryState,
+  materializedPriorPieces: MaterializedMemoryPiece[],
+): TaskRouteRequest["activePieces"] {
+  const renderedById = new Map(
+    materializedPriorPieces.map((piece) => [piece.id, piece.renderText]),
+  );
+  return chronologicalPieces(state.pieces).map((piece) => ({
+    id: piece.id,
+    sourceKind: piece.sourceKind,
+    sourceId: piece.sourceId,
+    ...(piece.toolName ? { toolName: piece.toolName } : {}),
+    createdSeq: piece.createdSeq,
+    byteSize: piece.byteSize,
+    contentText: renderedById.get(piece.id) ?? piece.previewText,
+  }));
+}
+
+function archivedTaskRoutePage(
+  archivedTasks: ArchivedTaskBundle[],
+  offset: number,
+): TaskRouteRequest["archivePage"] {
+  const hasMore = offset + ARCHIVED_TASK_ROUTE_PAGE_SIZE < archivedTasks.length;
+  return {
+    offset,
+    pageSize: ARCHIVED_TASK_ROUTE_PAGE_SIZE,
+    hasMore,
+    nextRelativeIndex: hasMore ? -(offset + ARCHIVED_TASK_ROUTE_PAGE_SIZE + 1) : null,
+  };
+}
+
 function archivedTaskRouteCards(
   archivedTasks: ArchivedTaskBundle[],
+  offset: number,
 ): TaskRouteRequest["archivedTasks"] {
   return archivedTasks.map((task, index) => ({
     relativeIndex: index - archivedTasks.length,
     id: task.id,
+    title: task.title,
     pieceCount: task.pieces.length,
     startedRound: task.startedRound,
     archivedRound: task.archivedRound,
-  }));
+  })).reverse().slice(offset, offset + ARCHIVED_TASK_ROUTE_PAGE_SIZE);
+}
+
+function titleFromNewPieces(newPieces: PieceDraft[], roundSeq: number): string {
+  const userPiece = newPieces.find((piece) => piece.sourceKind === "user");
+  const raw = userPiece ? renderPieceContent(userPiece.content) : `Task ${roundSeq}`;
+  const firstLine = raw.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? raw.trim();
+  const collapsed = firstLine.replace(/\s+/g, " ").trim() || `Task ${roundSeq}`;
+  return collapsed.length > 120 ? `${collapsed.slice(0, 117)}...` : collapsed;
 }
 
 async function requestWithSingleRetry<T>(

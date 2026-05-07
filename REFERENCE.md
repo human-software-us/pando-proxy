@@ -12,6 +12,7 @@ type ChunkSelector =
 
 type ActiveTask = {
   id: string;
+  title: string;
   pieceIds: string[];
   startedRound: number;
   lastRound: number;
@@ -19,6 +20,7 @@ type ActiveTask = {
 
 type ArchivedTaskBundle = {
   id: string;
+  title: string;
   pieces: MemoryPiece[];
   startedRound: number;
   archivedRound: number;
@@ -57,6 +59,7 @@ type MemoryState = {
 Important invariant:
 
 - there is at most one active task
+- active and archived tasks have short human-readable titles
 - `pieces` is the active prompt-memory set
 - `archivedTasks` stores previous task piece metadata for revive
 - raw payloads live in the lossless archive
@@ -84,9 +87,25 @@ Dynamic checks that JSON Schema cannot fully express are handled conservatively:
 ```ts
 type TaskRouteRequest = {
   activeTask: ActiveTask | null;
+  activePieces: Array<{
+    id: string;
+    sourceKind: "user" | "assistant" | "tool" | "tool_call";
+    sourceId: string;
+    toolName?: string;
+    createdSeq: number;
+    byteSize: number;
+    contentText: string;
+  }>;
+  archivePage: {
+    offset: number;
+    pageSize: number;
+    hasMore: boolean;
+    nextRelativeIndex: number | null;
+  };
   archivedTasks: Array<{
     relativeIndex: number;
     id: string;
+    title: string;
     pieceCount: number;
     startedRound: number;
     archivedRound: number;
@@ -104,11 +123,15 @@ type TaskRouteResponse =
   | { kind: "same_task" }
   | { kind: "new_task" }
   | { kind: "revive_task"; relativeIndex: number };
+
+type TaskRouteWireResponse =
+  | TaskRouteResponse
+  | { kind: "more_archived_tasks" };
 ```
 
 For strict schema compatibility, the wire object always contains `kind` and `relativeIndex`.
-`same_task` and `new_task` use `relativeIndex: 0`; `revive_task` uses a negative index. Local code
-normalizes that wire object into the union above.
+`same_task`, `new_task`, and `more_archived_tasks` use `relativeIndex: 0`; `revive_task` uses a
+negative index. Local code normalizes final decisions into `TaskRouteResponse`.
 
 Relative indexes are negative:
 
@@ -116,6 +139,10 @@ Relative indexes are negative:
 -1 = most recent previous task
 -2 = task before that
 ```
+
+Only five archived task cards are shown per route request, newest first. If the model returns
+`more_archived_tasks` and more cards exist, the proxy asks again with the next page (`-6..-10`, then
+`-11..-15`, and so on). If no more cards exist, routing falls back to `same_task`.
 
 If route fails, the runtime keeps the current task with `same_task`.
 
@@ -191,6 +218,9 @@ labels, content types, boundary classifications, character offsets, or copied fu
 The request representation shown to the model and the source representation used for materialization
 must be the same raw source text.
 
+User messages are not sent to this classifier. Each user message becomes one inseparable `whole`
+piece before pruning.
+
 Selector contract:
 
 ```ts
@@ -260,7 +290,8 @@ Validation rules:
   closed and prior memory remains unchanged
 
 Tool-call sources are not sent to `source_chunk_batch`; they become whole exact pieces structurally.
-`object_path` selectors are produced only by deterministic Pando-tool chunking.
+User-message sources are also not sent; they become whole exact pieces structurally. `object_path`
+selectors are produced only by deterministic Pando-tool chunking.
 
 ## Prompt Memory Block
 

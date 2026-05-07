@@ -95,6 +95,7 @@ Deno.test("applyWorkingSetUpdate converts model exact_duplicate drops into verif
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [oldPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -153,6 +154,7 @@ Deno.test("applyWorkingSetUpdate keeps model exact_duplicate drops when local re
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [oldPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -201,6 +203,7 @@ Deno.test("applyWorkingSetUpdate rejects old-task switch reason unless it applie
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [currentPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -245,6 +248,7 @@ Deno.test("applyWorkingSetUpdate rejects old-task switch reason for pieces from 
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [oldPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -285,6 +289,7 @@ Deno.test("applyWorkingSetUpdate allows old-task switch reason for old pieces du
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [oldPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -469,6 +474,7 @@ Deno.test("applyWorkingSetUpdate drops old active pieces with accepted full-payl
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [oldPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -601,6 +607,7 @@ Deno.test("applyWorkingSetUpdate archives old task identity and can rescue old p
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [oldPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -633,6 +640,7 @@ Deno.test("applyWorkingSetUpdate archives old task identity and drops old pieces
     roundSeq: 1,
     activeTask: {
       id: "task_1",
+      title: "Task 1",
       pieceIds: [oldPiece.id],
       startedRound: 1,
       lastRound: 1,
@@ -750,12 +758,14 @@ Deno.test("applyWorkingSetUpdate revives previous task by relative index", async
     roundSeq: 3,
     activeTask: {
       id: "task_current",
+      title: "Current task",
       pieceIds: [currentPiece.id],
       startedRound: 3,
       lastRound: 3,
     },
     archivedTasks: [{
       id: "task_archived",
+      title: "Archived task",
       pieces: [archivedPiece],
       startedRound: 1,
       archivedRound: 2,
@@ -777,8 +787,126 @@ Deno.test("applyWorkingSetUpdate revives previous task by relative index", async
   );
 
   assertEquals(result.memory.activeTask?.id, "task_archived");
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [
+    archivedPiece.id,
+    currentPiece.id,
+    newPiece.id,
+  ]);
+  assertEquals(result.memory.archivedTasks.map((task) => task.id), ["task_current"]);
+  assertEquals(result.memory.archivedTasks[0].pieces.map((piece) => piece.id), [
+    currentPiece.id,
+  ]);
+});
+
+Deno.test("applyWorkingSetUpdate can drop current-task pieces during revive pruning", async () => {
+  const currentPiece = memoryPiece("source_current:0", "source_current", "current task fact");
+  const archivedPiece = memoryPiece("source_archived:0", "source_archived", "archived task fact");
+  const state: MemoryState = {
+    roundSeq: 3,
+    activeTask: {
+      id: "task_current",
+      title: "Current task",
+      pieceIds: [currentPiece.id],
+      startedRound: 3,
+      lastRound: 3,
+    },
+    archivedTasks: [{
+      id: "task_archived",
+      title: "Archived task",
+      pieces: [archivedPiece],
+      startedRound: 1,
+      archivedRound: 2,
+    }],
+    pieces: [currentPiece],
+    processedSourceIds: ["source_current", "source_archived"],
+  };
+  const newPiece = draft("source_new:0", "source_new", "continue previous task");
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === currentPiece.id,
+          reason: piece.id === currentPiece.id ? "clearly_unrelated_to_current_work" : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [newPiece],
+    { kind: "revive_task", relativeIndex: -1 },
+    clients,
+    [
+      materialized(currentPiece, "current task fact"),
+      materialized(archivedPiece, "archived task fact"),
+    ],
+  );
+
+  assertEquals(result.memory.activeTask?.id, "task_archived");
   assertEquals(result.memory.pieces.map((piece) => piece.id), [archivedPiece.id, newPiece.id]);
   assertEquals(result.memory.archivedTasks.map((task) => task.id), ["task_current"]);
+  assertEquals(result.memory.archivedTasks[0].pieces.map((piece) => piece.id), [
+    currentPiece.id,
+  ]);
+});
+
+Deno.test("applyWorkingSetUpdate dedupes revive base before prune and prefers revived pieces", async () => {
+  const currentPiece: MemoryPiece = {
+    ...memoryPiece("source_current:0", "source_current", "same task fact"),
+    contentHash: "shared_hash",
+  };
+  const archivedPiece: MemoryPiece = {
+    ...memoryPiece("source_archived:0", "source_archived", "same task fact"),
+    contentHash: "shared_hash",
+  };
+  const state: MemoryState = {
+    roundSeq: 3,
+    activeTask: {
+      id: "task_current",
+      title: "Current task",
+      pieceIds: [currentPiece.id],
+      startedRound: 3,
+      lastRound: 3,
+    },
+    archivedTasks: [{
+      id: "task_archived",
+      title: "Archived task",
+      pieces: [archivedPiece],
+      startedRound: 1,
+      archivedRound: 2,
+    }],
+    pieces: [currentPiece],
+    processedSourceIds: ["source_current", "source_archived"],
+  };
+  const newPiece = draft("source_new:0", "source_new", "continue previous task");
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [newPiece],
+    { kind: "revive_task", relativeIndex: -1 },
+    keepAllClients,
+    [
+      materialized(currentPiece, "same task fact"),
+      materialized(archivedPiece, "same task fact"),
+    ],
+  );
+
+  assertEquals(result.memory.activeTask?.id, "task_archived");
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [archivedPiece.id, newPiece.id]);
+  assertEquals(result.duplicateDroppedPieceIds, [currentPiece.id]);
+  assertEquals(result.memory.pieces[0].duplicateSources, [{
+    pieceId: currentPiece.id,
+    sourceId: currentPiece.sourceId,
+    sourceKind: currentPiece.sourceKind,
+    createdSeq: currentPiece.createdSeq,
+    pointer: { selector: currentPiece.selector },
+  }]);
+  assertEquals(result.memory.archivedTasks.map((task) => task.id), ["task_current"]);
+  assertEquals(result.memory.archivedTasks[0].pieces.map((piece) => piece.id), [
+    currentPiece.id,
+  ]);
 });
 
 Deno.test("applyWorkingSetUpdate keeps current task when revive index is unavailable", async () => {
@@ -787,6 +915,7 @@ Deno.test("applyWorkingSetUpdate keeps current task when revive index is unavail
     roundSeq: 3,
     activeTask: {
       id: "task_current",
+      title: "Current task",
       pieceIds: [currentPiece.id],
       startedRound: 3,
       lastRound: 3,
@@ -875,7 +1004,12 @@ Deno.test("applyWorkingSetUpdate handles 8+ rounds of turnover, drops, and recip
 
   await step({ kind: "revive_task", relativeIndex: -3 }, "a_revival:0", "Revive Task A KEEP");
   assertEquals(state.activeTask?.id, taskAId);
-  assertEquals(state.pieces.map((piece) => piece.id), ["a_root:0", "a_keep:0", "a_revival:0"]);
+  assertEquals(state.pieces.map((piece) => piece.id), [
+    "a_root:0",
+    "a_keep:0",
+    "d_root:0",
+    "a_revival:0",
+  ]);
   assertEquals(state.archivedTasks.map((task) => task.id), [taskBId, taskCId, taskDId]);
   assertEquals(
     state.archivedTasks.find((task) => task.id === taskDId)?.pieces.map((piece) => piece.id),
@@ -888,17 +1022,30 @@ Deno.test("applyWorkingSetUpdate handles 8+ rounds of turnover, drops, and recip
     "Revive displaced Task D KEEP",
   );
   assertEquals(state.activeTask?.id, taskDId);
-  assertEquals(state.pieces.map((piece) => piece.id), ["d_root:0", "d_revival:0"]);
+  assertEquals(state.pieces.map((piece) => piece.id), [
+    "a_root:0",
+    "a_keep:0",
+    "d_root:0",
+    "a_revival:0",
+    "d_revival:0",
+  ]);
   assertEquals(state.archivedTasks.map((task) => task.id), [taskBId, taskCId, taskAId]);
   assertEquals(
     state.archivedTasks.find((task) => task.id === taskAId)?.pieces.map((piece) => piece.id),
-    ["a_root:0", "a_keep:0", "a_revival:0"],
+    ["a_root:0", "a_keep:0", "d_root:0", "a_revival:0"],
   );
 
   await step({ kind: "same_task" }, "d_noise:0", "Task D final transient DROP_ME");
   await step({ kind: "same_task" }, "d_keep:0", "Task D final useful KEEP src/d.ts");
   assertEquals(state.activeTask?.id, taskDId);
-  assertEquals(state.pieces.map((piece) => piece.id), ["d_root:0", "d_revival:0", "d_keep:0"]);
+  assertEquals(state.pieces.map((piece) => piece.id), [
+    "a_root:0",
+    "a_keep:0",
+    "d_root:0",
+    "a_revival:0",
+    "d_revival:0",
+    "d_keep:0",
+  ]);
   assertEquals(state.archivedTasks.map((task) => task.id), [taskBId, taskCId, taskAId]);
 });
 
@@ -1012,6 +1159,8 @@ Deno.test("applyWorkingSetUpdate handles 8+ large-chunk turnover with batched dr
     "la_keep_1:0",
     "la_keep_2:0",
     "la_keep_3:0",
+    "ld_user:0",
+    "ld_keep_1:0",
     "la_recall:0",
   ]);
 
@@ -1022,9 +1171,22 @@ Deno.test("applyWorkingSetUpdate handles 8+ large-chunk turnover with batched dr
   assertEquals(state.archivedTasks.map((task) => task.id), [taskBId, taskCId, taskAId]);
   assertSameIds(
     state.archivedTasks.find((task) => task.id === taskAId)?.pieces.map((piece) => piece.id),
-    ["la_user:0", "la_keep_1:0", "la_keep_2:0", "la_keep_3:0", "la_recall:0"],
+    [
+      "la_user:0",
+      "la_keep_1:0",
+      "la_keep_2:0",
+      "la_keep_3:0",
+      "ld_user:0",
+      "ld_keep_1:0",
+      "la_recall:0",
+    ],
   );
   assertSameIds(state.pieces.map((piece) => piece.id), [
+    "la_user:0",
+    "la_keep_1:0",
+    "la_keep_2:0",
+    "la_keep_3:0",
+    "la_recall:0",
     "ld_user:0",
     "ld_keep_1:0",
     "ld_recall:0",
@@ -1036,6 +1198,11 @@ Deno.test("applyWorkingSetUpdate handles 8+ large-chunk turnover with batched dr
   ]);
   assertEquals(state.activeTask?.id, taskDId);
   assertSameIds(state.pieces.map((piece) => piece.id), [
+    "la_user:0",
+    "la_keep_1:0",
+    "la_keep_2:0",
+    "la_keep_3:0",
+    "la_recall:0",
     "ld_user:0",
     "ld_keep_1:0",
     "ld_recall:0",
