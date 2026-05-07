@@ -126,7 +126,7 @@ Deno.test("E2E pass-through retries one retryable upstream response", async () =
     hostname: "127.0.0.1",
     port: 0,
     onListen: () => {},
-  }, async () => {
+  }, () => {
     requestCount += 1;
     if (requestCount === 1) {
       return new Response("rate limited", { status: 429 });

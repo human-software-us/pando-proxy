@@ -899,12 +899,6 @@ function collapsesToAssistantOnly(
     survivors.every((piece) => piece.sourceKind === "assistant");
 }
 
-function coerceDropReason(value: unknown): DropReason | null {
-  return typeof value === "string" && ACCEPTED_DROP_REASONS.has(value as DropReason)
-    ? value as DropReason
-    : null;
-}
-
 function archivedTaskRouteCards(
   archivedTasks: ArchivedTaskBundle[],
 ): TaskRouteRequest["archivedTasks"] {
