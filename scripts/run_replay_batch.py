@@ -3,12 +3,25 @@
 import argparse
 import datetime as dt
 import json
+import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
+
+
+def configure_unbuffered_stdio() -> None:
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(line_buffering=True, write_through=True)
+
+
+configure_unbuffered_stdio()
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,6 +140,7 @@ def run_one(
     result = subprocess.run(
         cmd,
         cwd=Path(__file__).resolve().parent.parent,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
         capture_output=True,
         text=True,
     )

@@ -7,10 +7,22 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
+
+
+def configure_unbuffered_stdio() -> None:
+    os.environ.setdefault("PYTHONUNBUFFERED", "1")
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(line_buffering=True, write_through=True)
+
+
+configure_unbuffered_stdio()
 
 
 def parse_args() -> argparse.Namespace:
@@ -161,6 +173,7 @@ def run_one(
     logger.log(f"start condition={condition} task={task.get('taskNumber')} repo={repo}")
     start = time.monotonic()
     env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("HAWK_MODE", "cli/ci")
     env.setdefault("MB_COLORIZE_LOGS", "false")
     if jetty_port is not None:
@@ -381,7 +394,7 @@ def main() -> int:
     }
     write_json(out_dir / "summary.json", summary)
     logger.log(f"batch_complete counts={counts}")
-    print(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2), flush=True)
     return 0 if counts.get("failed", 0) == 0 and counts.get("timeout", 0) == 0 and counts.get("error", 0) == 0 else 1
 
 
