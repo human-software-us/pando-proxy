@@ -36,9 +36,13 @@ export async function chunkRoundSources(
     !(source.sourceKind === "tool" && isPandoToolName(source.toolName)) &&
     source.sourceKind !== "tool_call"
   );
-  const batchedSelectors = batchedSources.length > 0
+  const chunkedWithModel = batchedSources.length > 0
     ? await chunkBatchWithModel(batchedSources, clients)
-    : new Map<string, ChunkSelector[]>();
+    : {
+      selectorsBySourceId: new Map<string, ChunkSelector[]>(),
+      modelSelectedSourceIds: new Set<string>(),
+    };
+  const modelSelectedSourceIds = new Set(chunkedWithModel.modelSelectedSourceIds);
 
   for (const source of sources) {
     let selectors: ChunkSelector[];
@@ -47,7 +51,7 @@ export async function chunkRoundSources(
     } else if (source.sourceKind === "tool" && isPandoToolName(source.toolName)) {
       selectors = deterministicPandoSelectors(source.payload);
     } else {
-      selectors = batchedSelectors.get(source.sourceId) ??
+      selectors = chunkedWithModel.selectorsBySourceId.get(source.sourceId) ??
         [{ kind: "whole" } satisfies ChunkSelector];
     }
     selectors = expandLargeWholeSelectors(source, selectors);
@@ -58,8 +62,8 @@ export async function chunkRoundSources(
   }
   return {
     pieces: out,
-    chunkedViaModelSourceCount: batchedSources.length,
-    chunkedDeterministicSourceCount: sources.length - batchedSources.length,
+    chunkedViaModelSourceCount: modelSelectedSourceIds.size,
+    chunkedDeterministicSourceCount: sources.length - modelSelectedSourceIds.size,
   };
 }
 
@@ -356,7 +360,10 @@ export function materializeSelector(
 async function chunkBatchWithModel(
   sources: RoundSource[],
   clients: StructuredClients,
-): Promise<Map<string, ChunkSelector[]>> {
+): Promise<{
+  selectorsBySourceId: Map<string, ChunkSelector[]>;
+  modelSelectedSourceIds: Set<string>;
+}> {
   const request = {
     sources: sources.map((source) => ({
       sourceId: source.sourceId,
@@ -370,10 +377,11 @@ async function chunkBatchWithModel(
     (attempt) => clients.sourceChunkBatch(request, attempt),
   ).catch(() => null);
   if (!response || !Array.isArray(response.results)) {
-    return wholeSelectorMap(sources);
+    return wholeSelectorFallback(sources);
   }
   const byId = new Map<string, ChunkSelector[]>();
   const requestedIds = new Set(sources.map((source) => source.sourceId));
+  const modelSelectedSourceIds = new Set<string>();
   for (const entry of response.results ?? []) {
     if (
       !entry ||
@@ -384,28 +392,38 @@ async function chunkBatchWithModel(
     ) {
       continue;
     }
+    if (byId.has(entry.sourceId)) {
+      return wholeSelectorFallback(sources);
+    }
+    const selectors = validChunkSelectors(entry.selectors);
     byId.set(
       entry.sourceId,
-      validChunkSelectors(entry.selectors),
+      selectors ?? [{ kind: "whole" }],
     );
+    if (selectors) {
+      modelSelectedSourceIds.add(entry.sourceId);
+    }
   }
-  return byId;
+  return { selectorsBySourceId: byId, modelSelectedSourceIds };
 }
 
-function wholeSelectorMap(sources: RoundSource[]): Map<string, ChunkSelector[]> {
-  return new Map(
-    sources.map((source) => [source.sourceId, [{ kind: "whole" } satisfies ChunkSelector]]),
-  );
+function wholeSelectorFallback(sources: RoundSource[]): {
+  selectorsBySourceId: Map<string, ChunkSelector[]>;
+  modelSelectedSourceIds: Set<string>;
+} {
+  return {
+    selectorsBySourceId: new Map(
+      sources.map((source) => [source.sourceId, [{ kind: "whole" } satisfies ChunkSelector]]),
+    ),
+    modelSelectedSourceIds: new Set(),
+  };
 }
 
-function validChunkSelectors(value: unknown): ChunkSelector[] {
-  if (!Array.isArray(value)) {
-    return [{ kind: "whole" }];
+function validChunkSelectors(value: unknown): ChunkSelector[] | null {
+  if (!Array.isArray(value) || value.length === 0) {
+    return null;
   }
-  const selectors = value.filter((selector): selector is ChunkSelector =>
-    isValidChunkSelector(selector)
-  );
-  return selectors.length > 0 ? selectors : [{ kind: "whole" }];
+  return value.every(isValidChunkSelector) ? value : null;
 }
 
 function isValidChunkSelector(value: unknown): value is ChunkSelector {

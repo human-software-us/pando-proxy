@@ -112,6 +112,8 @@ Deno.test("chunkRoundSources keeps small whole payloads whole", async () => {
 
   assertEquals(result.pieces.length, 1);
   assertEquals(result.pieces[0].selector, { kind: "whole" });
+  assertEquals(result.chunkedViaModelSourceCount, 1);
+  assertEquals(result.chunkedDeterministicSourceCount, 0);
 });
 
 Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch fails after retry", async () => {
@@ -135,6 +137,8 @@ Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch fails a
   assertEquals(result.pieces.length, 1);
   assertEquals(result.pieces[0].selector, { kind: "whole" });
   assertEquals(result.pieces[0].content, "keep this exact text");
+  assertEquals(result.chunkedViaModelSourceCount, 0);
+  assertEquals(result.chunkedDeterministicSourceCount, 1);
 });
 
 Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch returns malformed selectors", async () => {
@@ -160,6 +164,69 @@ Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch returns
   assertEquals(result.pieces.length, 1);
   assertEquals(result.pieces[0].selector, { kind: "whole" });
   assertEquals(result.pieces[0].content, "important output");
+  assertEquals(result.chunkedViaModelSourceCount, 0);
+  assertEquals(result.chunkedDeterministicSourceCount, 1);
+});
+
+Deno.test("chunkRoundSources keeps a source whole when any returned selector is malformed", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () =>
+      Promise.resolve({
+        results: [{
+          sourceId: "mixed_bad",
+          selectors: [
+            { kind: "text_spans", spans: [{ start: 0, end: 9 }] },
+            { kind: "not_a_selector" },
+          ],
+        }],
+      } as unknown as SourceChunkBatchResponse),
+  };
+  const source: RoundSource = {
+    sourceId: "mixed_bad",
+    sourceKind: "user",
+    payload: "important output that must stay complete",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(result.pieces.length, 1);
+  assertEquals(result.pieces[0].selector, { kind: "whole" });
+  assertEquals(result.pieces[0].content, "important output that must stay complete");
+  assertEquals(result.chunkedViaModelSourceCount, 0);
+  assertEquals(result.chunkedDeterministicSourceCount, 1);
+});
+
+Deno.test("chunkRoundSources keeps sources whole when source_chunk_batch duplicates a source id", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () =>
+      Promise.resolve({
+        results: [
+          {
+            sourceId: "duplicate_source",
+            selectors: [{ kind: "text_spans", spans: [{ start: 0, end: 9 }] }],
+          },
+          {
+            sourceId: "duplicate_source",
+            selectors: [{ kind: "text_spans", spans: [{ start: 10, end: 16 }] }],
+          },
+        ],
+      }),
+  };
+  const source: RoundSource = {
+    sourceId: "duplicate_source",
+    sourceKind: "user",
+    payload: "duplicate source output",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(result.pieces.length, 1);
+  assertEquals(result.pieces[0].selector, { kind: "whole" });
+  assertEquals(result.pieces[0].content, "duplicate source output");
+  assertEquals(result.chunkedViaModelSourceCount, 0);
+  assertEquals(result.chunkedDeterministicSourceCount, 1);
 });
 
 Deno.test("updateMemoryForCompletedRound keeps new round data when source_chunk_batch fails", async () => {
