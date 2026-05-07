@@ -233,6 +233,11 @@ Deno.test("E2E full logging captures synthetic memory, structured, task switch, 
       "source payload missing exact user data",
     );
 
+    const decisionLog = entries.find((entry) => entry.event === "memory_round_decision");
+    assert(Array.isArray(decisionLog?.pruneCandidatePieceIds));
+    assert(Array.isArray(decisionLog?.acceptedPruneDropPieceIds));
+    assert(Array.isArray(decisionLog?.sanityRejectedDropPieceIds));
+
     const chunkLog = entries.find((entry) =>
       entry.event === "memory_round_chunked" &&
       Number(entry.chunkedDeterministicSourceCount ?? 0) > 0
@@ -400,16 +405,26 @@ function structuredResponse(classifier: string, body: Record<string, unknown>): 
       : { kind: "same_task", relativeIndex: 0 };
   } else if (classifier === "piece_drop_batch") {
     const request = JSON.parse(payload) as {
-      evaluatedPieces: Array<{ id: string; contentText: string }>;
+      activeTask: { startedRound?: number } | null;
+      taskRoute: { kind?: string };
+      evaluatedPieces: Array<{ id: string; contentText: string; createdSeq?: number }>;
     };
     value = {
       defaultDecision: { drop: false, reason: null },
       overrides: request.evaluatedPieces
-        .filter((piece) => piece.contentText.includes("ACK transient"))
+        .filter((piece) =>
+          piece.contentText.includes("ACK transient") ||
+          (request.taskRoute.kind === "new_task" &&
+            typeof request.activeTask?.startedRound === "number" &&
+            typeof piece.createdSeq === "number" &&
+            piece.createdSeq < request.activeTask.startedRound)
+        )
         .map((piece) => ({
           pieceId: piece.id,
           drop: true,
-          reason: "pure_ack_or_chatter",
+          reason: piece.contentText.includes("ACK transient")
+            ? "pure_ack_or_chatter"
+            : "old_task_after_confirmed_task_switch",
         })),
     };
   } else {

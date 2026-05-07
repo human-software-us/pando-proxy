@@ -993,7 +993,17 @@ Rules:
 - Each text_spans selector may contain multiple ordered non-overlapping spans for one conceptual piece.
 - Keep spans in original order.
 - Do not invent or rewrite missing text. Select exact spans only.
-- Prefer a few meaningful exact pieces over many tiny fragments.
+- Prefer boundary-safe exact pieces over one huge whole selector when the source is large.
+- For large shell/search/test/log outputs, first split on conceptual boundaries: command sections, failure blocks, stack traces, assertion blocks, test-case sections, file blocks, path-prefix groups, or other visible separators.
+- For 'rg --files ...' output, each line is a path. Prefer conceptual groups by top-level directory, package, namespace, or subsystem path, for example consecutive blocks for 'src/metabase/api/...', 'src/metabase/search/...', 'test/metabase/...', or 'enterprise/backend/...'. Only fall back to bounded contiguous line ranges when no stable path grouping is visible.
+- For 'rg -n "..." ...' output, lines are usually 'path:line:match'. Prefer grouping consecutive matches by file path first. For very large files, split by contiguous line-number ranges or nearby match clusters. Keep complete match lines intact.
+- For broad repository searches such as 'rg -n "namespace|module" /workspace ...', prefer groups by subsystem/path prefix, then by file, then by contiguous line ranges.
+- For grep/rg outputs with headers, context lines, or separators, keep each match block intact and keep nearby context with its match.
+- Line/window splitting is the fallback: use size-bounded contiguous line ranges only after conceptual separators are not clear. Keep each line intact and keep related adjacent lines together.
+- For large JSON arrays, split on complete top-level array entries or small groups of adjacent entries. Never split inside a JSON string, object, array, number, or literal.
+- For large JSON objects with obvious top-level keys, split on complete top-level fields or small groups of adjacent fields when that is boundary-safe.
+- For XML/HTML/Markdown-like content, split on complete top-level sections, fenced blocks, headings, or repeated element boundaries when clear.
+- For code or diffs, split on complete files, hunks, top-level forms, declarations, or other syntax-visible boundaries when clear.
 - When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, select the payload block itself instead of the wrapper instructions.
 - For user messages that say things like "remember this exact block" or "use this exact snippet", prefer text_spans covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
 - When the payload is delimited by clear markers such as fenced code blocks, BEGIN/END markers, XML-like tags, or repeated stanza boundaries, select the complete intended interior block instead of a partial prefix.
@@ -1001,7 +1011,7 @@ Rules:
 - When a clearly delimited block or stanza sequence is selected, include the full intended block boundaries. Do not truncate mid-line, mid-stanza, or mid-block.
 - For structured JSON data, prefer whole objects or boundary-safe spans that keep complete fields/entries together.
 - For binary-like, base64-like, hex-dump-like, byte-array-like, image-metadata-like, or file-payload-like content, prefer whole unless there is an obvious safe boundary. Never split mid-token or mid-byte-sequence.
-- If splitting would be lossy or ambiguous, use whole.
+- If splitting would be lossy or ambiguous, use whole; otherwise split large content so later pruning can keep useful regions without keeping the entire source.
 - Return JSON only.
 `.trim();
 

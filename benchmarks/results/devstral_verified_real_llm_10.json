@@ -1,0 +1,156 @@
+{
+  "benchmark": "SWE-bench Verified devstral public trajectory real-LLM replay sample",
+  "runDate": "2026-05-07",
+  "sourceDataset": "pankajmathur/devstral-24b-swebench-verified-traj",
+  "sourceDatasetUrl": "https://huggingface.co/datasets/pankajmathur/devstral-24b-swebench-verified-traj",
+  "selectionMethod": "10 small but nontrivial public trajectories selected from the dataset tree to keep real-LLM replay cost bounded",
+  "requestModel": "gpt-5.4-mini",
+  "workers": 2,
+  "rolloutCount": 10,
+  "convertedEventCount": 556,
+  "turnCount": 273,
+  "selectedRollouts": [
+    {
+      "instanceId": "sphinx-doc__sphinx-10435",
+      "trajPath": "sphinx-doc__sphinx-10435/sphinx-doc__sphinx-10435.traj.json",
+      "eventCount": 7,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/sphinx-doc__sphinx-10435__sphinx-doc__sphinx-10435.jsonl"
+    },
+    {
+      "instanceId": "scikit-learn__scikit-learn-14141",
+      "trajPath": "scikit-learn__scikit-learn-14141/scikit-learn__scikit-learn-14141.traj.json",
+      "eventCount": 59,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/scikit-learn__scikit-learn-14141__scikit-learn__scikit-learn-14141.jsonl"
+    },
+    {
+      "instanceId": "django__django-16569",
+      "trajPath": "django__django-16569/django__django-16569.traj.json",
+      "eventCount": 63,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/django__django-16569__django__django-16569.jsonl"
+    },
+    {
+      "instanceId": "django__django-16527",
+      "trajPath": "django__django-16527/django__django-16527.traj.json",
+      "eventCount": 55,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/django__django-16527__django__django-16527.jsonl"
+    },
+    {
+      "instanceId": "pydata__xarray-4629",
+      "trajPath": "pydata__xarray-4629/pydata__xarray-4629.traj.json",
+      "eventCount": 51,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/pydata__xarray-4629__pydata__xarray-4629.jsonl"
+    },
+    {
+      "instanceId": "psf__requests-1766",
+      "trajPath": "psf__requests-1766/psf__requests-1766.traj.json",
+      "eventCount": 75,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/psf__requests-1766__psf__requests-1766.jsonl"
+    },
+    {
+      "instanceId": "pytest-dev__pytest-7982",
+      "trajPath": "pytest-dev__pytest-7982/pytest-dev__pytest-7982.traj.json",
+      "eventCount": 59,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/pytest-dev__pytest-7982__pytest-dev__pytest-7982.jsonl"
+    },
+    {
+      "instanceId": "scikit-learn__scikit-learn-14496",
+      "trajPath": "scikit-learn__scikit-learn-14496/scikit-learn__scikit-learn-14496.traj.json",
+      "eventCount": 69,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/scikit-learn__scikit-learn-14496__scikit-learn__scikit-learn-14496.jsonl"
+    },
+    {
+      "instanceId": "pytest-dev__pytest-8399",
+      "trajPath": "pytest-dev__pytest-8399/pytest-dev__pytest-8399.traj.json",
+      "eventCount": 67,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/pytest-dev__pytest-8399__pytest-dev__pytest-8399.jsonl"
+    },
+    {
+      "instanceId": "scikit-learn__scikit-learn-13779",
+      "trajPath": "scikit-learn__scikit-learn-13779/scikit-learn__scikit-learn-13779.traj.json",
+      "eventCount": 51,
+      "convertedPath": "tmp/real_llm_replay_20260507T123757Z/selected_source/converted/scikit-learn__scikit-learn-13779__scikit-learn__scikit-learn-13779.jsonl"
+    }
+  ],
+  "contextWindowApproxInputTokens": {
+    "withoutProxyBaseline": {
+      "count": 273,
+      "min": 1458,
+      "avg": 8115.7,
+      "median": 7618,
+      "max": 17831,
+      "total": 2215574
+    },
+    "withPandoProxy": {
+      "count": 273,
+      "min": 416,
+      "avg": 4378.5,
+      "median": 3926,
+      "max": 13296,
+      "total": 1195342
+    },
+    "reductionPct": {
+      "avg": 46.0,
+      "median": 48.5,
+      "max": 25.4,
+      "total": 46.0
+    }
+  },
+  "completion": {
+    "expectedRollouts": 10,
+    "completedStatsFiles": 10,
+    "status": {
+      "statusFiles": 10,
+      "counts": {
+        "succeeded": 10
+      },
+      "elapsedSecondsPerFinishedReplay": {
+        "count": 10,
+        "mean": 107,
+        "median": 108,
+        "min": 9.4,
+        "max": 157.1
+      },
+      "running": [],
+      "failureTails": []
+    },
+    "batchLog": {
+      "path": "tmp/real_llm_replay_20260507T123757Z/replay_real_llm/batch.log",
+      "exists": true,
+      "lines": 49,
+      "batchStartedAt": "2026-05-07T05:39:17-07:00",
+      "lastEventAt": "2026-05-07T05:48:34-07:00",
+      "lastHeartbeat": "2026-05-07T05:48:17-07:00 heartbeat completed_this_run=9/10 skipped=0 active=1 queued=0 failures=0",
+      "completedThisRun": 10,
+      "doneEventsThisRun": 10,
+      "active": 1,
+      "queued": 0,
+      "failures": 0,
+      "elapsedSeconds": 557.0,
+      "throughputRolloutsPerHour": 64.63,
+      "etaHoursAtCurrentThroughput": 0.0
+    }
+  },
+  "managerUsage": {
+    "managerUsageFiles": 10,
+    "managerUsageRecords": 749,
+    "classifiers": {
+      "source_chunk_batch": 273,
+      "piece_drop_batch": 273,
+      "task_route": 203
+    },
+    "models": {
+      "gpt-5.4-mini": 749
+    },
+    "errors": 0,
+    "inputTokens": 3317772,
+    "outputTokens": 66663,
+    "cachedInputTokens": 0,
+    "totalTokens": 3384435,
+    "durationMs": {
+      "min": 563,
+      "max": 16818,
+      "avg": 1660.0
+    }
+  },
+  "artifactOrigin": "tmp/real_llm_replay_20260507T123757Z"
+}

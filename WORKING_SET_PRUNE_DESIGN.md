@@ -127,7 +127,9 @@ same_task:
 
 new_task:
   active task bundle -> archivedTasks
-  candidate set = new pieces
+  create a fresh active task identity
+  candidate set = old active pieces + new pieces
+  old pieces that survive pruning are copied/rescued into the new active task
 
 revive_task(-N):
   current active task bundle -> archivedTasks
@@ -139,6 +141,20 @@ If the route call fails or is uncertain, use `same_task`.
 
 If `revive_task(-N)` points at no archived task, keep the current active task with `same_task`
 instead of starting a new task.
+
+Important distinction:
+
+```text
+task identity != piece membership
+```
+
+On `new_task`, the old task identity is never kept active. The old task is archived first. Old exact
+pieces may still survive pruning and become active pieces of the fresh task if they still belong to
+the new working set. The same immutable exact piece can therefore appear both in an archived task
+bundle and in the current active task.
+
+If prune fails after a confirmed `new_task`, the old task identity still stays archived. The
+fail-closed behavior is only that old pieces remain active as candidates under the new task.
 
 ## Full-Payload Prune Batches
 
@@ -167,6 +183,19 @@ A prune batch may only drop pieces listed in evaluatedPieces.
 ```
 
 Manifest-only pieces are never dropped by that batch.
+
+After all prune batches return, the runtime applies one local sanity check:
+
+```text
+if candidates included non-assistant evidence
+and accepted LLM drops would leave zero pieces or assistant-only pieces
+then keep the non-structurally dropped pieces
+```
+
+Structural drops are still allowed: exact duplicates, primary-key supersession, explicit user
+invalidation, confirmed old-task pieces after a task switch, and empty/invalid pieces. This prevents
+the active working set from collapsing into a final assistant answer or chatter while still allowing
+real task turnover.
 
 ## Batch Sizing
 
@@ -255,6 +284,10 @@ malformed prune batch -> keep all pieces in that batch
 source_chunk_batch omits a requested source -> use whole selector for that source
 source_chunk_batch exceeds the overflow structured window -> use whole selectors for that batch
 source_chunk_batch returns malformed ids/selectors after retry -> fail closed, prior memory unchanged
+source_chunk_batch returns whole for a large text payload -> split deterministically on exact JSON
+array-entry boundaries or bounded line windows before materializing active pieces; for rg output,
+the prompt asks for conceptual groups first, such as rg --files path-prefix groups and rg -n
+file/match groups
 batch too large -> keep unevaluated pieces
 missing archived payload -> keep that piece
 uncertain decision -> keep

@@ -1,0 +1,95 @@
+{
+  "repo": "metabase/metabase",
+  "epic_issue": 42434,
+  "run_root": "../metabase_42434_proxy_long_session_20260507T101714Z",
+  "source_dir": "../metabase-42434-source",
+  "manifest": "../metabase-42434-tasks-local.json",
+  "proxy_dir": ".",
+  "model": "gpt-5.4",
+  "session_mode": "one-codex-thread-per-condition-sequential-tasks",
+  "conditions": [
+    "no-proxy",
+    "with-pando-proxy"
+  ],
+  "tasks": [
+    {
+      "number": 42437,
+      "title": "Enumerate the current state of the world with regards to module namespaces (#42437)"
+    },
+    {
+      "number": 42468,
+      "title": "`metabase.metabot` API namespace (#42468)"
+    },
+    {
+      "number": 42491,
+      "title": "`metabase.xrays` API namespace (#42491)"
+    },
+    {
+      "number": 42487,
+      "title": "`metabase.search` namespace (#42487)"
+    },
+    {
+      "number": 42469,
+      "title": "`metabase.analyze` API namespace (#42469)"
+    },
+    {
+      "number": 48640,
+      "title": "Modularize metabase.pulse; add metabase.pulse.core API namespace (#48640)"
+    },
+    {
+      "number": 50839,
+      "title": "[Backend modularization] `metabase.server.core` and `metabase.request.core` API namespaces; update Kondo (#50839)"
+    }
+  ],
+  "aggregates": {
+    "no-proxy": {
+      "condition": "no-proxy",
+      "task_count": 7,
+      "codex_success_count": 7,
+      "model_patch_bytes_total": 207030,
+      "model_file_count_total": 57,
+      "overlap_file_count_total": 31,
+      "elapsed_sec_total": 1813.908,
+      "codex_input_tokens_total": 52848294,
+      "codex_output_tokens_total": 364925,
+      "codex_max_turn_input_tokens": 12491859
+    },
+    "with-pando-proxy": {
+      "condition": "with-pando-proxy",
+      "task_count": 7,
+      "codex_success_count": 7,
+      "model_patch_bytes_total": 127033,
+      "model_file_count_total": 75,
+      "overlap_file_count_total": 63,
+      "elapsed_sec_total": 6341.987,
+      "codex_input_tokens_total": 93877654,
+      "codex_output_tokens_total": 672304,
+      "codex_max_turn_input_tokens": 25733521,
+      "proxy_estimated_input_tokens_without": {
+        "count": 300,
+        "min": 10915,
+        "avg": 520644.543,
+        "max": 1015243,
+        "total": 156193363
+      },
+      "proxy_estimated_input_tokens_with": {
+        "count": 300,
+        "min": 10850,
+        "avg": 99324.437,
+        "max": 198311,
+        "total": 29797331
+      },
+      "proxy_max_context_reduction_pct": 80.467,
+      "proxy_total_context_reduction_pct": 80.923,
+      "proxy_manager_tokens_total": {
+        "input": 843759,
+        "cached_input": 0,
+        "output": 35626,
+        "total": 879385
+      },
+      "proxy_structured_model_error_count": 0,
+      "proxy_memory_update_failed_count": 0,
+      "proxy_recoverability_ok": true
+    }
+  }
+}

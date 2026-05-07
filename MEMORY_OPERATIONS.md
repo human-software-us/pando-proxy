@@ -41,11 +41,34 @@ as one whole exact piece. Returned source ids and selectors still have to valida
 If a chunk request is too large for the overflow structured window, the proxy skips the model call
 and keeps each requested source whole.
 
-On `new_task`, the old active working set is paged out of active memory. The raw sources remain in
-the archive and can be recovered through `recall`.
+If the chunk model returns `whole` for a large text source, the proxy applies a deterministic exact
+split before creating pieces. It prefers complete top-level JSON array entries when the text is a
+JSON array. Otherwise it uses bounded line windows: contiguous line ranges under the byte budget,
+with each line kept intact. This is a fallback for cases where the model did not already split on a
+better conceptual boundary.
+
+For large `rg` outputs, the model prompt asks for conceptual split points before line windows:
+
+- `rg --files ...`: group consecutive paths by directory, package, namespace, or subsystem path,
+  such as `src/metabase/api/...`, `src/metabase/search/...`, `test/metabase/...`, or
+  `enterprise/backend/...`
+- `rg -n "..." ...`: group by file path first, then by line-number ranges or nearby match clusters
+  for very large files
+- broad repository searches: group by subsystem/path prefix, then by file, then by line range
+
+This keeps the archive lossless while avoiding all-or-nothing active pieces for large `rg`, test, or
+log outputs.
+
+On `new_task`, the old task identity is always archived as a complete task bundle. The old active
+pieces are still included as prune candidates for the fresh task, so pieces that remain relevant can
+be rescued into the new active task. Rescued pieces are exact shared pieces: they remain in the
+archived old task bundle and are also active under the new task.
+
+If the prune call fails during `new_task`, the old task bundle is still archived and the candidate
+pieces are kept under the new task. This may save fewer tokens, but it avoids losing context.
 
 On `revive_task(-N)`, the current active task is archived and the selected previous task bundle is
-restored as the active candidate set.
+restored as the active candidate set. New round pieces are then evaluated with the revived pieces.
 
 If the requested revive index does not exist, the proxy keeps the current active task and treats the
 round as `same_task`.
@@ -55,6 +78,8 @@ round as `same_task`.
 - `task_route` invalid after retry -> use `same_task`
 - `revive_task(relativeIndex)` points at no archived task -> use `same_task`
 - `piece_drop_batch` invalid after retry -> keep all pieces evaluated by that failed batch
+- `piece_drop_batch` would leave only assistant pieces after non-structural drops while user/tool
+  evidence was available -> reject the non-structural drops and keep that evidence
 - `source_chunk_batch` omits requested source -> keep that source whole
 - `source_chunk_batch` exceeds the overflow structured window -> keep the whole batch as whole
   sources

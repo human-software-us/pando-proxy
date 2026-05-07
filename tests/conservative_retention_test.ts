@@ -146,7 +146,7 @@ Deno.test("applyWorkingSetUpdate accepts batch default prune decisions", async (
   assertEquals(result.memory.pieces, []);
 });
 
-Deno.test("applyWorkingSetUpdate archives old active memory on a new task", async () => {
+Deno.test("applyWorkingSetUpdate archives old task identity and can rescue old pieces on a new task", async () => {
   const oldPiece = memoryPiece("source_old:0", "source_old", "old task fact");
   const state: MemoryState = {
     roundSeq: 1,
@@ -170,11 +170,128 @@ Deno.test("applyWorkingSetUpdate archives old active memory on a new task", asyn
     [materialized(oldPiece, "old task fact")],
   );
 
-  assertEquals(result.keptOldPieceIds, []);
+  assertEquals(result.keptOldPieceIds, [oldPiece.id]);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [oldPiece.id, newPiece.id]);
+  assertEquals(result.memory.activeTask?.id !== "task_1", true);
+  assertEquals(result.memory.activeTask?.pieceIds, [oldPiece.id, newPiece.id]);
+  assertEquals(result.memory.archivedTasks.map((task) => task.id), ["task_1"]);
+  assertEquals(result.memory.archivedTasks[0].pieces.map((piece) => piece.id), [oldPiece.id]);
+});
+
+Deno.test("applyWorkingSetUpdate archives old task identity and drops old pieces when prune rejects them", async () => {
+  const oldPiece = memoryPiece("source_old:0", "source_old", "old task fact");
+  const state: MemoryState = {
+    roundSeq: 1,
+    activeTask: {
+      id: "task_1",
+      pieceIds: [oldPiece.id],
+      startedRound: 1,
+      lastRound: 1,
+    },
+    archivedTasks: [],
+    pieces: [oldPiece],
+    processedSourceIds: ["source_old"],
+  };
+  const newPiece = draft("source_new:0", "source_new", "start unrelated task");
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.createdSeq !== undefined &&
+            request.activeTask !== null &&
+            piece.createdSeq < request.activeTask.startedRound,
+          reason: piece.createdSeq !== undefined &&
+              request.activeTask !== null &&
+              piece.createdSeq < request.activeTask.startedRound
+            ? "old_task_after_confirmed_task_switch"
+            : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [newPiece],
+    { kind: "new_task" },
+    clients,
+    [materialized(oldPiece, "old task fact")],
+  );
+
+  assertEquals(result.droppedOldPieceIds, [oldPiece.id]);
   assertEquals(result.memory.pieces.map((piece) => piece.id), [newPiece.id]);
+  assertEquals(result.memory.activeTask?.id !== "task_1", true);
   assertEquals(result.memory.activeTask?.pieceIds, [newPiece.id]);
   assertEquals(result.memory.archivedTasks.map((task) => task.id), ["task_1"]);
   assertEquals(result.memory.archivedTasks[0].pieces.map((piece) => piece.id), [oldPiece.id]);
+});
+
+Deno.test("applyWorkingSetUpdate rejects non-structural prune collapse to assistant-only memory", async () => {
+  const userPiece = draft("source_user:0", "source_user", "current task requirement");
+  const assistantPiece = draftKind(
+    "source_assistant:0",
+    "source_assistant",
+    "assistant",
+    "final answer chatter",
+  );
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === userPiece.id,
+          reason: piece.id === userPiece.id ? "clearly_unrelated_to_current_work" : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    emptyState(),
+    [userPiece, assistantPiece],
+    { kind: "new_task" },
+    clients,
+  );
+
+  assertEquals(result.droppedNewPieceIds, []);
+  assertEquals(result.acceptedPruneDropPieceIds, []);
+  assertEquals(result.sanityRejectedDropPieceIds, [userPiece.id]);
+  assertSameIds(result.memory.pieces.map((piece) => piece.id), [
+    userPiece.id,
+    assistantPiece.id,
+  ]);
+});
+
+Deno.test("applyWorkingSetUpdate allows structural drops even when only assistant memory remains", async () => {
+  const userPiece = draft("source_user:0", "source_user", "current task requirement");
+  const assistantPiece = draftKind(
+    "source_assistant:0",
+    "source_assistant",
+    "assistant",
+    "final answer chatter",
+  );
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === userPiece.id,
+          reason: piece.id === userPiece.id ? "explicitly_invalidated_by_user" : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    emptyState(),
+    [userPiece, assistantPiece],
+    { kind: "new_task" },
+    clients,
+  );
+
+  assertEquals(result.droppedNewPieceIds, [userPiece.id]);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [assistantPiece.id]);
 });
 
 Deno.test("applyWorkingSetUpdate revives previous task by relative index", async () => {
@@ -253,11 +370,19 @@ Deno.test("applyWorkingSetUpdate handles 8+ rounds of turnover, drops, and recip
       Promise.resolve({
         defaultDecision: { drop: false, reason: null },
         overrides: request.evaluatedPieces
-          .filter((piece) => piece.contentText.includes("DROP_ME"))
+          .filter((piece) =>
+            piece.contentText.includes("DROP_ME") ||
+            (request.taskRoute.kind === "new_task" &&
+              request.activeTask !== null &&
+              piece.createdSeq !== undefined &&
+              piece.createdSeq < request.activeTask.startedRound)
+          )
           .map((piece) => ({
             pieceId: piece.id,
             drop: true,
-            reason: "pure_ack_or_chatter",
+            reason: piece.contentText.includes("DROP_ME")
+              ? "pure_ack_or_chatter"
+              : "old_task_after_confirmed_task_switch",
           })),
       }),
   };
@@ -339,11 +464,19 @@ Deno.test("applyWorkingSetUpdate handles 8+ large-chunk turnover with batched dr
       return Promise.resolve({
         defaultDecision: { drop: false, reason: null },
         overrides: request.evaluatedPieces
-          .filter((piece) => piece.contentText.includes("DROP_LARGE"))
+          .filter((piece) =>
+            piece.contentText.includes("DROP_LARGE") ||
+            (request.taskRoute.kind === "new_task" &&
+              request.activeTask !== null &&
+              piece.createdSeq !== undefined &&
+              piece.createdSeq < request.activeTask.startedRound)
+          )
           .map((piece) => ({
             pieceId: piece.id,
             drop: true,
-            reason: "clearly_unrelated_to_current_work",
+            reason: piece.contentText.includes("DROP_LARGE")
+              ? "clearly_unrelated_to_current_work"
+              : "old_task_after_confirmed_task_switch",
           })),
       });
     },

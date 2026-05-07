@@ -127,6 +127,9 @@ export async function updateMemoryForCompletedRound(
     taskRoute: applied.taskRoute,
     newDropDecisions: applied.newDropDecisions.decisions,
     oldDropDecisions: applied.oldDropDecisions.decisions,
+    pruneCandidatePieceIds: applied.pruneCandidatePieceIds,
+    acceptedPruneDropPieceIds: applied.acceptedPruneDropPieceIds,
+    sanityRejectedDropPieceIds: applied.sanityRejectedDropPieceIds,
     keptOldPieceIds: applied.keptOldPieceIds,
     droppedOldPieceIds: applied.droppedOldPieceIds,
     keptNewPieceIds: applied.keptNewPieceIds,
@@ -141,6 +144,18 @@ export async function updateMemoryForCompletedRound(
     droppedPieceIds,
     ...memoryStateMetrics(next),
   });
+  if (next.pieces.length === 0 && (previous.pieces.length > 0 || chunked.pieces.length > 0)) {
+    await logContext.logger?.log("empty_active_working_set", {
+      sessionKey: logContext.sessionKey,
+      requestId: logContext.requestId,
+      activeTaskBefore: previous.activeTask,
+      taskRoute: applied.taskRoute,
+      previousPieceCount: previous.pieces.length,
+      chunkedPieceCount: chunked.pieces.length,
+      droppedOldPieceIds: applied.droppedOldPieceIds,
+      droppedNewPieceIds: applied.droppedNewPieceIds,
+    });
+  }
 
   return {
     memory: next,

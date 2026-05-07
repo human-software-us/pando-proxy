@@ -20,6 +20,13 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Optional limit on number of trajectories to fetch",
     )
+    parser.add_argument(
+        "--paths-file",
+        help=(
+            "Optional newline-delimited list of .traj.json paths to fetch. "
+            "When set, --limit is applied after this list is read."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -109,7 +116,14 @@ def main() -> int:
     raw_dir.mkdir(parents=True, exist_ok=True)
     converted_dir.mkdir(parents=True, exist_ok=True)
 
-    traj_files = list_traj_files(args.dataset)
+    if args.paths_file:
+        traj_files = [
+            line.strip()
+            for line in Path(args.paths_file).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+    else:
+        traj_files = list_traj_files(args.dataset)
     if args.limit > 0:
         traj_files = traj_files[:args.limit]
 

@@ -43,11 +43,21 @@ Normal end-of-round flow:
 2. run `source_chunk_batch` and `task_route` in parallel
    - if chunking omits a requested source or is too large for the structured window, that source is
      kept whole
+   - if chunking returns `whole` for a large text payload, the proxy deterministically splits it on
+     exact JSON-array boundaries or bounded line windows before active retention
+   - for large `rg` output, the chunk prompt asks for conceptual boundaries first: path-prefix
+     groups for `rg --files ...`, file groups for `rg -n "..." ...`, then line ranges only as a
+     fallback
 3. dedupe exact duplicate pieces by content hash while recording duplicate source markers
 4. build the routed candidate active set
 5. run `piece_drop_batch` over full-payload batches sized under the prune budget
 6. keep everything not dropped with an accepted concrete reason
 7. persist the active task, archived task bundles, and surviving exact pieces
+
+Task switching is structural. On `new_task`, the previous active task identity is always archived as
+a complete bundle and a fresh active task is created. The old task's exact pieces are still
+evaluated alongside the new round pieces; any old piece that still belongs to the new task is copied
+into the new active working set. The old task itself is never kept active.
 
 Normal request flow:
 
@@ -180,6 +190,8 @@ Inspect after each run:
 - `structured_model_response`
 - `memory_round_chunked`
 - `memory_round_decision`
+  - raw prune decisions, all candidate ids, accepted drop ids, sanity-rejected drop ids,
+    kept/dropped old/new ids, and duplicate ids
 - `memory_round_updated`
 - `memory_update_inputs`
 - `memory_state_saved`
@@ -228,3 +240,23 @@ Key runtime files:
 
 Replay and benchmark material remains in this repository, but the benchmark docs are now limited to
 current active-task working-set runtime measurements.
+
+Start with:
+
+- [QUICK_BENCHMARKS.md](./QUICK_BENCHMARKS.md) for the short current-results table
+- [BENCHMARKS.md](./BENCHMARKS.md) for methodology, artifacts, and interpretation
+
+Latest completed benchmark snapshots include:
+
+- real-LLM replay on 10 public SWE-bench Verified devstral trajectories: average per-turn context
+  `8,115.7 -> 4,378.5` approximate input tokens (`46.0%` lower), with 10/10 replay jobs completed
+  and 0 manager errors
+- Metabase #42434 long-session task run: proxy-estimated forwarded context total
+  `156,193,363 -> 29,797,331` approximate input tokens (`80.9%` lower), with 7/7 Codex exits and 7/7
+  clean diffs in both baseline and proxy conditions
+- deterministic full-corpus public replay on 345 SWE-bench Verified devstral trajectories: average
+  context `15,199 -> 1,093` approximate input tokens (`92.8%` lower)
+
+The defensible current claim is context-window reduction. Task-level correctness evidence currently
+comes from the Metabase run's exit status, clean diff checks, and oracle file overlap; it is not a
+substitute for a full repository test suite.

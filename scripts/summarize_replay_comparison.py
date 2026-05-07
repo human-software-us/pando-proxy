@@ -138,6 +138,10 @@ def summarize_log(log_file: Path, completed_total: int, expected: int) -> dict[s
             continue
         if " done [" in line:
             done_events += 1
+        if " batch_complete " in line:
+            match = re.search(r"completed_this_run=(\d+)", line)
+            if match:
+                completed_this_run = int(match.group(1))
         if " heartbeat " in line:
             last_heartbeat = line
             for key, pattern in {

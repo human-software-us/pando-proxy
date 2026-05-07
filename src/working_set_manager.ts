@@ -133,6 +133,9 @@ export type AppliedWorkingSetUpdate = {
   taskRoute: TaskRouteResponse;
   newDropDecisions: PieceDropBatchResponse;
   oldDropDecisions: PieceDropBatchResponse;
+  pruneCandidatePieceIds: string[];
+  acceptedPruneDropPieceIds: string[];
+  sanityRejectedDropPieceIds: string[];
   keptOldPieceIds: string[];
   droppedOldPieceIds: string[];
   keptNewPieceIds: string[];
@@ -148,6 +151,15 @@ const ACCEPTED_DROP_REASONS = new Set<DropReason>([
   "pure_ack_or_chatter",
   "transient_format_request_only",
   "clearly_unrelated_to_current_work",
+  "empty_or_invalid",
+]);
+const STRUCTURAL_DROP_REASONS = new Set<DropReason>([
+  "exact_duplicate",
+  "superseded_by_newer_exact_source",
+  "explicitly_invalidated_by_user",
+  "old_task_after_confirmed_task_switch",
+  "pure_ack_or_chatter",
+  "transient_format_request_only",
   "empty_or_invalid",
 ]);
 const DEFAULT_PRUNE_BATCH_TOKEN_LIMIT = 180_000;
@@ -231,8 +243,12 @@ export async function applyWorkingSetUpdate(
     const response = await requestPruneBatchKeepOnFailure(batch, clients);
     dropDecisions.push(...response.decisions);
   }
-  const pruneDropIds = new Set(
+  const pruneDropIds = acceptedDropIdsWithSanity(candidatePieces, dropDecisions);
+  const acceptedDropIdsBeforeSanity = new Set(
     dropDecisions.filter(isAcceptedDropDecision).map((decision) => decision.pieceId),
+  );
+  const sanityRejectedDropIds = [...acceptedDropIdsBeforeSanity].filter((pieceId) =>
+    !pruneDropIds.has(pieceId)
   );
 
   const pieces = chronologicalPieces(
@@ -285,6 +301,9 @@ export async function applyWorkingSetUpdate(
         candidateBaseOldPieces.some((piece) => piece.id === decision.pieceId)
       ),
     },
+    pruneCandidatePieceIds: candidatePieces.map((piece) => piece.id),
+    acceptedPruneDropPieceIds: [...pruneDropIds],
+    sanityRejectedDropPieceIds: sanityRejectedDropIds,
     keptOldPieceIds: candidateBaseOldPieces
       .filter((piece) => !oldDropIds.has(piece.id))
       .map((piece) => piece.id),
@@ -356,7 +375,7 @@ function applyTaskRoute(
       lastRound: nextSeq,
     },
     archivedTasks: archiveCurrentTask(state.archivedTasks, state.activeTask, state.pieces, nextSeq),
-    baseOldPieces: [],
+    baseOldPieces: state.pieces,
     effectiveRoute: route.kind === "new_task" ? route : { kind: "new_task" },
   };
 }
@@ -842,6 +861,37 @@ function isAcceptedDropDecision(decision: PieceDropDecision): boolean {
   return decision.drop === true &&
     typeof decision.reason === "string" &&
     ACCEPTED_DROP_REASONS.has(decision.reason);
+}
+
+function acceptedDropIdsWithSanity(
+  candidatePieces: MemoryPiece[],
+  dropDecisions: PieceDropDecision[],
+): Set<string> {
+  const accepted = dropDecisions.filter(isAcceptedDropDecision);
+  const initialDropIds = new Set(accepted.map((decision) => decision.pieceId));
+  const survivors = candidatePieces.filter((piece) => !initialDropIds.has(piece.id));
+  if (!collapsesToAssistantOnly(candidatePieces, survivors)) {
+    return initialDropIds;
+  }
+
+  return new Set(
+    accepted
+      .filter((decision) =>
+        decision.reason !== null && STRUCTURAL_DROP_REASONS.has(decision.reason)
+      )
+      .map((decision) => decision.pieceId),
+  );
+}
+
+function collapsesToAssistantOnly(
+  candidates: MemoryPiece[],
+  survivors: MemoryPiece[],
+): boolean {
+  if (!candidates.some((piece) => piece.sourceKind !== "assistant")) {
+    return false;
+  }
+  return survivors.length === 0 ||
+    survivors.every((piece) => piece.sourceKind === "assistant");
 }
 
 function coerceDropReason(value: unknown): DropReason | null {

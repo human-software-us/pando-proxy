@@ -4,7 +4,43 @@ This is the short version of the benchmark note. Full details, tables, and metho
 [`BENCHMARKS.md`](./BENCHMARKS.md). Public source links and candidate next benchmark inputs are
 collected in [`benchmarks/SOURCES.md`](./benchmarks/SOURCES.md).
 
-## Headline numbers
+## Headline Numbers
+
+The latest benchmark set has three different meanings:
+
+- real-LLM replay: live structured-model memory decisions on public trajectory logs
+- Metabase live task run: end-to-end Codex behavior on repository tasks
+- deterministic replay: cheap regression accounting with stub keep/drop decisions
+
+| Case                                             | Mode                                 | Workload                                    |                       Avg reduction | Median reduction |                    Peak reduction | Completion / correctness signal                                                                 |
+| ------------------------------------------------ | ------------------------------------ | ------------------------------------------- | ----------------------------------: | ---------------: | --------------------------------: | ----------------------------------------------------------------------------------------------- |
+| SWE-bench Verified devstral real-LLM sample      | `--real-llm`, `gpt-5.4-mini` manager | 10 logs, 273 turns                          |                               46.0% |            48.5% |                             25.4% | 10/10 replay jobs, 0 manager errors                                                             |
+| Metabase #42434 long-session                     | live Codex `gpt-5.4`                 | 7 PR tasks in one long thread per condition | 80.9% total proxy-estimated context |              n/a | 80.5% max proxy-estimated context | 7/7 Codex exits and clean diffs in both conditions; oracle file overlap 31 baseline vs 63 proxy |
+| SWE-bench Verified devstral full corpus          | deterministic `drop-tools`           | 345 logs, 21,709 turns                      |                               92.8% |              n/a |                             78.6% | replay accounting only                                                                          |
+| SWE-bench Verified devstral top-20 public sample | deterministic `drop-tools`           | 20 logs, 3,807 turns                        |                               95.3% |              n/a |                             57.4% | replay accounting only                                                                          |
+
+Per-turn context window sizes for the latest real-LLM replay:
+
+| Mode                   |   Min |     Avg | Median |    Max |     Total |
+| ---------------------- | ----: | ------: | -----: | -----: | --------: |
+| Without proxy baseline | 1,458 | 8,115.7 |  7,618 | 17,831 | 2,215,574 |
+| With pando-proxy       |   416 | 4,378.5 |  3,926 | 13,296 | 1,195,342 |
+
+Metabase long-session proxy request-context accounting:
+
+| Estimate               | Count |    Min |         Avg |       Max |       Total |
+| ---------------------- | ----: | -----: | ----------: | --------: | ----------: |
+| Without proxy estimate |   300 | 10,915 | 520,644.543 | 1,015,243 | 156,193,363 |
+| With pando-proxy       |   300 | 10,850 |  99,324.437 |   198,311 |  29,797,331 |
+
+Committed latest artifacts:
+
+- [`benchmarks/results/devstral_verified_real_llm_10.json`](./benchmarks/results/devstral_verified_real_llm_10.json)
+- [`benchmarks/results/metabase_42434_proxy_long_session_20260507.json`](./benchmarks/results/metabase_42434_proxy_long_session_20260507.json)
+- [`benchmarks/results/devstral_verified_drop_tools_batch.json`](./benchmarks/results/devstral_verified_drop_tools_batch.json)
+- [`benchmarks/results/devstral_verified_top20_stub.json`](./benchmarks/results/devstral_verified_top20_stub.json)
+
+## Deterministic Replay Headline Numbers
 
 Current rerun command used for the public deterministic benchmark passes:
 
@@ -45,6 +81,13 @@ python3 scripts/run_replay_batch.py \
 - The full-corpus and top-20 public reruns both used deterministic stub replay
   (`--policy
   drop-tools`), which makes them cheap to reproduce locally.
+- The real-LLM replay sample uses live manager calls and is the better prompt-size signal for the
+  actual proxy behavior, but it is not task success.
+- The Metabase run is the best current task-level signal. It supports correctness parity or better
+  on the measured proxies, but it does not prove full functional correctness because the Metabase
+  test suite was not run.
+- The Metabase run reduced forwarded request context, but it did not reduce total billed Codex input
+  tokens or elapsed time.
 - The research links above support the motivation for reducing prompt bloat. They do not measure
   `pando-proxy` itself.
 
