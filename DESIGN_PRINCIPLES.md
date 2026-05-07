@@ -13,7 +13,6 @@
 
 3. Dropping requires positive proof.
    - exact duplicate content hash, with a duplicate source marker kept on the canonical piece
-   - deterministic supersession by primary key
    - explicit invalidation
    - certain structured drop decision
    - if uncertain, keep
@@ -31,7 +30,7 @@
    - persistence
    - selector materialization
    - archive fetch
-   - deterministic dedupe/supersession candidates
+   - deterministic dedupe candidates
    - applying manager outputs
    - structural fallback like omitted or oversized chunk batches -> `whole`
    - selector normalization for valid manager output

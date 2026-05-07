@@ -44,7 +44,6 @@ export type MemoryPiece = {
   createdSeq: number;
   selector: ChunkSelector;
   contentHash: string;
-  primaryKey?: string;
   duplicateSources?: DuplicateSource[];
 };
 
@@ -52,6 +51,7 @@ export type DuplicateSource = {
   pieceId: string;
   sourceId: string;
   sourceKind: SourceKind;
+  createdSeq?: number;
   toolName?: string;
   pointer?: Record<string, unknown>;
 };
@@ -162,9 +162,6 @@ export function dedupePieces(pieces: MemoryPiece[]): MemoryPiece[] {
       contentHash: typeof piece.contentHash === "string" && piece.contentHash
         ? piece.contentHash
         : piece.id,
-      ...(typeof piece.primaryKey === "string" && piece.primaryKey
-        ? { primaryKey: piece.primaryKey }
-        : {}),
       ...normalizedDuplicateSources(piece.duplicateSources),
     });
   }
@@ -303,6 +300,9 @@ function normalizedDuplicateSources(value: unknown): { duplicateSources?: Duplic
       pieceId,
       sourceId,
       sourceKind: normalizeSourceKind(record.sourceKind),
+      ...(typeof record.createdSeq === "number"
+        ? { createdSeq: nonNegativeInt(record.createdSeq) }
+        : {}),
       ...(typeof record.toolName === "string" && record.toolName
         ? { toolName: record.toolName }
         : {}),

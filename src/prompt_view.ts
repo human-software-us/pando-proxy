@@ -2,6 +2,7 @@ import type { ProxyConfig } from "./config.ts";
 import { stableJson } from "./json.ts";
 import {
   chronologicalPieces,
+  type DuplicateSource,
   type MaterializedMemoryPiece,
   type MaterializedMemoryState,
   piecePreview,
@@ -131,27 +132,31 @@ export function buildPromptMemoryText(
     lines.push("</active_task>");
   }
   lines.push("<exact_pieces>");
-  for (const piece of pieces) {
-    lines.push(
-      `<piece pieceId=${piece.id} sourceKind=${piece.sourceKind}>`,
-    );
-    lines.push(piece.renderText || piecePreview(piece));
-    if (piece.duplicateSources && piece.duplicateSources.length > 0) {
-      lines.push("<duplicate_observations>");
-      for (const duplicate of piece.duplicateSources) {
-        lines.push(
-          [
-            `duplicatePieceId=${duplicate.pieceId}`,
-            `duplicateSourceId=${duplicate.sourceId}`,
-            `sourceKind=${duplicate.sourceKind}`,
-            ...(duplicate.toolName ? [`toolName=${duplicate.toolName}`] : []),
-            ...(duplicate.pointer ? [`pointer=${stableJson(duplicate.pointer)}`] : []),
-          ].join(" "),
-        );
-      }
-      lines.push("</duplicate_observations>");
+  for (const entry of promptMemoryEntries(pieces)) {
+    if (entry.kind === "piece") {
+      const piece = entry.piece;
+      lines.push(
+        `<piece pieceId=${piece.id} sourceKind=${piece.sourceKind}>`,
+      );
+      lines.push(piece.renderText || piecePreview(piece));
+      lines.push("</piece>");
+      continue;
     }
-    lines.push("</piece>");
+    const { canonicalPiece, duplicate } = entry;
+    lines.push(
+      [
+        "<duplicate_marker",
+        `duplicatePieceId=${duplicate.pieceId}`,
+        `duplicateSourceId=${duplicate.sourceId}`,
+        `duplicateSourceKind=${duplicate.sourceKind}`,
+        `canonicalPieceId=${canonicalPiece.id}`,
+        `canonicalSourceId=${canonicalPiece.sourceId}`,
+        `canonicalSourceKind=${canonicalPiece.sourceKind}`,
+        ...(duplicate.toolName ? [`duplicateToolName=${duplicate.toolName}`] : []),
+        ...(duplicate.pointer ? [`duplicatePointer=${stableJson(duplicate.pointer)}`] : []),
+        "/>",
+      ].join(" "),
+    );
   }
   lines.push("</exact_pieces>");
   const archivedCount = archivedSourceCount(memory);
@@ -213,6 +218,42 @@ function containsRef(
 
 function hasArchivedSourceGap(memory: MaterializedMemoryState): boolean {
   return archivedSourceCount(memory) > 0;
+}
+
+type PromptMemoryEntry =
+  | { kind: "piece"; piece: MaterializedMemoryPiece; createdSeq: number; id: string }
+  | {
+    kind: "duplicate";
+    canonicalPiece: MaterializedMemoryPiece;
+    duplicate: DuplicateSource;
+    createdSeq: number;
+    id: string;
+  };
+
+function promptMemoryEntries(pieces: MaterializedMemoryPiece[]): PromptMemoryEntry[] {
+  const entries: PromptMemoryEntry[] = [];
+  for (const piece of pieces) {
+    entries.push({
+      kind: "piece",
+      piece,
+      createdSeq: piece.createdSeq,
+      id: piece.id,
+    });
+    for (const duplicate of piece.duplicateSources ?? []) {
+      entries.push({
+        kind: "duplicate",
+        canonicalPiece: piece,
+        duplicate,
+        createdSeq: duplicate.createdSeq ?? piece.createdSeq,
+        id: duplicate.pieceId,
+      });
+    }
+  }
+  return entries.sort((left, right) =>
+    left.createdSeq === right.createdSeq
+      ? left.id.localeCompare(right.id)
+      : left.createdSeq - right.createdSeq
+  );
 }
 
 function archivedSourceCount(memory: MaterializedMemoryState): number {

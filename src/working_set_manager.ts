@@ -40,7 +40,6 @@ export type TaskRouteResponse =
 
 export type DropReason =
   | "exact_duplicate"
-  | "superseded_by_newer_exact_source"
   | "explicitly_invalidated_by_user"
   | "old_task_after_confirmed_task_switch"
   | "pure_ack_or_chatter"
@@ -60,7 +59,6 @@ export type PieceDropBatchRequest = {
   latestUserPieces: FullPayloadPiece[];
   sharedUserPieces: FullPayloadPiece[];
   candidateManifest: PieceManifestEntry[];
-  supersessionHints: SupersessionHint[];
   evaluatedPieces: FullPayloadPiece[];
 };
 
@@ -74,7 +72,6 @@ export type FullPayloadPiece = {
   sourceId: string;
   toolName?: string;
   createdSeq?: number;
-  primaryKey?: string;
   duplicateSources?: DuplicateSource[];
   byteSize: number;
   contentText: string;
@@ -86,16 +83,9 @@ export type PieceManifestEntry = {
   sourceId: string;
   toolName?: string;
   createdSeq: number;
-  primaryKey?: string;
   duplicateSources?: DuplicateSource[];
   byteSize: number;
   fullPayloadIncludedInThisBatch: boolean;
-};
-
-export type SupersessionHint = {
-  olderPieceId: string;
-  newerPieceId: string;
-  primaryKey: string;
 };
 
 export type SourceChunkBatchRequest = {
@@ -145,7 +135,6 @@ export type AppliedWorkingSetUpdate = {
 
 const ACCEPTED_DROP_REASONS = new Set<DropReason>([
   "exact_duplicate",
-  "superseded_by_newer_exact_source",
   "explicitly_invalidated_by_user",
   "old_task_after_confirmed_task_switch",
   "pure_ack_or_chatter",
@@ -155,7 +144,6 @@ const ACCEPTED_DROP_REASONS = new Set<DropReason>([
 ]);
 const STRUCTURAL_DROP_REASONS = new Set<DropReason>([
   "exact_duplicate",
-  "superseded_by_newer_exact_source",
   "explicitly_invalidated_by_user",
   "old_task_after_confirmed_task_switch",
   "pure_ack_or_chatter",
@@ -217,7 +205,14 @@ export async function applyWorkingSetUpdate(
   }
 
   const routed = applyTaskRoute(state, taskRoute, nextSeq);
-  const deduped = markDuplicateNewPieces(routed.baseOldPieces, newMemoryPieces);
+  const collapseDuplicatesAfterPrune = routed.effectiveRoute.kind === "new_task";
+  const deduped = collapseDuplicatesAfterPrune
+    ? {
+      oldPieces: routed.baseOldPieces.map(cloneMemoryPiece),
+      newPieces: newMemoryPieces.map(cloneMemoryPiece),
+      duplicateIds: new Set<string>(),
+    }
+    : markDuplicateNewPieces(routed.baseOldPieces, newMemoryPieces);
   const duplicateNewIds = deduped.duplicateIds;
   const nonDuplicateNewPieces = deduped.newPieces.filter((piece) => !duplicateNewIds.has(piece.id));
   const candidateBaseOldPieces = deduped.oldPieces;
@@ -225,7 +220,6 @@ export async function applyWorkingSetUpdate(
     ...candidateBaseOldPieces,
     ...nonDuplicateNewPieces,
   ]);
-  const supersessionHints = supersessionHintsFor(candidatePieces);
   const pruneBatches = buildPruneBatches({
     activeTask: routed.activeTask,
     taskRoute: routed.effectiveRoute,
@@ -234,7 +228,6 @@ export async function applyWorkingSetUpdate(
     latestUserPieceIds: newMemoryPieces
       .filter((piece) => piece.sourceKind === "user")
       .map((piece) => piece.id),
-    supersessionHints,
     tokenLimit: clients.pruneBatchTokenLimit ?? DEFAULT_PRUNE_BATCH_TOKEN_LIMIT,
   });
 
@@ -243,17 +236,42 @@ export async function applyWorkingSetUpdate(
     const response = await requestPruneBatchKeepOnFailure(batch, clients);
     dropDecisions.push(...response.decisions);
   }
-  const pruneDropIds = acceptedDropIdsWithSanity(candidatePieces, dropDecisions);
+  const dropAcceptanceContext = {
+    taskRoute: routed.effectiveRoute,
+    activeTask: routed.activeTask,
+    oldPieceIds: new Set(candidateBaseOldPieces.map((piece) => piece.id)),
+  };
+  const pruneDropIds = acceptedDropIdsWithSanity(
+    candidatePieces,
+    dropDecisions,
+    dropAcceptanceContext,
+  );
   const acceptedDropIdsBeforeSanity = new Set(
-    dropDecisions.filter(isAcceptedDropDecision).map((decision) => decision.pieceId),
+    acceptedDropDecisionsWithApplicability(
+      candidatePieces,
+      dropDecisions,
+      dropAcceptanceContext,
+    ).map((decision) => decision.pieceId),
   );
   const sanityRejectedDropIds = [...acceptedDropIdsBeforeSanity].filter((pieceId) =>
     !pruneDropIds.has(pieceId)
   );
 
-  const pieces = chronologicalPieces(
+  const piecesBeforeDuplicateCollapse = chronologicalPieces(
     candidatePieces.filter((piece) => !pruneDropIds.has(piece.id)),
   );
+  const postPruneDeduped = collapseDuplicatesAfterPrune
+    ? collapseDuplicatePiecesPreferNew(
+      piecesBeforeDuplicateCollapse,
+      new Set(nonDuplicateNewPieces.map((piece) => piece.id)),
+    )
+    : { pieces: piecesBeforeDuplicateCollapse, duplicateIds: new Set<string>() };
+  const postPruneDuplicateIds = postPruneDeduped.duplicateIds;
+  const allDuplicateDropIds = new Set([
+    ...duplicateNewIds,
+    ...postPruneDuplicateIds,
+  ]);
+  const pieces = postPruneDeduped.pieces;
   const activeTask = pieces.length > 0
     ? {
       ...routed.activeTask,
@@ -272,34 +290,51 @@ export async function applyWorkingSetUpdate(
     ]),
   });
 
-  const duplicateDropDecisions = [...duplicateNewIds].map((pieceId) => ({
+  const duplicateDropDecisions = [...allDuplicateDropIds].map((pieceId) => ({
     pieceId,
     drop: true,
     reason: "exact_duplicate" as const,
   }));
   const newDropIds = new Set([
     ...duplicateNewIds,
+    ...nonDuplicateNewPieces.filter((piece) => allDuplicateDropIds.has(piece.id)).map((piece) =>
+      piece.id
+    ),
     ...nonDuplicateNewPieces.filter((piece) => pruneDropIds.has(piece.id)).map((piece) => piece.id),
   ]);
-  const oldDropIds = new Set(
-    candidateBaseOldPieces.filter((piece) => pruneDropIds.has(piece.id)).map((piece) => piece.id),
-  );
+  const oldDropIds = new Set([
+    ...candidateBaseOldPieces.filter((piece) => allDuplicateDropIds.has(piece.id)).map((piece) =>
+      piece.id
+    ),
+    ...candidateBaseOldPieces.filter((piece) => pruneDropIds.has(piece.id)).map((piece) =>
+      piece.id
+    ),
+  ]);
 
   return {
     memory,
     taskRoute: routed.effectiveRoute,
     newDropDecisions: {
       decisions: [
-        ...duplicateDropDecisions,
+        ...duplicateDropDecisions.filter((decision) =>
+          newMemoryPieces.some((piece) => piece.id === decision.pieceId)
+        ),
         ...dropDecisions.filter((decision) =>
+          !allDuplicateDropIds.has(decision.pieceId) &&
           nonDuplicateNewPieces.some((piece) => piece.id === decision.pieceId)
         ),
       ],
     },
     oldDropDecisions: {
-      decisions: dropDecisions.filter((decision) =>
-        candidateBaseOldPieces.some((piece) => piece.id === decision.pieceId)
-      ),
+      decisions: [
+        ...duplicateDropDecisions.filter((decision) =>
+          candidateBaseOldPieces.some((piece) => piece.id === decision.pieceId)
+        ),
+        ...dropDecisions.filter((decision) =>
+          !allDuplicateDropIds.has(decision.pieceId) &&
+          candidateBaseOldPieces.some((piece) => piece.id === decision.pieceId)
+        ),
+      ],
     },
     pruneCandidatePieceIds: candidatePieces.map((piece) => piece.id),
     acceptedPruneDropPieceIds: [...pruneDropIds],
@@ -312,7 +347,7 @@ export async function applyWorkingSetUpdate(
       .filter((piece) => !newDropIds.has(piece.id))
       .map((piece) => piece.id),
     droppedNewPieceIds: [...newDropIds],
-    duplicateDroppedPieceIds: [...duplicateNewIds],
+    duplicateDroppedPieceIds: [...allDuplicateDropIds],
   };
 }
 
@@ -414,7 +449,6 @@ function resolveArchivedTask(
 
 async function memoryPieceFromDraft(piece: PieceDraft, createdSeq: number): Promise<MemoryPiece> {
   const contentHash = await shortHash(stableJson(piece.content), 20);
-  const primaryKey = primaryKeyForPiece(piece);
   return {
     id: piece.id,
     sourceKind: piece.sourceKind,
@@ -426,23 +460,7 @@ async function memoryPieceFromDraft(piece: PieceDraft, createdSeq: number): Prom
     createdSeq,
     selector: piece.selector,
     contentHash,
-    ...(primaryKey ? { primaryKey } : {}),
   };
-}
-
-function primaryKeyForPiece(piece: PieceDraft): string | null {
-  if (!piece.pointer) {
-    return null;
-  }
-  const explicit = piece.pointer.primaryKey;
-  if (typeof explicit === "string" && explicit.trim()) {
-    return explicit.trim();
-  }
-  const path = piece.pointer.path ?? piece.pointer.file ?? piece.pointer.filePath;
-  if (typeof path === "string" && path.trim()) {
-    return `${piece.sourceKind}:${piece.toolName ?? ""}:${path.trim()}`;
-  }
-  return null;
 }
 
 function markDuplicateNewPieces(
@@ -480,6 +498,43 @@ function markDuplicateNewPieces(
   return { oldPieces: oldOut, newPieces: newOut, duplicateIds };
 }
 
+function collapseDuplicatePiecesPreferNew(
+  pieces: MemoryPiece[],
+  newPieceIds: ReadonlySet<string>,
+): { pieces: MemoryPiece[]; duplicateIds: Set<string> } {
+  const byHash = new Map<string, MemoryPiece>();
+  const duplicateIds = new Set<string>();
+
+  for (const piece of chronologicalPieces(pieces).map(cloneMemoryPiece)) {
+    const canonical = byHash.get(piece.contentHash);
+    if (!canonical) {
+      byHash.set(piece.contentHash, piece);
+      continue;
+    }
+
+    if (newPieceIds.has(piece.id) && !newPieceIds.has(canonical.id)) {
+      addDuplicateSource(piece, duplicateSourceFromPiece(canonical));
+      for (const duplicate of canonical.duplicateSources ?? []) {
+        addDuplicateSource(piece, duplicate);
+      }
+      duplicateIds.add(canonical.id);
+      byHash.set(piece.contentHash, piece);
+      continue;
+    }
+
+    addDuplicateSource(canonical, duplicateSourceFromPiece(piece));
+    for (const duplicate of piece.duplicateSources ?? []) {
+      addDuplicateSource(canonical, duplicate);
+    }
+    duplicateIds.add(piece.id);
+  }
+
+  return {
+    pieces: chronologicalPieces([...byHash.values()]),
+    duplicateIds,
+  };
+}
+
 function cloneMemoryPiece(piece: MemoryPiece): MemoryPiece {
   return {
     ...piece,
@@ -502,29 +557,10 @@ function duplicateSourceFromPiece(piece: MemoryPiece): DuplicateSource {
     pieceId: piece.id,
     sourceId: piece.sourceId,
     sourceKind: piece.sourceKind,
+    createdSeq: piece.createdSeq,
     ...(piece.toolName ? { toolName: piece.toolName } : {}),
-    ...(piece.pointer ? { pointer: piece.pointer } : {}),
+    pointer: piece.pointer ?? { selector: piece.selector },
   };
-}
-
-function supersessionHintsFor(pieces: MemoryPiece[]): SupersessionHint[] {
-  const byKey = new Map<string, MemoryPiece>();
-  const out: SupersessionHint[] = [];
-  for (const piece of chronologicalPieces(pieces)) {
-    if (!piece.primaryKey) {
-      continue;
-    }
-    const older = byKey.get(piece.primaryKey);
-    if (older && older.id !== piece.id) {
-      out.push({
-        olderPieceId: older.id,
-        newerPieceId: piece.id,
-        primaryKey: piece.primaryKey,
-      });
-    }
-    byKey.set(piece.primaryKey, piece);
-  }
-  return out;
 }
 
 function buildPruneBatches(input: {
@@ -533,7 +569,6 @@ function buildPruneBatches(input: {
   candidatePieces: MemoryPiece[];
   renderedById: Map<string, string>;
   latestUserPieceIds: string[];
-  supersessionHints: SupersessionHint[];
   tokenLimit: number;
 }): PieceDropBatchRequest[] {
   const manifestBase = input.candidatePieces.map((piece) => pieceManifestEntry(piece, false));
@@ -546,7 +581,6 @@ function buildPruneBatches(input: {
     latestUserPieces,
     sharedUserPieces: [],
     candidateManifest: manifestBase,
-    supersessionHints: input.supersessionHints,
     evaluatedPieces: [],
   }, input.tokenLimit);
   const allUserPiecesFit = sharedUserSelection.includedAllUserPieces;
@@ -567,7 +601,6 @@ function buildPruneBatches(input: {
       latestUserPieces,
       sharedUserSelection.pieces,
       input.candidatePieces,
-      input.supersessionHints,
       current,
     ));
     current = [];
@@ -584,7 +617,6 @@ function buildPruneBatches(input: {
       latestUserPieces,
       sharedUserSelection.pieces,
       input.candidatePieces,
-      input.supersessionHints,
       [full],
     );
     if (estimatedTokens(asSingle) > input.tokenLimit) {
@@ -596,7 +628,6 @@ function buildPruneBatches(input: {
       latestUserPieces,
       sharedUserSelection.pieces,
       input.candidatePieces,
-      input.supersessionHints,
       [...current, full],
     );
     if (estimatedTokens(next) > input.tokenLimit) {
@@ -616,7 +647,6 @@ function batchRequest(
   latestUserPieces: FullPayloadPiece[],
   sharedUserPieces: FullPayloadPiece[],
   candidatePieces: MemoryPiece[],
-  supersessionHints: SupersessionHint[],
   evaluatedPieces: FullPayloadPiece[],
 ): PieceDropBatchRequest {
   const evaluatedIds = new Set(evaluatedPieces.map((piece) => piece.id));
@@ -628,7 +658,6 @@ function batchRequest(
     candidateManifest: candidatePieces.map((piece) =>
       pieceManifestEntry(piece, evaluatedIds.has(piece.id))
     ),
-    supersessionHints,
     evaluatedPieces,
   };
 }
@@ -670,7 +699,6 @@ function pieceManifestEntry(
     sourceId: piece.sourceId,
     ...(piece.toolName ? { toolName: piece.toolName } : {}),
     createdSeq: piece.createdSeq,
-    ...(piece.primaryKey ? { primaryKey: piece.primaryKey } : {}),
     ...(piece.duplicateSources ? { duplicateSources: piece.duplicateSources } : {}),
     byteSize: piece.byteSize,
     fullPayloadIncludedInThisBatch,
@@ -693,7 +721,6 @@ function fullPayloadPiece(
     sourceId: piece.sourceId,
     ...(piece.toolName ? { toolName: piece.toolName } : {}),
     createdSeq: piece.createdSeq,
-    ...(piece.primaryKey ? { primaryKey: piece.primaryKey } : {}),
     ...(piece.duplicateSources ? { duplicateSources: piece.duplicateSources } : {}),
     byteSize: piece.byteSize,
     contentText,
@@ -863,11 +890,49 @@ function isAcceptedDropDecision(decision: PieceDropDecision): boolean {
     ACCEPTED_DROP_REASONS.has(decision.reason);
 }
 
+type DropAcceptanceContext = {
+  taskRoute: TaskRouteResponse;
+  activeTask: ActiveTask;
+  oldPieceIds: ReadonlySet<string>;
+};
+
+function acceptedDropDecisionsWithApplicability(
+  candidatePieces: MemoryPiece[],
+  dropDecisions: PieceDropDecision[],
+  context: DropAcceptanceContext,
+): PieceDropDecision[] {
+  const piecesById = new Map(candidatePieces.map((piece) => [piece.id, piece] as const));
+  return dropDecisions.filter((decision) => {
+    if (!isAcceptedDropDecision(decision)) {
+      return false;
+    }
+    const piece = piecesById.get(decision.pieceId);
+    if (!piece) {
+      return false;
+    }
+    return dropReasonAppliesToPiece(decision.reason, piece, context);
+  });
+}
+
+function dropReasonAppliesToPiece(
+  reason: DropReason | null,
+  piece: MemoryPiece,
+  context: DropAcceptanceContext,
+): boolean {
+  if (reason !== "old_task_after_confirmed_task_switch") {
+    return true;
+  }
+  return context.taskRoute.kind === "new_task" &&
+    context.oldPieceIds.has(piece.id) &&
+    piece.createdSeq < context.activeTask.startedRound;
+}
+
 function acceptedDropIdsWithSanity(
   candidatePieces: MemoryPiece[],
   dropDecisions: PieceDropDecision[],
+  context: DropAcceptanceContext,
 ): Set<string> {
-  const accepted = dropDecisions.filter(isAcceptedDropDecision);
+  const accepted = acceptedDropDecisionsWithApplicability(candidatePieces, dropDecisions, context);
   const initialDropIds = new Set(accepted.map((decision) => decision.pieceId));
   const survivors = candidatePieces.filter((piece) => !initialDropIds.has(piece.id));
   if (!collapsesToAssistantOnly(candidatePieces, survivors)) {

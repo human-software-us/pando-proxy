@@ -397,7 +397,6 @@ export function createHandler(
             sourceKind: piece.sourceKind,
             toolName: piece.toolName ?? null,
             createdSeq: piece.createdSeq,
-            primaryKey: piece.primaryKey ?? null,
             selector: piece.selector,
             byteSize: piece.byteSize,
             contentHash: piece.contentHash,

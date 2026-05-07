@@ -70,14 +70,286 @@ Deno.test("applyWorkingSetUpdate marks exact duplicates instead of losing duplic
     pieceId: duplicate.id,
     sourceId: duplicate.sourceId,
     sourceKind: duplicate.sourceKind,
+    createdSeq: 1,
+    pointer: { selector: { kind: "whole" } },
   }]);
   const prompt = buildPromptMemoryText(
     { ...result.memory, pieces: [materialized(result.memory.pieces[0], "same exact content")] },
     [materialized(result.memory.pieces[0], "same exact content")],
   );
   assert(prompt.includes("same exact content"));
+  assert(prompt.includes("<duplicate_marker"));
+  assert(prompt.includes(`duplicatePieceId=${duplicate.id}`));
   assert(prompt.includes("duplicateSourceId=source_b"));
-  assert(prompt.includes("<duplicate_observations>"));
+  assert(prompt.includes(`canonicalPieceId=${first.id}`));
+});
+
+Deno.test("applyWorkingSetUpdate rejects old-task switch reason unless it applies to an old piece during new_task", async () => {
+  const currentPiece = memoryPiece("source_current:0", "source_current", "current task fact");
+  const state: MemoryState = {
+    roundSeq: 1,
+    activeTask: {
+      id: "task_1",
+      pieceIds: [currentPiece.id],
+      startedRound: 1,
+      lastRound: 1,
+    },
+    archivedTasks: [],
+    pieces: [currentPiece],
+    processedSourceIds: ["source_current"],
+  };
+  const newPiece = draft("source_new:0", "source_new", "MUST_KEEP_CURRENT");
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === newPiece.id,
+          reason: piece.id === newPiece.id ? "old_task_after_confirmed_task_switch" : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [newPiece],
+    { kind: "same_task" },
+    clients,
+    [materialized(currentPiece, "current task fact")],
+  );
+
+  assertEquals(result.acceptedPruneDropPieceIds, []);
+  assertEquals(result.keptNewPieceIds, [newPiece.id]);
+  assertEquals(result.droppedNewPieceIds, []);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [currentPiece.id, newPiece.id]);
+});
+
+Deno.test("applyWorkingSetUpdate rejects old-task switch reason for pieces from the new task round", async () => {
+  const oldPiece = {
+    ...memoryPiece("source_old:0", "source_old", "not actually older than the new task"),
+    createdSeq: 2,
+  };
+  const state: MemoryState = {
+    roundSeq: 1,
+    activeTask: {
+      id: "task_1",
+      pieceIds: [oldPiece.id],
+      startedRound: 1,
+      lastRound: 1,
+    },
+    archivedTasks: [],
+    pieces: [oldPiece],
+    processedSourceIds: ["source_old"],
+  };
+  const newPiece = draft("source_new:0", "source_new", "new task fact");
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === oldPiece.id,
+          reason: piece.id === oldPiece.id ? "old_task_after_confirmed_task_switch" : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [newPiece],
+    { kind: "new_task" },
+    clients,
+    [materialized(oldPiece, "not actually older than the new task")],
+  );
+
+  assertEquals(result.acceptedPruneDropPieceIds, []);
+  assertEquals(result.sanityRejectedDropPieceIds, []);
+  assertEquals(result.memory.pieces.map((piece) => piece.id).sort(), [newPiece.id, oldPiece.id]);
+});
+
+Deno.test("applyWorkingSetUpdate allows old-task switch reason for old pieces during new_task", async () => {
+  const oldPiece = memoryPiece("source_old:0", "source_old", "old task only");
+  const state: MemoryState = {
+    roundSeq: 1,
+    activeTask: {
+      id: "task_1",
+      pieceIds: [oldPiece.id],
+      startedRound: 1,
+      lastRound: 1,
+    },
+    archivedTasks: [],
+    pieces: [oldPiece],
+    processedSourceIds: ["source_old"],
+  };
+  const newPiece = draft("source_new:0", "source_new", "new task fact");
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === oldPiece.id,
+          reason: piece.id === oldPiece.id ? "old_task_after_confirmed_task_switch" : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [newPiece],
+    { kind: "new_task" },
+    clients,
+    [materialized(oldPiece, "old task only")],
+  );
+
+  assertEquals(result.acceptedPruneDropPieceIds, [oldPiece.id]);
+  assertEquals(result.droppedOldPieceIds, [oldPiece.id]);
+  assertEquals(result.keptNewPieceIds, [newPiece.id]);
+  assertEquals(result.memory.archivedTasks.map((task) => task.id), ["task_1"]);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [newPiece.id]);
+});
+
+Deno.test("applyWorkingSetUpdate collapses new-task old/new duplicates after prune and prefers the new piece", async () => {
+  const first = draft("source_a:0", "source_a", "same exact content");
+  const firstResult = await applyWorkingSetUpdate(
+    emptyState(),
+    [first],
+    { kind: "new_task" },
+    keepAllClients,
+  );
+  const second = draft("source_b:0", "source_b", "same exact content");
+
+  const result = await applyWorkingSetUpdate(
+    firstResult.memory,
+    [second],
+    { kind: "new_task" },
+    keepAllClients,
+    [materialized(firstResult.memory.pieces[0], "same exact content")],
+  );
+
+  assertEquals(result.memory.archivedTasks.map((task) => task.id), [
+    firstResult.memory.activeTask!.id,
+  ]);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [second.id]);
+  assertEquals(result.droppedOldPieceIds, [first.id]);
+  assertEquals(result.keptNewPieceIds, [second.id]);
+  assertEquals(result.duplicateDroppedPieceIds, [first.id]);
+  assertEquals(result.memory.pieces[0].duplicateSources, [{
+    pieceId: first.id,
+    sourceId: first.sourceId,
+    sourceKind: first.sourceKind,
+    createdSeq: 1,
+    pointer: { selector: { kind: "whole" } },
+  }]);
+  const prompt = buildPromptMemoryText(
+    { ...result.memory, pieces: [materialized(result.memory.pieces[0], "same exact content")] },
+    [materialized(result.memory.pieces[0], "same exact content")],
+  );
+  assert(
+    prompt.indexOf(`<duplicate_marker duplicatePieceId=${first.id}`) <
+      prompt.indexOf(`<piece pieceId=${second.id}`),
+  );
+  assert(prompt.includes(`canonicalPieceId=${second.id}`));
+});
+
+Deno.test("applyWorkingSetUpdate keeps new duplicate when old canonical is pruned during new_task", async () => {
+  const first = draft("source_a:0", "source_a", "same exact content");
+  const firstResult = await applyWorkingSetUpdate(
+    emptyState(),
+    [first],
+    { kind: "new_task" },
+    keepAllClients,
+  );
+  const second = draft("source_b:0", "source_b", "same exact content");
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === first.id,
+          reason: piece.id === first.id ? "old_task_after_confirmed_task_switch" : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    firstResult.memory,
+    [second],
+    { kind: "new_task" },
+    clients,
+    [materialized(firstResult.memory.pieces[0], "same exact content")],
+  );
+
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [second.id]);
+  assertEquals(result.keptNewPieceIds, [second.id]);
+  assertEquals(result.droppedOldPieceIds, [first.id]);
+  assertEquals(result.duplicateDroppedPieceIds, []);
+});
+
+Deno.test("applyWorkingSetUpdate does not send supersession hints or primary keys to prune", async () => {
+  const piece: PieceDraft = {
+    ...draft("source_1:0", "source_1", "remember exact token ALPHA-123"),
+    pointer: {
+      primaryKey: "explicit-primary-key",
+      path: "src/example.ts",
+    },
+  };
+  let captured: PieceDropBatchRequest | null = null;
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) => {
+      captured = request;
+      return Promise.resolve({
+        decisions: request.evaluatedPieces.map((candidate) => ({
+          pieceId: candidate.id,
+          drop: false,
+          reason: null,
+        })),
+      });
+    },
+  };
+
+  await applyWorkingSetUpdate(
+    emptyState(),
+    [piece],
+    { kind: "new_task" },
+    clients,
+  );
+
+  const capturedRequest = captured as PieceDropBatchRequest | null;
+  assert(capturedRequest);
+  assert(!("supersessionHints" in capturedRequest));
+  assert(!("primaryKey" in capturedRequest.candidateManifest[0]));
+  assert(!("primaryKey" in capturedRequest.evaluatedPieces[0]));
+});
+
+Deno.test("applyWorkingSetUpdate ignores removed supersession drop reason", async () => {
+  const piece = draft("source_1:0", "source_1", "remember exact token ALPHA-123");
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((candidate) => ({
+          pieceId: candidate.id,
+          drop: true,
+          reason: "superseded_by_newer_exact_source",
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    emptyState(),
+    [piece],
+    { kind: "new_task" },
+    clients,
+  );
+
+  assertEquals(result.acceptedPruneDropPieceIds, []);
+  assertEquals(result.keptNewPieceIds, [piece.id]);
+  assertEquals(result.droppedNewPieceIds, []);
+  assertEquals(result.memory.pieces.map((memoryPiece) => memoryPiece.id), [piece.id]);
 });
 
 Deno.test("applyWorkingSetUpdate drops old active pieces with accepted full-payload prune decisions", async () => {

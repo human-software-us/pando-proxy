@@ -168,13 +168,11 @@ Each batch includes shared context and counts that context against the batch bud
 - latest user pieces, full payload
 - selected active user pieces, full payload
 - candidate manifest for all candidate pieces
-- local supersession hints
 - evaluatedPieces, full payload
 ```
 
 The candidate manifest includes every candidate piece id, source kind, tool name, creation order,
-primary key, duplicate source markers, byte size, and whether the full payload is included in this
-batch.
+duplicate source markers, byte size, and whether the full payload is included in this batch.
 
 Hard rule:
 
@@ -192,10 +190,9 @@ and accepted LLM drops would leave zero pieces or assistant-only pieces
 then keep the non-structurally dropped pieces
 ```
 
-Structural drops are still allowed: exact duplicates, primary-key supersession, explicit user
-invalidation, confirmed old-task pieces after a task switch, and empty/invalid pieces. This prevents
-the active working set from collapsing into a final assistant answer or chatter while still allowing
-real task turnover.
+Structural drops are still allowed: exact duplicates, explicit user invalidation, confirmed old-task
+pieces after a task switch, and empty/invalid pieces. This prevents the active working set from
+collapsing into a final assistant answer or chatter while still allowing real task turnover.
 
 ## Batch Sizing
 
@@ -210,7 +207,6 @@ sharedHeader = route
   + latest user full payloads
   + as many active user full payloads as fit
   + full candidate manifest
-  + supersession hints
 
 payloadBudget = tokenLimit - estimate(sharedHeader)
 
@@ -264,7 +260,6 @@ Allowed reasons:
 ```ts
 type DropReason =
   | "exact_duplicate"
-  | "superseded_by_newer_exact_source"
   | "explicitly_invalidated_by_user"
   | "old_task_after_confirmed_task_switch"
   | "pure_ack_or_chatter"

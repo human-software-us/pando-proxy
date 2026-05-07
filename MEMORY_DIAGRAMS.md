@@ -21,7 +21,6 @@ new round sources
     |
     +--> deterministic filters
     |      - duplicate content hashes become duplicate source markers
-    |      - supersession candidates by primaryKey
     |
     +--> piece_drop_batch over full-payload batches
     |      - batch includes shared user context + manifest + evaluated payloads

@@ -954,7 +954,6 @@ function pieceDropReasonSchema(): JsonSchema {
     type: "string",
     enum: [
       "exact_duplicate",
-      "superseded_by_newer_exact_source",
       "explicitly_invalidated_by_user",
       "old_task_after_confirmed_task_switch",
       "pure_ack_or_chatter",
@@ -1173,7 +1172,6 @@ function decisionObject(value: unknown): Record<string, unknown> {
 function coerceDropReason(value: unknown): DropReason | null {
   return typeof value === "string" && (
       value === "exact_duplicate" ||
-      value === "superseded_by_newer_exact_source" ||
       value === "explicitly_invalidated_by_user" ||
       value === "old_task_after_confirmed_task_switch" ||
       value === "pure_ack_or_chatter" ||

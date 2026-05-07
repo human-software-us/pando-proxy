@@ -35,7 +35,6 @@ type MemoryPiece = {
   createdSeq: number;
   selector: ChunkSelector;
   contentHash: string;
-  primaryKey?: string;
   duplicateSources?: Array<{
     pieceId: string;
     sourceId: string;
@@ -130,7 +129,6 @@ type PieceDropBatchRequest = {
   latestUserPieces: FullPayloadPiece[];
   sharedUserPieces: FullPayloadPiece[];
   candidateManifest: PieceManifestEntry[];
-  supersessionHints: SupersessionHint[];
   evaluatedPieces: FullPayloadPiece[];
 };
 
@@ -159,7 +157,6 @@ Accepted drop reasons:
 ```ts
 type DropReason =
   | "exact_duplicate"
-  | "superseded_by_newer_exact_source"
   | "explicitly_invalidated_by_user"
   | "old_task_after_confirmed_task_switch"
   | "pure_ack_or_chatter"
