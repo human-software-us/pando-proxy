@@ -85,6 +85,116 @@ Deno.test("applyWorkingSetUpdate marks exact duplicates instead of losing duplic
   assert(prompt.includes(`canonicalPieceId=${first.id}`));
 });
 
+Deno.test("applyWorkingSetUpdate converts model exact_duplicate drops into verified duplicate markers", async () => {
+  const oldPiece: MemoryPiece = {
+    ...memoryPiece("old:0", "old", "same exact content"),
+    sourceKind: "user",
+    contentHash: "old_nonmatching_hash",
+  };
+  const state: MemoryState = {
+    roundSeq: 1,
+    activeTask: {
+      id: "task_1",
+      pieceIds: [oldPiece.id],
+      startedRound: 1,
+      lastRound: 1,
+    },
+    archivedTasks: [],
+    pieces: [oldPiece],
+    processedSourceIds: [oldPiece.sourceId],
+  };
+  const duplicate = textSpanDraft(
+    "new:0",
+    "new",
+    "wrapper before same exact content wrapper after",
+    15,
+    33,
+  );
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === duplicate.id,
+          reason: piece.id === duplicate.id ? "exact_duplicate" as const : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [duplicate],
+    { kind: "same_task" },
+    clients,
+    [materialized(oldPiece, "<segment start=0 end=18>\nsame exact content\n</segment>")],
+  );
+
+  assertEquals(result.acceptedPruneDropPieceIds, []);
+  assertEquals(result.duplicateDroppedPieceIds, [duplicate.id]);
+  assertEquals(result.droppedNewPieceIds, [duplicate.id]);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [oldPiece.id]);
+  assertEquals(result.memory.pieces[0].duplicateSources, [{
+    pieceId: duplicate.id,
+    sourceId: duplicate.sourceId,
+    sourceKind: duplicate.sourceKind,
+    createdSeq: 2,
+    pointer: { selector: duplicate.selector },
+  }]);
+});
+
+Deno.test("applyWorkingSetUpdate keeps model exact_duplicate drops when local rendered text does not match", async () => {
+  const oldPiece: MemoryPiece = {
+    ...memoryPiece("old:0", "old", "different retained content"),
+    sourceKind: "user",
+    contentHash: "old_nonmatching_hash",
+  };
+  const state: MemoryState = {
+    roundSeq: 1,
+    activeTask: {
+      id: "task_1",
+      pieceIds: [oldPiece.id],
+      startedRound: 1,
+      lastRound: 1,
+    },
+    archivedTasks: [],
+    pieces: [oldPiece],
+    processedSourceIds: [oldPiece.sourceId],
+  };
+  const allegedDuplicate = textSpanDraft(
+    "new:0",
+    "new",
+    "wrapper before same exact content wrapper after",
+    15,
+    33,
+  );
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: piece.id === allegedDuplicate.id,
+          reason: piece.id === allegedDuplicate.id ? "exact_duplicate" as const : null,
+        })),
+      }),
+  };
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [allegedDuplicate],
+    { kind: "same_task" },
+    clients,
+    [materialized(oldPiece, "different retained content")],
+  );
+
+  assertEquals(result.acceptedPruneDropPieceIds, []);
+  assertEquals(result.duplicateDroppedPieceIds, []);
+  assertEquals(result.droppedNewPieceIds, []);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [oldPiece.id, allegedDuplicate.id]);
+  assertEquals(result.memory.pieces[0].duplicateSources, undefined);
+});
+
 Deno.test("applyWorkingSetUpdate rejects old-task switch reason unless it applies to an old piece during new_task", async () => {
   const currentPiece = memoryPiece("source_current:0", "source_current", "current task fact");
   const state: MemoryState = {
@@ -974,6 +1084,28 @@ function draftKind(
     previewText: text,
     byteSize: text.length,
     selector: { kind: "whole" },
+  };
+}
+
+function textSpanDraft(
+  id: string,
+  sourceId: string,
+  sourceText: string,
+  start: number,
+  end: number,
+): PieceDraft {
+  return {
+    id,
+    sourceKind: "user",
+    sourceId,
+    content: {
+      kind: "chunks",
+      sourceTextLength: sourceText.length,
+      segments: [{ start, end, text: sourceText.slice(start, end) }],
+    },
+    previewText: sourceText.slice(start, end),
+    byteSize: end - start,
+    selector: { kind: "chunks", chunks: [{ start, end }] },
   };
 }
 

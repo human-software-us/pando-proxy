@@ -1144,6 +1144,9 @@ Rules:
 - If the same boundary pair genuinely repeats, return the same pair once; local code will create a chunk for each consistent start-to-next-end occurrence and duplicate handling will collapse duplicate pieces later.
 - Each chunks selector may contain multiple ordered non-overlapping boundary pairs for one conceptual piece.
 - Keep chunks in original order.
+- Cover the complete source. If you return chunks instead of whole, every non-whitespace part of the raw source body must be included in exactly one chunk. Do not leave headings, introductions, first sections, last sections, errors, paths, rows, or other content uncovered.
+- Whitespace-only gaps between chunks are acceptable; meaningful text gaps are not.
+- If you cannot split a source without meaningful gaps, return whole for that source.
 - Do not invent, rewrite, truncate, or paraphrase boundary text.
 - Prefer boundary-safe exact pieces over one huge whole selector when the source is large.
 - For large shell/search/test/log outputs, first split on conceptual boundaries: command sections, failure blocks, stack traces, assertion blocks, test-case sections, file blocks, path-prefix groups, or other visible separators.

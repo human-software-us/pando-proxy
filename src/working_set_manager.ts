@@ -13,6 +13,7 @@ import {
   type SourceKind,
   unique,
 } from "./memory_state.ts";
+import { renderTextSelection, type TextSpanSelection } from "./source_selectors.ts";
 
 export type TaskRouteRequest = {
   activeTask: ActiveTask | null;
@@ -248,15 +249,27 @@ export async function applyWorkingSetUpdate(
     activeTask: routed.activeTask,
     oldPieceIds: new Set(candidateBaseOldPieces.map((piece) => piece.id)),
   };
+  const acceptedModelExactDuplicateIds = new Set(
+    acceptedDropDecisionsWithApplicability(
+      candidatePieces,
+      dropDecisions,
+      dropAcceptanceContext,
+    )
+      .filter((decision) => decision.reason === "exact_duplicate")
+      .map((decision) => decision.pieceId),
+  );
+  const nonDuplicateDropDecisions = dropDecisions.filter((decision) =>
+    !(decision.drop === true && decision.reason === "exact_duplicate")
+  );
   const pruneDropIds = acceptedDropIdsWithSanity(
     candidatePieces,
-    dropDecisions,
+    nonDuplicateDropDecisions,
     dropAcceptanceContext,
   );
   const acceptedDropIdsBeforeSanity = new Set(
     acceptedDropDecisionsWithApplicability(
       candidatePieces,
-      dropDecisions,
+      nonDuplicateDropDecisions,
       dropAcceptanceContext,
     ).map((decision) => decision.pieceId),
   );
@@ -273,12 +286,19 @@ export async function applyWorkingSetUpdate(
       new Set(nonDuplicateNewPieces.map((piece) => piece.id)),
     )
     : { pieces: piecesBeforeDuplicateCollapse, duplicateIds: new Set<string>() };
+  const verifiedModelExactDuplicates = collapseVerifiedExactDuplicateDrops(
+    postPruneDeduped.pieces,
+    acceptedModelExactDuplicateIds,
+    new Set(nonDuplicateNewPieces.map((piece) => piece.id)),
+    renderedById,
+  );
   const postPruneDuplicateIds = postPruneDeduped.duplicateIds;
   const allDuplicateDropIds = new Set([
     ...duplicateNewIds,
     ...postPruneDuplicateIds,
+    ...verifiedModelExactDuplicates.duplicateIds,
   ]);
-  const pieces = postPruneDeduped.pieces;
+  const pieces = verifiedModelExactDuplicates.pieces;
   const activeTask = pieces.length > 0
     ? {
       ...routed.activeTask,
@@ -326,7 +346,7 @@ export async function applyWorkingSetUpdate(
         ...duplicateDropDecisions.filter((decision) =>
           newMemoryPieces.some((piece) => piece.id === decision.pieceId)
         ),
-        ...dropDecisions.filter((decision) =>
+        ...nonDuplicateDropDecisions.filter((decision) =>
           !allDuplicateDropIds.has(decision.pieceId) &&
           nonDuplicateNewPieces.some((piece) => piece.id === decision.pieceId)
         ),
@@ -337,7 +357,7 @@ export async function applyWorkingSetUpdate(
         ...duplicateDropDecisions.filter((decision) =>
           candidateBaseOldPieces.some((piece) => piece.id === decision.pieceId)
         ),
-        ...dropDecisions.filter((decision) =>
+        ...nonDuplicateDropDecisions.filter((decision) =>
           !allDuplicateDropIds.has(decision.pieceId) &&
           candidateBaseOldPieces.some((piece) => piece.id === decision.pieceId)
         ),
@@ -540,6 +560,68 @@ function collapseDuplicatePiecesPreferNew(
     pieces: chronologicalPieces([...byHash.values()]),
     duplicateIds,
   };
+}
+
+function collapseVerifiedExactDuplicateDrops(
+  pieces: MemoryPiece[],
+  requestedDropIds: ReadonlySet<string>,
+  newPieceIds: ReadonlySet<string>,
+  renderedById: ReadonlyMap<string, string>,
+): { pieces: MemoryPiece[]; duplicateIds: Set<string> } {
+  if (requestedDropIds.size === 0) {
+    return { pieces, duplicateIds: new Set<string>() };
+  }
+
+  const cloned = chronologicalPieces(pieces).map(cloneMemoryPiece);
+  const groups = new Map<string, MemoryPiece[]>();
+  for (const piece of cloned) {
+    const comparable = comparableRenderedText(renderedById.get(piece.id));
+    if (!comparable) {
+      continue;
+    }
+    groups.set(comparable, [...(groups.get(comparable) ?? []), piece]);
+  }
+
+  const duplicateIds = new Set<string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+    const requested = group.filter((piece) => requestedDropIds.has(piece.id));
+    if (requested.length === 0) {
+      continue;
+    }
+    const canonical = chooseCanonicalForVerifiedDuplicate(group, requestedDropIds, newPieceIds);
+    for (const piece of requested) {
+      if (piece.id === canonical.id) {
+        continue;
+      }
+      addDuplicateSource(canonical, duplicateSourceFromPiece(piece));
+      for (const duplicate of piece.duplicateSources ?? []) {
+        addDuplicateSource(canonical, duplicate);
+      }
+      duplicateIds.add(piece.id);
+    }
+  }
+
+  return {
+    pieces: chronologicalPieces(cloned.filter((piece) => !duplicateIds.has(piece.id))),
+    duplicateIds,
+  };
+}
+
+function chooseCanonicalForVerifiedDuplicate(
+  group: MemoryPiece[],
+  requestedDropIds: ReadonlySet<string>,
+  newPieceIds: ReadonlySet<string>,
+): MemoryPiece {
+  const ordered = chronologicalPieces(group);
+  const unrequested = ordered.filter((piece) => !requestedDropIds.has(piece.id));
+  if (unrequested.length > 0) {
+    const newUnrequested = unrequested.filter((piece) => newPieceIds.has(piece.id));
+    return newUnrequested.at(-1) ?? unrequested[0];
+  }
+  return ordered[0];
 }
 
 function cloneMemoryPiece(piece: MemoryPiece): MemoryPiece {
@@ -942,7 +1024,59 @@ function renderPieceContent(content: unknown): string {
   if (typeof content === "string") {
     return content;
   }
+  if (isTextSpanSelection(content)) {
+    return renderTextSelection(content);
+  }
   return JSON.stringify(content, null, 2);
+}
+
+function comparableRenderedText(text: string | undefined): string | null {
+  if (typeof text !== "string" || text.length === 0) {
+    return null;
+  }
+  const jsonSelection = parseTextSpanSelection(text);
+  if (jsonSelection) {
+    return selectedTextForComparison(jsonSelection);
+  }
+  const segmentText = selectedTextFromRenderedSegments(text);
+  return segmentText ?? text;
+}
+
+function parseTextSpanSelection(text: string): TextSpanSelection | null {
+  try {
+    const parsed = JSON.parse(text);
+    return isTextSpanSelection(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isTextSpanSelection(value: unknown): value is TextSpanSelection {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "chunks" || !Array.isArray(record.segments)) {
+    return false;
+  }
+  return record.segments.every((segment) =>
+    segment && typeof segment === "object" && !Array.isArray(segment) &&
+    Number.isInteger((segment as Record<string, unknown>).start) &&
+    Number.isInteger((segment as Record<string, unknown>).end) &&
+    typeof (segment as Record<string, unknown>).text === "string"
+  );
+}
+
+function selectedTextForComparison(selection: TextSpanSelection): string {
+  return selection.segments.map((segment) => segment.text).join("");
+}
+
+function selectedTextFromRenderedSegments(text: string): string | null {
+  const matches = [...text.matchAll(/<segment start=\d+ end=\d+>\n([\s\S]*?)\n<\/segment>/g)];
+  if (matches.length === 0) {
+    return null;
+  }
+  return matches.map((match) => match[1] ?? "").join("");
 }
 
 function estimatedTokens(value: unknown): number {
