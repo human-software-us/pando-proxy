@@ -170,6 +170,117 @@ Deno.test("chunkRoundSources trims chunk edges and keeps uncovered text", async 
   ]);
 });
 
+Deno.test("chunkRoundSources assigns leading and trailing whitespace to edge chunks", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () =>
+      Promise.resolve({
+        results: [{
+          sourceId: "edge_whitespace",
+          selectors: [{
+            kind: "chunks",
+            chunks: [
+              { startText: "alpha", endText: "alpha" },
+              { startText: "beta", endText: "beta" },
+            ],
+          }],
+        }],
+      }),
+  };
+  const source: RoundSource = {
+    sourceId: "edge_whitespace",
+    sourceKind: "assistant",
+    payload: " \n\talpha\n\nbeta\t \n",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(result.pieces.map((piece) => textSelectionContent(piece.content)), [
+    " \n\talpha",
+    "\n\nbeta\t \n",
+  ]);
+  assertEquals(result.pieces.map((piece) => trimmedTextSelectionContent(piece.content)), [
+    "alpha",
+    "beta",
+  ]);
+});
+
+Deno.test("chunkRoundSources assigns whitespace-only gaps to the next chunk", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () =>
+      Promise.resolve({
+        results: [{
+          sourceId: "inter_chunk_whitespace",
+          selectors: [{
+            kind: "chunks",
+            chunks: [
+              { startText: "alpha", endText: "alpha" },
+              { startText: "beta", endText: "beta" },
+              { startText: "gamma", endText: "gamma" },
+            ],
+          }],
+        }],
+      }),
+  };
+  const source: RoundSource = {
+    sourceId: "inter_chunk_whitespace",
+    sourceKind: "assistant",
+    payload: "alpha\n\n  beta\t\t\n\ngamma",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(result.pieces.map((piece) => textSelectionContent(piece.content)), [
+    "alpha",
+    "\n\n  beta",
+    "\t\t\n\ngamma",
+  ]);
+  assertEquals(result.pieces.map((piece) => trimmedTextSelectionContent(piece.content)), [
+    "alpha",
+    "beta",
+    "gamma",
+  ]);
+});
+
+Deno.test("chunkRoundSources repairs meaningful gaps before assigning surrounding whitespace", async () => {
+  const clients: StructuredClients = {
+    ...keepWholeClients,
+    sourceChunkBatch: () =>
+      Promise.resolve({
+        results: [{
+          sourceId: "meaningful_gap_whitespace",
+          selectors: [{
+            kind: "chunks",
+            chunks: [
+              { startText: "alpha", endText: "alpha" },
+              { startText: "omega", endText: "omega" },
+            ],
+          }],
+        }],
+      }),
+  };
+  const source: RoundSource = {
+    sourceId: "meaningful_gap_whitespace",
+    sourceKind: "tool",
+    toolName: "exec_command",
+    payload: "alpha\n\n  MISSING_KEEP=1  \n\nomega",
+  };
+
+  const result = await chunkRoundSources([source], clients);
+
+  assertEquals(result.pieces.map((piece) => textSelectionContent(piece.content)), [
+    "alpha",
+    "\n\n  MISSING_KEEP=1",
+    "  \n\nomega",
+  ]);
+  assertEquals(result.pieces.map((piece) => trimmedTextSelectionContent(piece.content)), [
+    "alpha",
+    "MISSING_KEEP=1",
+    "omega",
+  ]);
+});
+
 Deno.test("chunkRoundSources materializes exact payload block boundaries and repairs uncovered wrapper text", async () => {
   const clients: StructuredClients = {
     ...keepWholeClients,
