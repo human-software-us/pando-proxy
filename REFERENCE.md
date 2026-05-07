@@ -191,7 +191,10 @@ type SourceChunkBatchRequest = {
 type SourceChunkBatchResponse = {
   results: Array<{
     sourceId: string;
-    selectors: ChunkSelector[];
+    selectors: Array<
+      | { kind: "whole" }
+      | { kind: "text_spans"; spans: Array<{ start: number; end: number }> }
+    >;
   }>;
 };
 ```
@@ -211,6 +214,7 @@ Validation rules:
   closed and prior memory remains unchanged
 
 Tool-call sources are not sent to `source_chunk_batch`; they become whole exact pieces structurally.
+`object_path` selectors are produced only by deterministic Pando-tool chunking.
 
 ## Prompt Memory Block
 

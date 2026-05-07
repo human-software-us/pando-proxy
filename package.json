@@ -19,11 +19,14 @@
     "QUICK_BENCHMARKS.md",
     "README.md",
     "npm-publishing.md",
+    "ACTIVE_MEMORY_REDESIGN_PLAN.md",
+    "WORKING_SET_PRUNE_DESIGN.md",
     "DESIGN_PRINCIPLES.md",
     "REFERENCE.md",
     "MEMORY_OPERATIONS.md",
     "LIVE_E2E.md",
-    "CONTEXT_MEMORY_DESIGN.md"
+    "CONTEXT_MEMORY_DESIGN.md",
+    "MEMORY_DIAGRAMS.md"
   ],
   "keywords": [
     "codex",

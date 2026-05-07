@@ -20,7 +20,7 @@ new round sources
     +--> materialize exact new pieces
     |
     +--> deterministic filters
-    |      - duplicate content hashes
+    |      - duplicate content hashes become duplicate source markers
     |      - supersession candidates by primaryKey
     |
     +--> piece_drop_batch over full-payload batches
@@ -56,6 +56,7 @@ incoming request
 ACTIVE MEMORY
   - one activeTask
   - exact surviving pieces
+  - duplicate source markers on canonical duplicate content
   - always shown next round
 
 ARCHIVE

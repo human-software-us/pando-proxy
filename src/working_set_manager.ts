@@ -75,6 +75,7 @@ export type FullPayloadPiece = {
   toolName?: string;
   createdSeq?: number;
   primaryKey?: string;
+  duplicateSources?: DuplicateSource[];
   byteSize: number;
   contentText: string;
 };
@@ -86,6 +87,7 @@ export type PieceManifestEntry = {
   toolName?: string;
   createdSeq: number;
   primaryKey?: string;
+  duplicateSources?: DuplicateSource[];
   byteSize: number;
   fullPayloadIncludedInThisBatch: boolean;
 };
@@ -650,6 +652,7 @@ function pieceManifestEntry(
     ...(piece.toolName ? { toolName: piece.toolName } : {}),
     createdSeq: piece.createdSeq,
     ...(piece.primaryKey ? { primaryKey: piece.primaryKey } : {}),
+    ...(piece.duplicateSources ? { duplicateSources: piece.duplicateSources } : {}),
     byteSize: piece.byteSize,
     fullPayloadIncludedInThisBatch,
   };
@@ -672,6 +675,7 @@ function fullPayloadPiece(
     ...(piece.toolName ? { toolName: piece.toolName } : {}),
     createdSeq: piece.createdSeq,
     ...(piece.primaryKey ? { primaryKey: piece.primaryKey } : {}),
+    ...(piece.duplicateSources ? { duplicateSources: piece.duplicateSources } : {}),
     byteSize: piece.byteSize,
     contentText,
   };

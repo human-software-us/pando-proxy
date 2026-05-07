@@ -157,7 +157,8 @@ Each batch includes shared context and counts that context against the batch bud
 ```
 
 The candidate manifest includes every candidate piece id, source kind, tool name, creation order,
-primary key, byte size, and whether the full payload is included in this batch.
+primary key, duplicate source markers, byte size, and whether the full payload is included in this
+batch.
 
 Hard rule:
 

@@ -12,7 +12,7 @@
    - stored active pieces == prompt-visible active pieces
 
 3. Dropping requires positive proof.
-   - exact duplicate content hash
+   - exact duplicate content hash, with a duplicate source marker kept on the canonical piece
    - deterministic supersession by primary key
    - explicit invalidation
    - certain structured drop decision

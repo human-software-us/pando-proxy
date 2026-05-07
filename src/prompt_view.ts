@@ -1,4 +1,5 @@
 import type { ProxyConfig } from "./config.ts";
+import { stableJson } from "./json.ts";
 import {
   chronologicalPieces,
   type MaterializedMemoryPiece,
@@ -144,6 +145,7 @@ export function buildPromptMemoryText(
             `duplicateSourceId=${duplicate.sourceId}`,
             `sourceKind=${duplicate.sourceKind}`,
             ...(duplicate.toolName ? [`toolName=${duplicate.toolName}`] : []),
+            ...(duplicate.pointer ? [`pointer=${stableJson(duplicate.pointer)}`] : []),
           ].join(" "),
         );
       }

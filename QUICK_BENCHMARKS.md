@@ -59,7 +59,7 @@ Committed aggregate:
 
 - [`benchmarks/results/devstral_verified_drop_tools_batch.json`](./benchmarks/results/devstral_verified_drop_tools_batch.json)
 
-Current aggregate on the shipped lossless task/piece manager:
+Current aggregate on the shipped active-task working-set runtime:
 
 | Set                                             | Samples | Rounds | Avg without proxy | Avg with proxy | Peak without proxy | Peak with proxy | Aggregate avg reduction | Aggregate peak reduction |
 | ----------------------------------------------- | ------: | -----: | ----------------: | -------------: | -----------------: | --------------: | ----------------------: | -----------------------: |
@@ -96,7 +96,7 @@ Committed result files:
 - [`benchmarks/results/devstral_verified_top20_selection.json`](./benchmarks/results/devstral_verified_top20_selection.json)
 - [`benchmarks/results/devstral_verified_top20_stub.json`](./benchmarks/results/devstral_verified_top20_stub.json)
 
-Current aggregate on the shipped lossless task/piece manager:
+Current aggregate on the shipped active-task working-set runtime:
 
 | Set                                | Samples | Rounds | Mode         | Avg without proxy | Avg with proxy | Peak without proxy | Peak with proxy | Aggregate avg reduction | Aggregate peak reduction |
 | ---------------------------------- | ------: | -----: | ------------ | ----------------: | -------------: | -----------------: | --------------: | ----------------------: | -----------------------: |

@@ -77,6 +77,7 @@ Deno.test("applyWorkingSetUpdate marks exact duplicates instead of losing duplic
   );
   assert(prompt.includes("same exact content"));
   assert(prompt.includes("duplicateSourceId=source_b"));
+  assert(prompt.includes("<duplicate_observations>"));
 });
 
 Deno.test("applyWorkingSetUpdate drops old active pieces with accepted full-payload prune decisions", async () => {

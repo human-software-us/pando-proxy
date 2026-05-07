@@ -18,7 +18,7 @@ Implementation shape:
 
 1. chunk all new sources
 2. run `source_chunk_batch` and `task_route` in parallel
-3. dedupe exact content hashes
+3. dedupe exact content hashes while recording duplicate source markers
 4. build the routed candidate active set
 5. run `piece_drop_batch` for bounded full-payload batches
 6. persist only the surviving exact pieces under the active task
