@@ -142,6 +142,109 @@ liveChunkTest(
   },
 );
 
+liveChunkTest("live LLM chunking splits very large headed chunks", async () => {
+  const source = liveLargeHeadedChunksSource();
+  const result = await liveSingleSourceResult(source);
+  const pieces = renderedPieces(result.pieces, source.sourceId);
+
+  assert(pieces.length > 1, diagnostic(source.sourceId, pieces));
+  assert(
+    pieces.some((piece) => piece.includes("LARGE_ALPHA_SENTINEL")),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes("LARGE_BETA_SENTINEL")),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    chunksRespectSafeBoundariesForSources(result.pieces, [source]),
+    diagnostic(source.sourceId, pieces),
+  );
+});
+
+liveChunkTest("live LLM chunking splits large prose text by conceptual sections", async () => {
+  const source = liveLargeTextSource();
+  const result = await liveSingleSourceResult(source);
+  const pieces = renderedPieces(result.pieces, source.sourceId);
+
+  assert(pieces.length > 1, diagnostic(source.sourceId, pieces));
+  assert(pieces.some((piece) => piece.includes("## Problem")), diagnostic(source.sourceId, pieces));
+  assert(
+    pieces.some((piece) => piece.includes("## Constraints")),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes("## Resolution")),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    chunksRespectSafeBoundariesForSources(result.pieces, [source]),
+    diagnostic(source.sourceId, pieces),
+  );
+});
+
+liveChunkTest("live LLM chunking keeps a large opaque blob whole", async () => {
+  const source = liveLargeBlobSource();
+  const result = await liveSingleSourceResult(source);
+  const pieces = renderedPieces(result.pieces, source.sourceId);
+
+  assert(pieces.length === 1, diagnostic(source.sourceId, pieces));
+  assert(pieces[0].includes("OPAQUE_BLOB_BEGIN"), diagnostic(source.sourceId, pieces));
+  assert(pieces[0].includes("OPAQUE_BLOB_END"), diagnostic(source.sourceId, pieces));
+});
+
+liveChunkTest("live LLM chunking splits multiple medium delimited blobs", async () => {
+  const source = liveMediumBlobsSource();
+  const result = await liveSingleSourceResult(source);
+  const pieces = renderedPieces(result.pieces, source.sourceId);
+
+  assert(pieces.length > 1, diagnostic(source.sourceId, pieces));
+  assert(
+    pieces.some((piece) => piece.includes("MEDIUM_BLOB_ALPHA")),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes("MEDIUM_BLOB_BETA")),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes("MEDIUM_BLOB_GAMMA")),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    chunksRespectSafeBoundariesForSources(result.pieces, [source]),
+    diagnostic(source.sourceId, pieces),
+  );
+});
+
+liveChunkTest("live LLM chunking splits big arrays with lots of small items", async () => {
+  const source = liveManySmallArrayItemsSource();
+  const result = await liveSingleSourceResult(source);
+  const pieces = renderedPieces(result.pieces, source.sourceId);
+
+  assert(pieces.length > 1, diagnostic(source.sourceId, pieces));
+  assert(
+    pieces.some((piece) => piece.includes('"bucket": "north"')),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes('"bucket": "south"')),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes('"bucket": "east"')),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    pieces.some((piece) => piece.includes('"bucket": "west"')),
+    diagnostic(source.sourceId, pieces),
+  );
+  assert(
+    chunksRespectSafeBoundariesForSources(result.pieces, [source]),
+    diagnostic(source.sourceId, pieces),
+  );
+});
+
 function liveChunkTest(name: string, fn: () => Promise<void>): void {
   Deno.test({
     name,
@@ -165,6 +268,16 @@ async function runLiveChunking(): Promise<{ pieces: PieceDraft[] }> {
     `Bearer ${liveApiKey}`,
   );
   return await chunkRoundSources(liveChunkSources(), clients);
+}
+
+async function liveSingleSourceResult(source: RoundSource): Promise<{ pieces: PieceDraft[] }> {
+  const model = Deno.env.get("PANDO_LIVE_LLM_CHUNK_MODEL") ?? "gpt-5.4";
+  const clients = createStructuredClients(
+    liveProxyConfig(model),
+    model,
+    `Bearer ${liveApiKey}`,
+  );
+  return await chunkRoundSources([source], clients);
 }
 
 function liveProxyConfig(model: string): ProxyConfig {
@@ -202,13 +315,24 @@ function conceptualCheck(
 }
 
 function chunksRespectSafeBoundaries(pieces: PieceDraft[], sourceId: string): boolean {
+  return chunksRespectSafeBoundariesForSources(pieces, liveChunkSources(), sourceId);
+}
+
+function chunksRespectSafeBoundariesForSources(
+  pieces: PieceDraft[],
+  sources: RoundSource[],
+  sourceId?: string,
+): boolean {
   return pieces
-    .filter((piece) => piece.sourceId === sourceId)
+    .filter((piece) => sourceId === undefined || piece.sourceId === sourceId)
     .every((piece) => {
       if (piece.selector.kind !== "chunks") {
         return true;
       }
-      const sourceText = sourceTextById(piece.sourceId);
+      const source = sources.find((candidate) => candidate.sourceId === piece.sourceId);
+      assert(source, `missing live source ${piece.sourceId}`);
+      assert(typeof source.payload === "string", `source ${piece.sourceId} must be string payload`);
+      const sourceText = source.payload;
       return piece.selector.chunks.every((span) =>
         isSafeBoundary(sourceText, span.start) && isSafeBoundary(sourceText, span.end)
       );
@@ -250,13 +374,6 @@ function diagnostic(sourceId: string, pieces: string[]): string {
     pieceCount: pieces.length,
     previews: pieces.map((piece) => piece.slice(0, 240)),
   });
-}
-
-function sourceTextById(sourceId: string): string {
-  const source = liveChunkSources().find((candidate) => candidate.sourceId === sourceId);
-  assert(source, `missing live source ${sourceId}`);
-  assert(typeof source.payload === "string", `source ${sourceId} must be string payload`);
-  return source.payload;
 }
 
 function liveChunkSources(): RoundSource[] {
@@ -373,4 +490,126 @@ function liveChunkSources(): RoundSource[] {
       ].join("\n"),
     },
   ];
+}
+
+function liveLargeHeadedChunksSource(): RoundSource {
+  return {
+    sourceId: "large_headed_chunks",
+    sourceKind: "tool",
+    toolName: "exec_command",
+    payload: [
+      "# Large Headed Chunks",
+      "## Alpha Large Chunk",
+      "LARGE_ALPHA_SENTINEL",
+      ...Array.from(
+        { length: 260 },
+        (_, index) =>
+          `alpha large detail ${index}: dependency graph observation ${
+            index % 17
+          } should stay with alpha.`,
+      ),
+      "## Beta Large Chunk",
+      "LARGE_BETA_SENTINEL",
+      ...Array.from(
+        { length: 260 },
+        (_, index) =>
+          `beta large detail ${index}: execution log observation ${
+            index % 19
+          } should stay with beta.`,
+      ),
+      "## Gamma Large Chunk",
+      "LARGE_GAMMA_SENTINEL",
+      ...Array.from(
+        { length: 260 },
+        (_, index) =>
+          `gamma large detail ${index}: verification note ${index % 23} should stay with gamma.`,
+      ),
+    ].join("\n"),
+  };
+}
+
+function liveLargeTextSource(): RoundSource {
+  return {
+    sourceId: "large_prose_text",
+    sourceKind: "assistant",
+    payload: [
+      "# Incident Analysis",
+      "",
+      "## Problem",
+      ...Array.from(
+        { length: 220 },
+        (_, index) =>
+          `Problem paragraph ${index}: service latency changed after queue saturation and exact marker PROBLEM_${index}.`,
+      ),
+      "",
+      "## Constraints",
+      ...Array.from(
+        { length: 220 },
+        (_, index) =>
+          `Constraint paragraph ${index}: memory retention must preserve evidence marker CONSTRAINT_${index}.`,
+      ),
+      "",
+      "## Resolution",
+      ...Array.from(
+        { length: 220 },
+        (_, index) =>
+          `Resolution paragraph ${index}: apply the bounded fix and verify marker RESOLUTION_${index}.`,
+      ),
+    ].join("\n"),
+  };
+}
+
+function liveLargeBlobSource(): RoundSource {
+  return {
+    sourceId: "large_opaque_blob",
+    sourceKind: "tool",
+    toolName: "exec_command",
+    payload: [
+      "OPAQUE_BLOB_BEGIN",
+      "mime=application/octet-stream",
+      "encoding=base64",
+      "data:",
+      ...Array.from(
+        { length: 260 },
+        (_, index) => `BLOB_LINE_${index}:${"A1b2C3d4E5f6G7h8I9j0".repeat(12)}`,
+      ),
+      "OPAQUE_BLOB_END",
+    ].join("\n"),
+  };
+}
+
+function liveMediumBlobsSource(): RoundSource {
+  return {
+    sourceId: "medium_delimited_blobs",
+    sourceKind: "tool",
+    toolName: "exec_command",
+    payload: ["ALPHA", "BETA", "GAMMA"].flatMap((name) => [
+      `BEGIN MEDIUM_BLOB_${name}`,
+      `metadata=${name.toLowerCase()}`,
+      ...Array.from(
+        { length: 80 },
+        (_, index) => `${name}_PAYLOAD_${index}:${"0123456789abcdef".repeat(8)}`,
+      ),
+      `END MEDIUM_BLOB_${name}`,
+    ]).join("\n"),
+  };
+}
+
+function liveManySmallArrayItemsSource(): RoundSource {
+  const buckets = ["north", "south", "east", "west"];
+  return {
+    sourceId: "many_small_array_items",
+    sourceKind: "tool",
+    toolName: "exec_command",
+    payload: JSON.stringify(
+      Array.from({ length: 240 }, (_, index) => ({
+        id: index,
+        bucket: buckets[Math.floor(index / 60)]!,
+        path: `src/${buckets[Math.floor(index / 60)]}/item_${index}.ts`,
+        value: `small-${index}`,
+      })),
+      null,
+      2,
+    ),
+  };
 }

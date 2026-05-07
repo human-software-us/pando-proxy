@@ -780,12 +780,12 @@ Deno.test("multi-round 20 recall returns archive-only payloads and rejects a fou
       ...session.state,
       pieces: session.materializedActivePieces(),
     };
-    const resolveArchived = async (sourceIds: string[]) =>
-      sourceIds.map((sourceId) => ({
+    const resolveArchived = (sourceIds: string[]) =>
+      Promise.resolve(sourceIds.map((sourceId) => ({
         sourceId,
         sourceKind: "user" as const,
         payload: sourceId === "old_archive" ? "OLD_EXACT_BLOCK=alpha" : "UNEXPECTED_ACTIVE",
-      }));
+      })));
 
     const result = await runResponsesLoop(config, options, memory, resolveArchived, "session");
     assert(result.ok);
@@ -810,6 +810,235 @@ Deno.test("multi-round 20 recall returns archive-only payloads and rejects a fou
   } finally {
     await upstream.shutdown();
   }
+});
+
+Deno.test("multi-round 21 many chunked task switches do not lose or leak pieces", async () => {
+  const session = new ManualMemorySession();
+  const chunksPerTask = 4;
+  const taskCount = 8;
+  const expectedByTask = new Map<string, string[]>();
+  const taskIdBySource = new Map<string, string>();
+  const allExpectedPieceIds: string[] = [];
+  const chunkClients: StructuredClients = {
+    taskRoute: () => Promise.resolve({ kind: "same_task" }),
+    sourceChunkBatch: (request) =>
+      Promise.resolve({
+        results: request.sources.map((source) => {
+          const taskMatch = /^task_(\d+)_source$/.exec(source.sourceId);
+          assert(taskMatch, `unexpected source id ${source.sourceId}`);
+          const taskIndex = Number(taskMatch[1]);
+          return {
+            sourceId: source.sourceId,
+            selectors: [{
+              kind: "chunks",
+              chunks: Array.from({ length: chunksPerTask }, (_, chunkIndex) => ({
+                startText: `BEGIN TASK ${taskIndex} CHUNK ${chunkIndex}`,
+                endText: `END TASK ${taskIndex} CHUNK ${chunkIndex}`,
+              })),
+            }],
+          };
+        }),
+      }),
+    pieceDropBatch: (request) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: false,
+          reason: null,
+        })),
+      }),
+  };
+  const dropOldOnNewTask: MemoryManagerClients = {
+    ...keepAllClients,
+    pieceDropBatch: (request: PieceDropBatchRequest) =>
+      Promise.resolve({
+        decisions: request.evaluatedPieces.map((piece) => ({
+          pieceId: piece.id,
+          drop: request.taskRoute.kind === "new_task" &&
+            (piece.createdSeq ?? 0) < (request.activeTask?.startedRound ?? 0),
+          reason: request.taskRoute.kind === "new_task" &&
+              (piece.createdSeq ?? 0) < (request.activeTask?.startedRound ?? 0)
+            ? "old_task_after_confirmed_task_switch"
+            : null,
+        })),
+      }),
+  };
+
+  for (let taskIndex = 0; taskIndex < taskCount; taskIndex += 1) {
+    const taskNumber = taskIndex + 1;
+    const sourceId = `task_${taskNumber}_source`;
+    const expectedTokens = Array.from(
+      { length: chunksPerTask },
+      (_, chunkIndex) => `TASK_${taskNumber}_CHUNK_${chunkIndex}_VALUE`,
+    );
+    const expectedPieceIds = Array.from(
+      { length: chunksPerTask },
+      (_, chunkIndex) => `${sourceId}:${chunkIndex}`,
+    );
+    allExpectedPieceIds.push(...expectedPieceIds);
+    expectedByTask.set(sourceId, expectedTokens);
+    const chunked = await chunkRoundSources([{
+      sourceId,
+      sourceKind: "tool",
+      toolName: "exec_command",
+      payload: chunkedTaskPayload(taskNumber, chunksPerTask),
+    }], chunkClients);
+
+    assertEquals(chunked.pieces.length, chunksPerTask);
+    assertEquals(chunked.pieces.map((piece) => piece.id), expectedPieceIds);
+    for (const token of expectedTokens) {
+      assert(
+        chunked.pieces.some((piece) => piece.previewText.includes(token)),
+        `chunking omitted ${token}`,
+      );
+    }
+
+    const update = await session.roundMany(
+      chunked.pieces,
+      { kind: "new_task" },
+      taskIndex === 0 ? keepAllClients : dropOldOnNewTask,
+    );
+    taskIdBySource.set(sourceId, session.state.activeTask?.id ?? "");
+
+    const activeIds = session.pieceIds();
+    assertEquals(activeIds, expectedPieceIds);
+    assertEquals(session.state.activeTask?.pieceIds, expectedPieceIds);
+    assertEquals(
+      session.state.pieces.map((piece) => piece.sourceId),
+      expectedPieceIds.map(() => sourceId),
+    );
+    if (taskIndex === 0) {
+      assertEquals(update.acceptedPruneDropPieceIds, []);
+      assertEquals(session.state.archivedTasks.length, 0);
+    } else {
+      const previousSourceId = `task_${taskIndex}_source`;
+      const previousPieceIds = Array.from(
+        { length: chunksPerTask },
+        (_, chunkIndex) => `${previousSourceId}:${chunkIndex}`,
+      );
+      assertEquals(update.acceptedPruneDropPieceIds.sort(), previousPieceIds);
+      assertEquals(update.droppedOldPieceIds.sort(), previousPieceIds);
+      assertEquals(session.state.archivedTasks.length, taskIndex);
+      const archivedPrevious = session.state.archivedTasks.find((task) =>
+        task.id === taskIdBySource.get(previousSourceId)
+      );
+      assert(archivedPrevious, `missing archived task for ${previousSourceId}`);
+      assertEquals(archivedPrevious.pieces.map((piece) => piece.id), previousPieceIds);
+    }
+
+    for (let priorTaskNumber = 1; priorTaskNumber < taskNumber; priorTaskNumber += 1) {
+      const priorSourceId = `task_${priorTaskNumber}_source`;
+      const archived = session.state.archivedTasks.find((task) =>
+        task.id === taskIdBySource.get(priorSourceId)
+      );
+      assert(archived, `missing archived task for ${priorSourceId} after task ${taskNumber}`);
+      assertEquals(archived.pieces.length, chunksPerTask);
+      assertEquals(
+        archived.pieces.every((piece) => piece.sourceId === priorSourceId),
+        true,
+      );
+    }
+
+    const prompt = session.prompt();
+    for (const token of expectedTokens) {
+      assert(prompt.includes(token), `active prompt missing ${token}`);
+    }
+    for (const [priorSourceId, priorTokens] of expectedByTask) {
+      if (priorSourceId === sourceId) {
+        continue;
+      }
+      for (const token of priorTokens) {
+        assert(!prompt.includes(token), `prior task token leaked into prompt: ${token}`);
+      }
+    }
+
+    const allMemoryPiecesNow = [
+      ...session.state.pieces,
+      ...session.state.archivedTasks.flatMap((task) => task.pieces),
+    ];
+    const expectedSeenCount = taskNumber * chunksPerTask;
+    assertEquals(allMemoryPiecesNow.length, expectedSeenCount);
+    assertEquals(
+      new Set(allMemoryPiecesNow.map((piece) => piece.id)).size,
+      expectedSeenCount,
+    );
+    for (const expectedId of allExpectedPieceIds) {
+      assert(
+        allMemoryPiecesNow.some((piece) => piece.id === expectedId),
+        `missing piece after task ${taskNumber}: ${expectedId}`,
+      );
+    }
+  }
+
+  assertEquals(session.state.pieces.length, chunksPerTask);
+  assertEquals(session.state.archivedTasks.length, taskCount - 1);
+  assertEquals(session.state.activeTask?.pieceIds, [
+    "task_8_source:0",
+    "task_8_source:1",
+    "task_8_source:2",
+    "task_8_source:3",
+  ]);
+  assertEquals(
+    session.state.archivedTasks.every((task) => task.pieces.length === chunksPerTask),
+    true,
+  );
+
+  const allMemoryPieces = [
+    ...session.state.pieces,
+    ...session.state.archivedTasks.flatMap((task) => task.pieces),
+  ];
+  assertEquals(allMemoryPieces.length, taskCount * chunksPerTask);
+  assertEquals(new Set(allMemoryPieces.map((piece) => piece.id)).size, allMemoryPieces.length);
+  for (const [sourceId, expectedTokens] of expectedByTask) {
+    const pieces = allMemoryPieces.filter((piece) => piece.sourceId === sourceId);
+    assertEquals(pieces.length, chunksPerTask);
+    for (const token of expectedTokens) {
+      assert(
+        pieces.some((piece) => piece.previewText.includes(token)),
+        `missing ${token}`,
+      );
+    }
+  }
+
+  const prompt = session.prompt();
+  assert(prompt.includes("TASK_8_CHUNK_0_VALUE"));
+  assert(prompt.includes("TASK_8_CHUNK_3_VALUE"));
+  assert(!prompt.includes("TASK_1_CHUNK_0_VALUE"));
+  assert(!prompt.includes("TASK_7_CHUNK_3_VALUE"));
+
+  const task7Id = taskIdBySource.get("task_7_source");
+  const task7ArchiveIndex = session.state.archivedTasks.findIndex((task) => task.id === task7Id);
+  assert(task7ArchiveIndex >= 0, "task 7 should be archived before revive");
+  const relativeIndex = task7ArchiveIndex - session.state.archivedTasks.length;
+  const revive = await session.roundMany(
+    [draft("revive_task_7:0", "revive_task_7", "user", "pick up task 7 again")],
+    { kind: "revive_task", relativeIndex },
+  );
+
+  assertEquals(revive.taskRoute, { kind: "revive_task", relativeIndex });
+  assertEquals(session.state.activeTask?.id, task7Id);
+  assertEquals(session.state.pieces.map((piece) => piece.id), [
+    "task_7_source:0",
+    "task_7_source:1",
+    "task_7_source:2",
+    "task_7_source:3",
+    "revive_task_7:0",
+  ]);
+  const revivedPrompt = session.prompt();
+  for (let chunkIndex = 0; chunkIndex < chunksPerTask; chunkIndex += 1) {
+    assert(
+      revivedPrompt.includes(`TASK_7_CHUNK_${chunkIndex}_VALUE`),
+      `revived prompt missing task 7 chunk ${chunkIndex}`,
+    );
+  }
+  assert(!revivedPrompt.includes("TASK_8_CHUNK_0_VALUE"));
+  assert(
+    session.state.archivedTasks.some((task) =>
+      task.id === taskIdBySource.get("task_8_source") &&
+      task.pieces.map((piece) => piece.id).join(",") ===
+        "task_8_source:0,task_8_source:1,task_8_source:2,task_8_source:3"
+    ),
+  );
 });
 
 function emptyState(): MemoryState {
@@ -898,6 +1127,17 @@ function draft(
     byteSize: text.length,
     selector: { kind: "whole" },
   };
+}
+
+function chunkedTaskPayload(taskIndex: number, chunksPerTask: number): string {
+  return Array.from({ length: chunksPerTask }, (_, chunkIndex) =>
+    [
+      `BEGIN TASK ${taskIndex} CHUNK ${chunkIndex}`,
+      `TASK_${taskIndex}_CHUNK_${chunkIndex}_VALUE`,
+      `task ${taskIndex} chunk ${chunkIndex} detail line A`,
+      `task ${taskIndex} chunk ${chunkIndex} detail line B`,
+      `END TASK ${taskIndex} CHUNK ${chunkIndex}`,
+    ].join("\n")).join("\n\n");
 }
 
 function requestBody(text: string): Record<string, unknown> {

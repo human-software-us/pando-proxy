@@ -56,7 +56,12 @@ export type StructuredModelFailureDiagnostics = {
   selectionReason: StructuredModelSelection["selectionReason"];
   attempt: number;
   durationMs: number;
-  failureKind: "http_error" | "no_output_text" | "invalid_json" | "unexpected_error";
+  failureKind:
+    | "http_error"
+    | "no_output_text"
+    | "invalid_json"
+    | "validation_error"
+    | "unexpected_error";
   responseStatus?: number;
   responseContentType?: string | null;
   bodyBytes?: number;
@@ -69,6 +74,8 @@ export type StructuredModelFailureDiagnostics = {
   outputItemTypes?: string[];
   outputContentTypes?: string[];
   usage?: UsageMetrics | null;
+  requestBody?: unknown;
+  responseBody?: unknown;
   message: string;
 };
 
@@ -153,8 +160,18 @@ export function createStructuredClients(
         onWireResponse,
       );
       await emitUsage(result, onUsage);
-      assertValidTaskRouteResponse(result.value);
-      return normalizeTaskRouteResponse(result.value);
+      try {
+        assertValidTaskRouteResponse(result.value);
+        return normalizeTaskRouteResponse(result.value);
+      } catch (error) {
+        await onError?.(validationFailureDiagnostics(
+          result,
+          request,
+          result.value,
+          messageFor(error),
+        ));
+        throw error;
+      }
     },
     sourceChunkBatch: async (request, attempt = 1) => {
       const inputText = renderSourceChunkBatchInput(request);
@@ -201,8 +218,18 @@ export function createStructuredClients(
         inputText,
       );
       await emitUsage(result, onUsage);
-      assertValidSourceChunkBatchResponse(request, result.value);
-      return normalizeSourceChunkBatchResponse(request, result.value);
+      try {
+        assertValidSourceChunkBatchResponse(request, result.value);
+        return normalizeSourceChunkBatchResponse(request, result.value);
+      } catch (error) {
+        await onError?.(validationFailureDiagnostics(
+          result,
+          request,
+          result.value,
+          messageFor(error),
+        ));
+        throw error;
+      }
     },
     pieceDropBatch: async (request, attempt = 1) => {
       const schema = pieceDropBatchJsonSchema(request);
@@ -221,8 +248,18 @@ export function createStructuredClients(
         onWireResponse,
       );
       await emitUsage(result, onUsage);
-      assertValidPieceDropBatchWireResponse(request, result.value);
-      return normalizePieceDropBatchResponse(request, result.value);
+      try {
+        assertValidPieceDropBatchWireResponse(request, result.value);
+        return normalizePieceDropBatchResponse(request, result.value);
+      } catch (error) {
+        await onError?.(validationFailureDiagnostics(
+          result,
+          request,
+          result.value,
+          messageFor(error),
+        ));
+        throw error;
+      }
     },
     pruneBatchTokenLimit: Math.max(
       1,
@@ -255,6 +292,26 @@ async function emitUsage<T>(
     outputTokens: result.usage?.outputTokens,
     totalTokens: result.usage?.totalTokens,
   });
+}
+
+function validationFailureDiagnostics<T>(
+  result: StructuredJsonCallResult<T>,
+  requestBody: unknown,
+  responseBody: unknown,
+  message: string,
+): StructuredModelFailureDiagnostics {
+  return {
+    ...baseFailureDiagnostics(
+      result.selection,
+      result.attempt,
+      result.durationMs,
+      "validation_error",
+      message,
+    ),
+    requestBody: loggableBody(requestBody),
+    responseBody,
+    usage: result.usage,
+  };
 }
 
 export function canFitOverflowModel(
@@ -385,6 +442,8 @@ async function callStructuredJson<T>(
         responseStatus: response.status,
         responseContentType: response.headers.get("content-type"),
         bodyBytes: byteLength(text),
+        requestBody: loggableBody(requestBody),
+        responseBody: text,
       });
       throw new Error(message);
     }
@@ -418,6 +477,8 @@ async function callStructuredJson<T>(
         responseContentType: response.headers.get("content-type"),
         bodyBytes: byteLength(bodyText),
         bodyLooksLikeEventStream,
+        requestBody: loggableBody(requestBody),
+        responseBody: bodyText,
       });
       throw new Error(message);
     }
@@ -429,12 +490,29 @@ async function callStructuredJson<T>(
         ...baseFailureDiagnostics(selection, attempt, durationMs, "no_output_text", message),
         ...summarizeStructuredResponseBody(response, bodyText, parsedBody),
         usage,
+        requestBody: loggableBody(requestBody),
+        responseBody: bodyText,
       });
       throw new Error(message);
     }
     const usage = extractUsageMetricsFromStructuredResponse(response, bodyText);
+    let value: T;
+    try {
+      value = extractJsonObject(text) as T;
+    } catch (error) {
+      const message = messageFor(error);
+      errorLogged = true;
+      await onError?.({
+        ...baseFailureDiagnostics(selection, attempt, durationMs, "invalid_json", message),
+        ...summarizeStructuredResponseBody(response, bodyText, parsedBody),
+        usage,
+        requestBody: loggableBody(requestBody),
+        responseBody: bodyText,
+      });
+      throw error;
+    }
     return {
-      value: extractJsonObject(text) as T,
+      value,
       usage,
       selection,
       attempt,
@@ -451,6 +529,7 @@ async function callStructuredJson<T>(
           "unexpected_error",
           message,
         ),
+        requestBody: loggableBody(requestBody),
       });
     }
     throw error;
