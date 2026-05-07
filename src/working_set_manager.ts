@@ -13,7 +13,6 @@ import {
   type SourceKind,
   unique,
 } from "./memory_state.ts";
-import type { TextSpan } from "./source_selectors.ts";
 
 export type TaskRouteRequest = {
   activeTask: ActiveTask | null;
@@ -103,7 +102,7 @@ export type SourceChunkBatchResponse = {
     sourceId: string;
     selectors: Array<
       | { kind: "whole" }
-      | { kind: "text_spans"; spans: TextSpan[] }
+      | { kind: "chunks"; chunks: Array<{ text: string }> }
     >;
   }>;
 };
@@ -119,6 +118,7 @@ export type MemoryManagerClients = {
     attempt?: number,
   ) => Promise<PieceDropBatchResponse>;
   pruneBatchTokenLimit?: number;
+  pruneSingleBatchTokenLimit?: number;
 };
 
 export type AppliedWorkingSetUpdate = {
@@ -154,6 +154,7 @@ const STRUCTURAL_DROP_REASONS = new Set<DropReason>([
   "empty_or_invalid",
 ]);
 const DEFAULT_PRUNE_BATCH_TOKEN_LIMIT = 180_000;
+const DEFAULT_PRUNE_SINGLE_BATCH_TOKEN_LIMIT = 996_000;
 const APPROX_CHARS_PER_TOKEN = 4;
 
 export async function requestTaskRoute(
@@ -232,6 +233,9 @@ export async function applyWorkingSetUpdate(
       .filter((piece) => piece.sourceKind === "user")
       .map((piece) => piece.id),
     tokenLimit: clients.pruneBatchTokenLimit ?? DEFAULT_PRUNE_BATCH_TOKEN_LIMIT,
+    singleBatchTokenLimit: clients.pruneSingleBatchTokenLimit ??
+      clients.pruneBatchTokenLimit ??
+      DEFAULT_PRUNE_SINGLE_BATCH_TOKEN_LIMIT,
   });
 
   const dropDecisions: PieceDropDecision[] = [];
@@ -573,6 +577,7 @@ function buildPruneBatches(input: {
   renderedById: Map<string, string>;
   latestUserPieceIds: string[];
   tokenLimit: number;
+  singleBatchTokenLimit: number;
 }): PieceDropBatchRequest[] {
   const manifestBase = input.candidatePieces.map((piece) => pieceManifestEntry(piece, false));
   const latestUserPieces = input.latestUserPieceIds
@@ -622,7 +627,13 @@ function buildPruneBatches(input: {
       input.candidatePieces,
       [full],
     );
-    if (estimatedTokens(asSingle) > input.tokenLimit) {
+    const singleTokens = estimatedTokens(asSingle);
+    if (singleTokens > input.singleBatchTokenLimit) {
+      continue;
+    }
+    if (singleTokens > input.tokenLimit) {
+      flush();
+      batches.push(asSingle);
       continue;
     }
     const next = batchRequest(

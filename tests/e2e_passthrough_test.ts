@@ -378,12 +378,8 @@ function structuredResponse(classifier: string, body: Record<string, unknown>): 
   const payload = structuredPayload(body);
   let value: Record<string, unknown>;
   if (classifier === "source_chunk_batch") {
-    const request = JSON.parse(payload) as {
-      sources: Array<{ sourceId: string; contentText: string }>;
-    };
-    const returnedSources = request.sources.length > 1
-      ? request.sources.slice(0, -1)
-      : request.sources;
+    const sources = parseStructuredChunkSources(payload);
+    const returnedSources = sources.length > 1 ? sources.slice(0, -1) : sources;
     value = {
       results: returnedSources.map((source) => {
         const start = source.contentText.indexOf("BEGIN_EXACT");
@@ -392,7 +388,10 @@ function structuredResponse(classifier: string, body: Record<string, unknown>): 
         return {
           sourceId: source.sourceId,
           selectors: start >= 0 && end >= start
-            ? [{ kind: "text_spans", spans: [{ start, end: end + endMarker.length }] }]
+            ? [{
+              kind: "chunks",
+              chunks: [{ text: source.contentText.slice(start, end + endMarker.length) }],
+            }]
             : [{ kind: "whole" }],
         };
       }),
@@ -439,6 +438,21 @@ function structuredResponse(classifier: string, body: Record<string, unknown>): 
     }],
     usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 },
   });
+}
+
+function parseStructuredChunkSources(
+  payload: string,
+): Array<{ sourceId: string; contentText: string }> {
+  const sources: Array<{ sourceId: string; contentText: string }> = [];
+  const pattern =
+    /<source sourceId=("[^"]+") sourceKind="[^"]+"(?: toolName="[^"]+")? length=\d+>\n<raw_source_body>\n([\s\S]*?)\n<\/raw_source_body>\n<\/source>/g;
+  for (const match of payload.matchAll(pattern)) {
+    sources.push({
+      sourceId: JSON.parse(match[1]) as string,
+      contentText: match[2],
+    });
+  }
+  return sources;
 }
 
 function structuredPayload(body: Record<string, unknown>): string {

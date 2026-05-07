@@ -194,7 +194,7 @@ function renderMaterializedContent(content: unknown): string {
 
 function isTextSpanSelection(value: unknown): value is TextSpanSelection {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
-    (value as Record<string, unknown>).kind === "text_spans";
+    (value as Record<string, unknown>).kind === "chunks";
 }
 
 async function atomicWriteText(path: string, text: string): Promise<void> {

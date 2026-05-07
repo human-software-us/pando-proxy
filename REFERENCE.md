@@ -7,7 +7,7 @@ This document describes the current shipped runtime contracts.
 ```ts
 type ChunkSelector =
   | { kind: "whole" }
-  | { kind: "text_spans"; spans: Array<{ start: number; end: number }> }
+  | { kind: "chunks"; chunks: Array<{ start: number; end: number }> }
   | { kind: "object_path"; path: Array<string | number> };
 
 type ActiveTask = {
@@ -186,6 +186,30 @@ candidate set, and the piece was created before the new task's `startedRound`.
 
 ### `source_chunk_batch`
 
+Chunking asks the model for `whole` or exact copied chunk text. It never asks for summaries, labels,
+content types, boundary classifications, or character offsets. The request representation shown to
+the model and the source representation used for materialization must be the same raw source text.
+
+Selector contract:
+
+```ts
+type SourceChunkBatchResponse = {
+  results: Array<{
+    sourceId: string;
+    selectors: Array<
+      | { kind: "whole" }
+      | { kind: "chunks"; chunks: Array<{ text: string }> }
+    >;
+  }>;
+};
+```
+
+For `chunks`, `text` must be the complete chunk copied exactly from the raw source body shown to the
+model. Local code finds every exact occurrence of each quoted chunk and converts those matches to
+the persisted `[start,end)` selectors shown in `ChunkSelector`.
+
+Request shape:
+
 ```ts
 type SourceChunkBatchRequest = {
   sources: Array<{
@@ -202,19 +226,23 @@ type SourceChunkBatchResponse = {
     sourceId: string;
     selectors: Array<
       | { kind: "whole" }
-      | { kind: "text_spans"; spans: Array<{ start: number; end: number }> }
+      | { kind: "chunks"; chunks: Array<{ text: string }> }
     >;
   }>;
 };
 ```
 
-Chunking returns selectors only; it never rewrites source content.
+If coherent chunks cannot be selected and validated, the correct result is `whole`, not an
+approximate split.
 
 Validation rules:
 
 - returned `sourceId` values must be in the request
 - duplicate returned `sourceId` values are invalid
 - selectors must be structurally valid
+- chunk text must be non-empty exact text from the raw source body
+- each exact occurrence of quoted chunk text is materialized as a persisted chunk
+- malformed, missing, changed, overlapping, or otherwise non-exact chunks are invalid
 - if a requested source is omitted from `results`, the proxy creates a single `whole` selector for
   that source
 - if the whole chunk request cannot fit even in the overflow structured window, the proxy skips the

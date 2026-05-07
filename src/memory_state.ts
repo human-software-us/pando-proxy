@@ -2,7 +2,7 @@ import type { TextSpan } from "./source_selectors.ts";
 
 export type ChunkSelector =
   | { kind: "whole" }
-  | { kind: "text_spans"; spans: TextSpan[] }
+  | { kind: "chunks"; chunks: TextSpan[] }
   | { kind: "object_path"; path: Array<string | number> };
 
 export type SourceKind = "user" | "assistant" | "tool" | "tool_call";

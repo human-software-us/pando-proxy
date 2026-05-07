@@ -55,6 +55,32 @@ incoming request
     +--> finalize memory after response
 ```
 
+## 2a. Request/response sequence
+
+```text
+Codex client          pando-proxy                       Upstream (Responses)
+     |                     |                                     |
+     |---- Responses ----->|                                     |
+     |                     | load session state                  |
+     |                     | materialize active pieces           |
+     |                     | inject <pando_task_memory> block    |
+     |                     |---- rewritten Responses ----------->|
+     |                     |<--- SSE stream ---------------------|
+     |                     | tee SSE to client; observe sources  |
+     |<-- SSE stream ------|                                     |
+     |                     |                                     |
+     |       (model may call recall mid-stream)                  |
+     |                     | resolve archived sources locally    |
+     |                     |                                     |
+     | end of round:       |                                     |
+     |                     | source_chunk_batch + task_route     |
+     |                     |       (in parallel)                 |
+     |                     | apply route, build candidates       |
+     |                     | piece_drop_batch (one or more)      |
+     |                     | apply sanity guard, collapse dups   |
+     |                     | persist active state + archive raw  |
+```
+
 ## 3. Active memory vs archive
 
 ```text
@@ -70,6 +96,31 @@ ARCHIVE
   - reachable only through recall({offset,limit})
   - no per-call item cap
   - recovery only, not a second active-memory tier
+```
+
+## 3a. Prune batch sizing
+
+```text
+small structured window  --|                              |-- overflow structured window
+                           |                              |
+                           v                              v
+  0 ============================================================================
+                  ^                            ^
+                  |                            |
+       pruneBatchTokenLimit         pruneSingleBatchTokenLimit
+       = floor((small - reserve)    = overflow - reserve
+                * 0.70)             (reserve = OUTPUT_TOKEN_RESERVE = 4_096)
+
+ multi-piece batches ---------|
+ packed under 70% of small    |
+                              v
+ single-piece batches ---------------------------------|
+ a piece that exceeds tokenLimit but fits              |
+ singleBatchTokenLimit is flushed and sent alone       v
+ (chooseStructuredModel routes it to overflow model)
+
+ single piece that does not fit singleBatchTokenLimit ---> kept unevaluated
+ (entire batch including shared header + manifest must fit)
 ```
 
 ## 4. Recall path

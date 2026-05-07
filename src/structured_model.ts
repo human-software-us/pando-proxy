@@ -99,6 +99,7 @@ export type StructuredClients = {
     attempt?: number,
   ) => Promise<PieceDropBatchResponse>;
   pruneBatchTokenLimit?: number;
+  pruneSingleBatchTokenLimit?: number;
 };
 
 type PieceDropDecisionBody = {
@@ -156,20 +157,21 @@ export function createStructuredClients(
       return normalizeTaskRouteResponse(result.value);
     },
     sourceChunkBatch: async (request, attempt = 1) => {
+      const inputText = renderSourceChunkBatchInput(request);
       if (
-        !canFitOverflowModel(
+        !canFitOverflowModelInputText(
           config,
           sourceChunkBatchSystemPrompt,
-          request,
+          inputText,
           sourceChunkBatchJsonSchema,
         )
       ) {
         await onSkipped?.({
           classifier: "source_chunk_batch",
           requestModel,
-          estimatedInputTokens: estimateStructuredInputTokens(
+          estimatedInputTokens: estimateStructuredInputTextTokens(
             sourceChunkBatchSystemPrompt,
-            request,
+            inputText,
             sourceChunkBatchJsonSchema,
           ),
           reason: "exceeds_overflow_window",
@@ -196,6 +198,7 @@ export function createStructuredClients(
         onError,
         onWireRequest,
         onWireResponse,
+        inputText,
       );
       await emitUsage(result, onUsage);
       assertValidSourceChunkBatchResponse(request, result.value);
@@ -224,6 +227,10 @@ export function createStructuredClients(
     pruneBatchTokenLimit: Math.max(
       1,
       Math.floor((config.smallStructuredContextWindow - OUTPUT_TOKEN_RESERVE) * 0.7),
+    ),
+    pruneSingleBatchTokenLimit: Math.max(
+      1,
+      config.overflowStructuredContextWindow - OUTPUT_TOKEN_RESERVE,
     ),
   };
 }
@@ -260,13 +267,31 @@ export function canFitOverflowModel(
     config.overflowStructuredContextWindow - OUTPUT_TOKEN_RESERVE;
 }
 
+function canFitOverflowModelInputText(
+  config: ProxyConfig,
+  system: string,
+  inputText: string,
+  schema: JsonSchema,
+): boolean {
+  return estimateStructuredInputTextTokens(system, inputText, schema) <=
+    config.overflowStructuredContextWindow - OUTPUT_TOKEN_RESERVE;
+}
+
 export function estimateStructuredInputTokens(
   system: string,
   payload: unknown,
   schema: JsonSchema,
 ): number {
+  return estimateStructuredInputTextTokens(system, stableJson(payload), schema);
+}
+
+function estimateStructuredInputTextTokens(
+  system: string,
+  inputText: string,
+  schema: JsonSchema,
+): number {
   return Math.ceil(
-    (system.length + stableJson(payload).length + stableJson(schema).length) /
+    (system.length + inputText.length + stableJson(schema).length) /
       APPROX_CHARS_PER_TOKEN,
   );
 }
@@ -284,6 +309,7 @@ async function callStructuredJson<T>(
   onError?: (diagnostics: StructuredModelFailureDiagnostics) => Promise<void> | void,
   onWireRequest?: (wire: StructuredModelWireLog) => Promise<void> | void,
   onWireResponse?: (wire: StructuredModelWireLog) => Promise<void> | void,
+  inputTextOverride?: string,
 ): Promise<StructuredJsonCallResult<T>> {
   if (!authHeader) {
     throw new Error(
@@ -298,9 +324,11 @@ async function callStructuredJson<T>(
     payload,
     schema,
     classifier,
+    inputTextOverride,
   );
   await onSelection?.(selection);
   const url = responsesUrl(resolveUpstreamBaseUrl(config.upstreamBaseUrl, authHeader));
+  const inputText = inputTextOverride ?? stableJson(payload);
   const requestBody = {
     model: selection.chosenModel,
     instructions: system,
@@ -316,7 +344,7 @@ async function callStructuredJson<T>(
     },
     input: [{
       role: "user",
-      content: [{ type: "input_text", text: stableJson(payload) }],
+      content: [{ type: "input_text", text: inputText }],
     }],
   };
   await onWireRequest?.({
@@ -560,8 +588,11 @@ function chooseStructuredModel(
   payload: unknown,
   schema: JsonSchema,
   classifier: StructuredModelSelection["classifier"],
+  inputTextOverride?: string,
 ): StructuredModelSelection {
-  const estimatedInputTokens = estimateStructuredInputTokens(system, payload, schema);
+  const estimatedInputTokens = inputTextOverride === undefined
+    ? estimateStructuredInputTokens(system, payload, schema)
+    : estimateStructuredInputTextTokens(system, inputTextOverride, schema);
   if (estimatedInputTokens <= config.smallStructuredContextWindow - OUTPUT_TOKEN_RESERVE) {
     return {
       classifier,
@@ -817,6 +848,34 @@ function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
+function renderSourceChunkBatchInput(request: SourceChunkBatchRequest): string {
+  const lines = [
+    "Return chunk selectors for these sources.",
+    "For each source, return exactly one of:",
+    '- {"kind":"whole"}',
+    '- {"kind":"chunks","chunks":[{"text":"exact chunk copied from the source"}]}',
+    "For chunks, return the whole chunk text exactly as it appears in the raw source body.",
+    "Do not return summaries, labels, content types, or character offsets.",
+    "If exact coherent chunks are not clear, return whole for that source.",
+    "",
+  ];
+  for (const source of request.sources) {
+    lines.push(
+      `<source sourceId=${JSON.stringify(source.sourceId)} sourceKind=${
+        JSON.stringify(source.sourceKind)
+      }${
+        source.toolName ? ` toolName=${JSON.stringify(source.toolName)}` : ""
+      } length=${source.contentText.length}>`,
+      "<raw_source_body>",
+      source.contentText,
+      "</raw_source_body>",
+      "</source>",
+      "",
+    );
+  }
+  return lines.join("\n");
+}
+
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -834,21 +893,20 @@ const chunkSelectorSchema = {
     {
       type: "object",
       properties: {
-        kind: { type: "string", enum: ["text_spans"] },
-        spans: {
+        kind: { type: "string", enum: ["chunks"] },
+        chunks: {
           type: "array",
           items: {
             type: "object",
             properties: {
-              start: { type: "integer", minimum: 0 },
-              end: { type: "integer", minimum: 0 },
+              text: { type: "string" },
             },
-            required: ["start", "end"],
+            required: ["text"],
             additionalProperties: false,
           },
         },
       },
-      required: ["kind", "spans"],
+      required: ["kind", "chunks"],
       additionalProperties: false,
     },
   ],
@@ -996,12 +1054,13 @@ Return JSON matching the supplied schema.
 Rules:
 - Process all listed sources together.
 - Do not summarize, paraphrase, or rewrite content.
+- Return only whole selectors or exact copied chunk text. Never return summaries, labels, content types, boundary kinds, or character offsets.
 - Return exact selectors only:
   - whole
-  - text_spans using exact character offsets into the provided contentText
-- Each text_spans selector may contain multiple ordered non-overlapping spans for one conceptual piece.
-- Keep spans in original order.
-- Do not invent or rewrite missing text. Select exact spans only.
+  - chunks with the complete exact chunk text copied from the raw source body shown for that source
+- Each chunks selector may contain multiple ordered non-overlapping chunks for one conceptual piece.
+- Keep chunks in original order.
+- Do not invent, rewrite, truncate, or paraphrase chunk text.
 - Prefer boundary-safe exact pieces over one huge whole selector when the source is large.
 - For large shell/search/test/log outputs, first split on conceptual boundaries: command sections, failure blocks, stack traces, assertion blocks, test-case sections, file blocks, path-prefix groups, or other visible separators.
 - For 'rg --files ...' output, each line is a path. Prefer conceptual groups by top-level directory, package, namespace, or subsystem path, for example consecutive blocks for 'src/metabase/api/...', 'src/metabase/search/...', 'test/metabase/...', or 'enterprise/backend/...'. Only fall back to bounded contiguous line ranges when no stable path grouping is visible.
@@ -1014,11 +1073,11 @@ Rules:
 - For XML/HTML/Markdown-like content, split on complete top-level sections, fenced blocks, headings, or repeated element boundaries when clear.
 - For code or diffs, split on complete files, hunks, top-level forms, declarations, or other syntax-visible boundaries when clear.
 - When a source contains wrapper instructions around a clearly delimited exact block, snippet, template, or data payload, select the payload block itself instead of the wrapper instructions.
-- For user messages that say things like "remember this exact block" or "use this exact snippet", prefer text_spans covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
+- For user messages that say things like "remember this exact block" or "use this exact snippet", prefer chunks covering the exact block/snippet/data and exclude transient wrapper lines such as "Reply X only" when the block boundaries are clear.
 - When the payload is delimited by clear markers such as fenced code blocks, BEGIN/END markers, XML-like tags, or repeated stanza boundaries, select the complete intended interior block instead of a partial prefix.
 - Exclude delimiter markers themselves when the user says they are wrapper text and not part of the exact retained content.
 - When a clearly delimited block or stanza sequence is selected, include the full intended block boundaries. Do not truncate mid-line, mid-stanza, or mid-block.
-- For structured JSON data, prefer whole objects or boundary-safe spans that keep complete fields/entries together.
+- For structured JSON data, prefer whole objects or boundary-safe chunks that keep complete fields/entries together.
 - For binary-like, base64-like, hex-dump-like, byte-array-like, image-metadata-like, or file-payload-like content, prefer whole unless there is an obvious safe boundary. Never split mid-token or mid-byte-sequence.
 - If splitting would be lossy or ambiguous, use whole; otherwise split large content so later pruning can keep useful regions without keeping the entire source.
 - Return JSON only.
@@ -1195,13 +1254,18 @@ function assertValidSourceChunkBatchResponse(
     if (!Array.isArray(item.selectors) || item.selectors.length === 0) {
       throw new Error(`${label}.selectors must be a non-empty array`);
     }
+    const source = request.sources.find((candidate) => candidate.sourceId === item.sourceId);
     for (const [selectorIndex, selector] of item.selectors.entries()) {
-      assertValidChunkSelector(selector, `${label}.selectors[${selectorIndex}]`);
+      assertValidChunkSelector(
+        selector,
+        `${label}.selectors[${selectorIndex}]`,
+        source?.contentText ?? "",
+      );
     }
   }
 }
 
-function assertValidChunkSelector(value: unknown, label: string): void {
+function assertValidChunkSelector(value: unknown, label: string, sourceText: string): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
   }
@@ -1209,22 +1273,21 @@ function assertValidChunkSelector(value: unknown, label: string): void {
   if (record.kind === "whole") {
     return;
   }
-  if (record.kind !== "text_spans") {
+  if (record.kind !== "chunks") {
     throw new Error(`${label}.kind is invalid`);
   }
-  if (!Array.isArray(record.spans) || record.spans.length === 0) {
-    throw new Error(`${label}.spans must be a non-empty array`);
+  if (!Array.isArray(record.chunks) || record.chunks.length === 0) {
+    throw new Error(`${label}.chunks must be a non-empty array`);
   }
-  for (const [spanIndex, span] of record.spans.entries()) {
-    if (!span || typeof span !== "object" || Array.isArray(span)) {
-      throw new Error(`${label}.spans[${spanIndex}] must be an object`);
+  for (const [chunkIndex, chunk] of record.chunks.entries()) {
+    if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+      throw new Error(`${label}.chunks[${chunkIndex}] must be an object`);
     }
-    const item = span as Record<string, unknown>;
+    const item = chunk as Record<string, unknown>;
     if (
-      typeof item.start !== "number" || !Number.isInteger(item.start) || item.start < 0 ||
-      typeof item.end !== "number" || !Number.isInteger(item.end) || item.end <= item.start
+      typeof item.text !== "string" || item.text.length === 0 || !sourceText.includes(item.text)
     ) {
-      throw new Error(`${label}.spans[${spanIndex}] must have integer start/end with end > start`);
+      throw new Error(`${label}.chunks[${chunkIndex}].text must be exact source text`);
     }
   }
 }
@@ -1292,19 +1355,18 @@ function coerceChunkSelector(
     return { kind: "whole" };
   }
   if (
-    record.kind === "text_spans" &&
-    Array.isArray(record.spans)
+    record.kind === "chunks" &&
+    Array.isArray(record.chunks)
   ) {
-    const spans = record.spans
-      .filter((span): span is Record<string, unknown> =>
-        Boolean(span) && typeof span === "object" && !Array.isArray(span)
+    const chunks = record.chunks
+      .filter((chunk): chunk is Record<string, unknown> =>
+        Boolean(chunk) && typeof chunk === "object" && !Array.isArray(chunk)
       )
-      .map((span) => ({
-        start: typeof span.start === "number" ? Math.trunc(span.start) : -1,
-        end: typeof span.end === "number" ? Math.trunc(span.end) : -1,
+      .map((chunk) => ({
+        text: typeof chunk.text === "string" ? chunk.text : "",
       }))
-      .filter((span) => span.start >= 0 && span.end > span.start);
-    return spans.length > 0 ? { kind: "text_spans", spans } : null;
+      .filter((chunk) => chunk.text.length > 0);
+    return chunks.length > 0 ? { kind: "chunks", chunks } : null;
   }
   return null;
 }

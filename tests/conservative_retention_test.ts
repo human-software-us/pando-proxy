@@ -419,6 +419,72 @@ Deno.test("applyWorkingSetUpdate accepts normalized prune decisions", async () =
   assertEquals(result.memory.pieces, []);
 });
 
+Deno.test("applyWorkingSetUpdate evaluates a single large piece above the normal prune batch limit", async () => {
+  const text = "large assistant chatter ".repeat(400);
+  const piece = draftKind("source_large:0", "source_large", "assistant", text);
+  const pruneRequests: PieceDropBatchRequest[] = [];
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pruneBatchTokenLimit: 1,
+    pruneSingleBatchTokenLimit: 50_000,
+    pieceDropBatch: (request: PieceDropBatchRequest) => {
+      pruneRequests.push(request);
+      return Promise.resolve({
+        decisions: request.evaluatedPieces.map((candidate) => ({
+          pieceId: candidate.id,
+          drop: candidate.id === piece.id,
+          reason: candidate.id === piece.id ? "pure_ack_or_chatter" : null,
+        })),
+      });
+    },
+  };
+
+  const result = await applyWorkingSetUpdate(
+    emptyState(),
+    [piece],
+    { kind: "new_task" },
+    clients,
+  );
+
+  assertEquals(pruneRequests.length, 1);
+  assertEquals(pruneRequests[0].evaluatedPieces.map((candidate) => candidate.id), [piece.id]);
+  assertEquals(result.droppedNewPieceIds, [piece.id]);
+  assertEquals(result.memory.pieces, []);
+});
+
+Deno.test("applyWorkingSetUpdate keeps a single large piece that exceeds the single batch limit", async () => {
+  const text = "large assistant chatter ".repeat(400);
+  const piece = draftKind("source_too_large:0", "source_too_large", "assistant", text);
+  const pruneRequests: PieceDropBatchRequest[] = [];
+  const clients: MemoryManagerClients = {
+    ...keepAllClients,
+    pruneBatchTokenLimit: 1,
+    pruneSingleBatchTokenLimit: 1,
+    pieceDropBatch: (request: PieceDropBatchRequest) => {
+      pruneRequests.push(request);
+      return Promise.resolve({
+        decisions: request.evaluatedPieces.map((candidate) => ({
+          pieceId: candidate.id,
+          drop: true,
+          reason: "pure_ack_or_chatter",
+        })),
+      });
+    },
+  };
+
+  const result = await applyWorkingSetUpdate(
+    emptyState(),
+    [piece],
+    { kind: "new_task" },
+    clients,
+  );
+
+  assertEquals(pruneRequests.length, 0);
+  assertEquals(result.keptNewPieceIds, [piece.id]);
+  assertEquals(result.droppedNewPieceIds, []);
+  assertEquals(result.memory.pieces.map((memoryPiece) => memoryPiece.id), [piece.id]);
+});
+
 Deno.test("applyWorkingSetUpdate archives old task identity and can rescue old pieces on a new task", async () => {
   const oldPiece = memoryPiece("source_old:0", "source_old", "old task fact");
   const state: MemoryState = {

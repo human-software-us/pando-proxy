@@ -30,22 +30,32 @@
    - `piece_drop_batch`
    - `source_chunk_batch`
 
-6. Local code is structural only.
+6. Chunking returns exact selectors only.
+   - show the model the exact raw source text that local code will materialize
+   - do not ask the model for character offsets
+   - model output is only `whole` or exact copied chunk text
+   - no summaries, labels, content types, or boundary classifications
+   - local code maps exact chunk text to persisted `[start,end)` selectors
+   - repeated exact chunk text in one source materializes every occurrence
+   - if returned chunks are not exact and valid, keep the source whole
+   - line/window splitting is only an oversized deterministic fallback, not the semantic goal
+
+7. Local code is structural only.
    - persistence
    - selector materialization
    - archive fetch
    - deterministic duplicate collapse before same-task prune and after new-task prune
    - applying manager outputs
    - structural fallback like omitted or oversized chunk batches -> `whole`
-   - selector normalization for valid manager output
+   - selector validation/materialization for valid manager output
 
-7. Recall is call-count bounded and item-count unbounded.
+8. Recall is call-count bounded and item-count unbounded.
    - `recall({offset,limit})`
    - max 3 calls per round
    - no per-call item cap
    - archive only
 
-8. Validation is live.
+9. Validation is live.
    - real backend calls
    - logs and persisted state
    - unit tests only cover local regressions

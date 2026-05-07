@@ -9,7 +9,7 @@ export type TextSpan = {
 };
 
 export type TextSpanSelection = {
-  kind: "text_spans";
+  kind: "chunks";
   sourceTextLength: number;
   segments: Array<TextSpan & { text: string }>;
 };
@@ -33,7 +33,7 @@ export function materializeTextSpans(
 ): TextSpanSelection {
   const text = sourceTextView(source);
   return {
-    kind: "text_spans",
+    kind: "chunks",
     sourceTextLength: text.length,
     segments: normalizeSpans(spans, text.length).map((span) => ({
       ...span,
@@ -72,6 +72,29 @@ export function previewForRenderedText(text: string): string {
 export function exactByteSizeForSelection(selection: TextSpanSelection): number {
   return new TextEncoder().encode(selection.segments.map((segment) => segment.text).join(""))
     .byteLength;
+}
+
+export function hasSafeTextChunkBoundaries(text: string, span: TextSpan): boolean {
+  return isSafeTextBoundary(text, span.start) && isSafeTextBoundary(text, span.end);
+}
+
+function isSafeTextBoundary(text: string, offset: number): boolean {
+  if (offset === 0 || offset === text.length) {
+    return true;
+  }
+  if (offset < 0 || offset > text.length) {
+    return false;
+  }
+  const before = text[offset - 1] ?? "";
+  const after = text[offset] ?? "";
+  if (/\s/.test(before) || /\s/.test(after)) {
+    return true;
+  }
+  return isBoundaryPunctuation(before) || isBoundaryPunctuation(after);
+}
+
+function isBoundaryPunctuation(char: string): boolean {
+  return char.length === 1 && /[()[\]{}<>,;:|]/.test(char);
 }
 
 function normalizeSpans(spans: TextSpan[], textLength: number): TextSpan[] {

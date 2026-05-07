@@ -202,12 +202,15 @@ collapsing into a final assistant answer or chatter while still allowing real ta
 
 ## Batch Sizing
 
-Each prune batch is bounded to about 70% of the small structured model context window.
+Normal multi-piece prune batches are bounded to about 70% of the small structured model context
+window. A single large piece can still be evaluated in a one-piece batch up to the overflow
+structured model context window.
 
 Sizing algorithm:
 
 ```ts
 tokenLimit = floor((smallStructuredContextWindow - outputReserve) * 0.70)
+singleBatchTokenLimit = overflowStructuredContextWindow - outputReserve
 
 sharedHeader = route
   + latest user full payloads
@@ -219,8 +222,11 @@ payloadBudget = tokenLimit - estimate(sharedHeader)
 for candidate in chronological order:
   if candidate has no materialized full payload:
     keep
-  else if candidate plus sharedHeader cannot fit:
+  else if candidate plus sharedHeader cannot fit singleBatchTokenLimit:
     keep
+  else if candidate plus sharedHeader cannot fit tokenLimit:
+    flush current batch
+    evaluate candidate in a one-piece batch
   else add to current batch
 
 if not all active user pieces fit in the shared header:
@@ -295,15 +301,15 @@ source_chunk_batch exceeds the overflow structured window -> use whole selectors
 source_chunk_batch fails or returns malformed ids/selectors after retry -> use whole selectors
 source_chunk_batch returns whole for a large text payload -> split deterministically before
 materializing active pieces
-batch too large -> keep unevaluated pieces
+single-piece batch too large for overflow window -> keep unevaluated piece
 missing archived payload -> keep that piece
 uncertain decision -> keep
 ```
 
 The large-text split fallback is deterministic:
 
-1. If the text is a complete top-level JSON array, find exact top-level element spans.
-2. Pack adjacent array-element spans under the deterministic byte budget.
+1. If the text is a complete top-level JSON array, find exact top-level element chunks.
+2. Pack adjacent array-element chunks under the deterministic byte budget.
 3. Otherwise, create bounded contiguous line windows under the byte budget.
 4. If neither path creates more than one span, keep the source whole.
 

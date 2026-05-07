@@ -1,6 +1,7 @@
 import type { ChunkSelector, PieceDraft } from "./memory_state.ts";
 import {
   exactByteSizeForSelection,
+  hasSafeTextChunkBoundaries,
   materializeTextSpans,
   previewForRenderedText,
   renderTextSelection,
@@ -107,7 +108,7 @@ function expandLargeWholeSelectors(
     }
     const spans = splitLargeTextIntoBoundarySpans(text);
     if (spans.length > 1) {
-      out.push(...spans.map((span): ChunkSelector => ({ kind: "text_spans", spans: [span] })));
+      out.push(...spans.map((span): ChunkSelector => ({ kind: "chunks", chunks: [span] })));
     } else {
       out.push(selector);
     }
@@ -296,17 +297,17 @@ function normalizeSelectors(selectors: ChunkSelector[]): ChunkSelector[] {
 }
 
 function normalizeSelector(selector: ChunkSelector): ChunkSelector {
-  if (selector.kind !== "text_spans") {
+  if (selector.kind !== "chunks") {
     return selector;
   }
-  const spans = [...selector.spans]
+  const chunks = [...selector.chunks]
     .filter((span) =>
       Number.isInteger(span.start) && Number.isInteger(span.end) && span.end > span.start
     )
     .map((span) => ({ start: span.start, end: span.end }))
     .sort((left, right) => left.start - right.start || left.end - right.end);
-  const merged: typeof spans = [];
-  for (const span of spans) {
+  const merged: typeof chunks = [];
+  for (const span of chunks) {
     const last = merged.at(-1);
     if (!last || span.start > last.end) {
       merged.push(span);
@@ -314,7 +315,7 @@ function normalizeSelector(selector: ChunkSelector): ChunkSelector {
     }
     last.end = Math.max(last.end, span.end);
   }
-  return merged.length === 0 ? { kind: "whole" } : { kind: "text_spans", spans: merged };
+  return merged.length === 0 ? { kind: "whole" } : { kind: "chunks", chunks: merged };
 }
 
 export function materializeSelector(
@@ -337,8 +338,8 @@ export function materializeSelector(
       byteSize: byteSize(text),
     };
   }
-  if (selector.kind === "text_spans") {
-    const selection = materializeTextSpans(source, selector.spans);
+  if (selector.kind === "chunks") {
+    const selection = materializeTextSpans(source, selector.chunks);
     const rendered = renderTextSelection(selection);
     return {
       content: selection,
@@ -395,7 +396,8 @@ async function chunkBatchWithModel(
     if (byId.has(entry.sourceId)) {
       return wholeSelectorFallback(sources);
     }
-    const selectors = validChunkSelectors(entry.selectors);
+    const source = sources.find((candidate) => candidate.sourceId === entry.sourceId);
+    const selectors = source ? materializeModelChunkSelectors(entry.selectors, source) : null;
     byId.set(
       entry.sourceId,
       selectors ?? [{ kind: "whole" }],
@@ -419,14 +421,74 @@ function wholeSelectorFallback(sources: RoundSource[]): {
   };
 }
 
-function validChunkSelectors(value: unknown): ChunkSelector[] | null {
+function materializeModelChunkSelectors(
+  value: unknown,
+  source: RoundSource,
+): ChunkSelector[] | null {
   if (!Array.isArray(value) || value.length === 0) {
     return null;
   }
-  return value.every(isValidChunkSelector) ? value : null;
+  if (value.some((selector) => isWholeSelector(selector)) && value.length > 1) {
+    return null;
+  }
+  if (value.length === 1 && isWholeSelector(value[0])) {
+    return [{ kind: "whole" }];
+  }
+  const sourceText = sourceTextView(source);
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const selector of value) {
+    if (!selector || typeof selector !== "object" || Array.isArray(selector)) {
+      return null;
+    }
+    const record = selector as Record<string, unknown>;
+    if (record.kind !== "chunks" || !Array.isArray(record.chunks) || record.chunks.length === 0) {
+      return null;
+    }
+    for (const chunk of record.chunks) {
+      if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+        return null;
+      }
+      const text = (chunk as Record<string, unknown>).text;
+      if (typeof text !== "string" || text.length === 0) {
+        return null;
+      }
+      const matches = findAllExactOccurrences(sourceText, text);
+      if (matches.length === 0) {
+        return null;
+      }
+      ranges.push(...matches);
+    }
+  }
+  const selectors = ranges
+    .sort((left, right) => left.start - right.start || left.end - right.end)
+    .map((range): ChunkSelector => ({ kind: "chunks", chunks: [range] }));
+  if (!selectors.every((selector) => isValidMaterializedChunkSelector(selector, sourceText))) {
+    return null;
+  }
+  return selectors;
 }
 
-function isValidChunkSelector(value: unknown): value is ChunkSelector {
+function findAllExactOccurrences(
+  text: string,
+  needle: string,
+): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  while (cursor <= text.length) {
+    const start = text.indexOf(needle, cursor);
+    if (start < 0) {
+      break;
+    }
+    out.push({ start, end: start + needle.length });
+    cursor = start + Math.max(needle.length, 1);
+  }
+  return out;
+}
+
+function isValidMaterializedChunkSelector(
+  value: unknown,
+  sourceText: string,
+): value is ChunkSelector {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
@@ -434,26 +496,52 @@ function isValidChunkSelector(value: unknown): value is ChunkSelector {
   if (record.kind === "whole") {
     return true;
   }
-  if (record.kind !== "text_spans" || !Array.isArray(record.spans)) {
+  if (record.kind !== "chunks" || !Array.isArray(record.chunks)) {
     return false;
   }
-  return record.spans.some((span) =>
-    Boolean(
-      span &&
-        typeof span === "object" &&
-        !Array.isArray(span) &&
-        Number.isInteger((span as Record<string, unknown>).start) &&
-        Number.isInteger((span as Record<string, unknown>).end) &&
-        ((span as Record<string, number>).end > (span as Record<string, number>).start),
-    )
-  );
+  const textLength = sourceText.length;
+  let previousEnd = -1;
+  if (record.chunks.length === 0) {
+    return false;
+  }
+  for (const chunk of record.chunks) {
+    if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+      return false;
+    }
+    const startValue = (chunk as Record<string, unknown>).start;
+    const endValue = (chunk as Record<string, unknown>).end;
+    if (
+      !Number.isInteger(startValue) ||
+      !Number.isInteger(endValue)
+    ) {
+      return false;
+    }
+    const start = startValue as number;
+    const end = endValue as number;
+    if (
+      start < 0 ||
+      end <= start ||
+      end > textLength ||
+      start < previousEnd ||
+      !hasSafeTextChunkBoundaries(sourceText, { start, end })
+    ) {
+      return false;
+    }
+    previousEnd = end;
+  }
+  return true;
+}
+
+function isWholeSelector(value: unknown): boolean {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
+    (value as Record<string, unknown>).kind === "whole";
 }
 
 async function requestChunkBatchWithSingleRetry(
   invoke: (
     attempt: number,
-  ) => Promise<{ results?: Array<{ sourceId: string; selectors?: ChunkSelector[] }> }>,
-): Promise<{ results?: Array<{ sourceId: string; selectors?: ChunkSelector[] }> }> {
+  ) => Promise<{ results?: Array<{ sourceId: string; selectors?: unknown }> }>,
+): Promise<{ results?: Array<{ sourceId: string; selectors?: unknown }> }> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {

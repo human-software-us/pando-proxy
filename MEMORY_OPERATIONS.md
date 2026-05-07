@@ -45,6 +45,35 @@ as one whole exact piece. Returned source ids and selectors still have to valida
 If a chunk request is too large for the overflow structured window, the proxy skips the model call
 and keeps each requested source whole.
 
+## Chunk boundary contract
+
+Chunking returns `whole` or exact copied chunk text. It never returns summaries, labels, content
+types, boundary classifications, or model-generated rewrites.
+
+The model should see the exact raw source text it is being asked to select from, not a JSON-escaped
+serialization of that text. Any model-produced selector must be interpreted against that same raw
+source view. If the prompt representation and materialization representation differ, character
+offsets are not trustworthy and must not be accepted as exact chunks.
+
+The model output for each source is only:
+
+```ts
+type ChunkSelector =
+  | { kind: "whole" }
+  | { kind: "chunks"; chunks: Array<{ text: string }> };
+```
+
+For `chunks`, `text` must be the complete chunk copied exactly from the raw source body shown to the
+model. Local code finds every exact occurrence of each quoted chunk and converts those occurrences
+to persisted `[start,end)` chunk selectors. If the same quoted chunk appears multiple times in one
+source, all matching occurrences become chunks; later duplicate-piece collapse keeps one full copy
+and adds duplicate markers for the other locations.
+
+If the model cannot select valid coherent chunks, the source remains `whole`. Local validation
+rejects malformed, empty, missing, changed, overlapping, or otherwise non-exact quoted chunks.
+Invalid selectors retry once with diagnostics; if they still cannot be validated, the proxy keeps
+that source whole.
+
 If the chunk model returns `whole` for a large text source, the proxy applies a deterministic exact
 split before creating pieces. It prefers complete top-level JSON array entries when the text is a
 JSON array. Otherwise it uses bounded line windows: contiguous line ranges under the byte budget,
@@ -53,10 +82,10 @@ better conceptual boundary.
 
 The split fallback is deterministic:
 
-1. if the text is a complete top-level JSON array, find exact element spans
-2. pack adjacent element spans under the deterministic byte budget
+1. if the text is a complete top-level JSON array, find exact element chunks
+2. pack adjacent element chunks under the deterministic byte budget
 3. otherwise split into contiguous line windows under the byte budget
-4. if neither path produces multiple spans, keep the source whole
+4. if neither path produces multiple chunks, keep the source whole
 
 For large `rg` outputs, the model prompt asks for conceptual split points before line windows:
 
