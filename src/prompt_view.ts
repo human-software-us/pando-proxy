@@ -135,6 +135,20 @@ export function buildPromptMemoryText(
       `<piece pieceId=${piece.id} sourceKind=${piece.sourceKind}>`,
     );
     lines.push(piece.renderText || piecePreview(piece));
+    if (piece.duplicateSources && piece.duplicateSources.length > 0) {
+      lines.push("<duplicate_observations>");
+      for (const duplicate of piece.duplicateSources) {
+        lines.push(
+          [
+            `duplicatePieceId=${duplicate.pieceId}`,
+            `duplicateSourceId=${duplicate.sourceId}`,
+            `sourceKind=${duplicate.sourceKind}`,
+            ...(duplicate.toolName ? [`toolName=${duplicate.toolName}`] : []),
+          ].join(" "),
+        );
+      }
+      lines.push("</duplicate_observations>");
+    }
     lines.push("</piece>");
   }
   lines.push("</exact_pieces>");

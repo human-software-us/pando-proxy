@@ -37,9 +37,6 @@ export async function extractNewRequestSources(
     if (!source || processedSourceIds.has(source.sourceId)) {
       continue;
     }
-    if (source.sourceKind !== "user") {
-      continue;
-    }
     out.push(source);
   }
 
@@ -93,7 +90,7 @@ export async function extractAssistantSourcesFromResponse(
         });
       } else if (isToolCallItem(type)) {
         // The agent's invocation of a tool (function_call / *_tool_call). One source
-        // per call; later treated as one chunk and always-kept on first capture.
+        // per call; later treated as one whole chunk.
         // Disambiguate from the matching function_call_output (which shares call_id):
         // prefix the call's sourceId with "tool_call:" so they don't collide.
         const baseId = await responseItemId(item, response, index);
@@ -216,6 +213,30 @@ function sourceFromInputItem(
         ...(callId ? { callId } : {}),
         itemType: type,
       },
+    };
+  }
+
+  if (isToolCallItem(type)) {
+    const callId = typeof item.call_id === "string" ? item.call_id : undefined;
+    const toolName = typeof item.name === "string" ? item.name : undefined;
+    return {
+      sourceId: `tool_call:${sourceId}`,
+      sourceKind: "tool_call",
+      payload: item,
+      ...(toolName ? { toolName } : {}),
+      pointer: {
+        ...(callId ? { callId } : {}),
+        itemType: type,
+      },
+    };
+  }
+
+  if (isReasoningItem(type)) {
+    return {
+      sourceId,
+      sourceKind: "assistant",
+      payload: item,
+      pointer: { itemType: type },
     };
   }
 

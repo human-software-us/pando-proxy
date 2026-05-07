@@ -10,6 +10,7 @@ import type {
   MemoryState,
   PieceDraft,
 } from "../src/memory_state.ts";
+import { buildPromptMemoryText } from "../src/prompt_view.ts";
 
 const keepAllClients: MemoryManagerClients = {
   taskRoute: () => Promise.resolve({ kind: "same_task" }),
@@ -49,6 +50,33 @@ Deno.test("applyWorkingSetUpdate keeps pieces when drop reason is missing or uns
   assertEquals(result.droppedNewPieceIds, []);
   assertEquals(result.memory.activeTask?.pieceIds, [piece.id]);
   assertEquals(result.memory.pieces.map((memoryPiece) => memoryPiece.id), [piece.id]);
+});
+
+Deno.test("applyWorkingSetUpdate marks exact duplicates instead of losing duplicate locations", async () => {
+  const first = draft("source_a:0", "source_a", "same exact content");
+  const duplicate = draft("source_b:0", "source_b", "same exact content");
+
+  const result = await applyWorkingSetUpdate(
+    emptyState(),
+    [first, duplicate],
+    { kind: "new_task" },
+    keepAllClients,
+  );
+
+  assertEquals(result.keptNewPieceIds, [first.id]);
+  assertEquals(result.droppedNewPieceIds, [duplicate.id]);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [first.id]);
+  assertEquals(result.memory.pieces[0].duplicateSources, [{
+    pieceId: duplicate.id,
+    sourceId: duplicate.sourceId,
+    sourceKind: duplicate.sourceKind,
+  }]);
+  const prompt = buildPromptMemoryText(
+    { ...result.memory, pieces: [materialized(result.memory.pieces[0], "same exact content")] },
+    [materialized(result.memory.pieces[0], "same exact content")],
+  );
+  assert(prompt.includes("same exact content"));
+  assert(prompt.includes("duplicateSourceId=source_b"));
 });
 
 Deno.test("applyWorkingSetUpdate drops old active pieces with accepted full-payload prune decisions", async () => {
@@ -184,6 +212,36 @@ Deno.test("applyWorkingSetUpdate revives previous task by relative index", async
   assertEquals(result.memory.activeTask?.id, "task_archived");
   assertEquals(result.memory.pieces.map((piece) => piece.id), [archivedPiece.id, newPiece.id]);
   assertEquals(result.memory.archivedTasks.map((task) => task.id), ["task_current"]);
+});
+
+Deno.test("applyWorkingSetUpdate keeps current task when revive index is unavailable", async () => {
+  const currentPiece = memoryPiece("source_current:0", "source_current", "current task fact");
+  const state: MemoryState = {
+    roundSeq: 3,
+    activeTask: {
+      id: "task_current",
+      pieceIds: [currentPiece.id],
+      startedRound: 3,
+      lastRound: 3,
+    },
+    archivedTasks: [],
+    pieces: [currentPiece],
+    processedSourceIds: ["source_current"],
+  };
+  const newPiece = draft("source_new:0", "source_new", "bad revive should continue current task");
+
+  const result = await applyWorkingSetUpdate(
+    state,
+    [newPiece],
+    { kind: "revive_task", relativeIndex: -1 },
+    keepAllClients,
+    [materialized(currentPiece, "current task fact")],
+  );
+
+  assertEquals(result.taskRoute, { kind: "same_task" });
+  assertEquals(result.memory.activeTask?.id, "task_current");
+  assertEquals(result.memory.archivedTasks, []);
+  assertEquals(result.memory.pieces.map((piece) => piece.id), [currentPiece.id, newPiece.id]);
 });
 
 Deno.test("applyWorkingSetUpdate handles 8+ rounds of turnover, drops, and reciprocal revives", async () => {

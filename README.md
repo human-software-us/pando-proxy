@@ -7,6 +7,7 @@ The important invariant is simple:
 
 - active memory is one active task plus exact kept pieces
 - the next forwarded prompt contains that exact kept set
+- exact duplicate content is shown once, with duplicate source markers on the canonical kept piece
 - dropped material leaves active memory, but raw round sources stay in the per-session archive
 - if older exact material is needed later, the agent can use `recall({offset,limit})` against the
   archive, up to 3 times in that round, with no per-call item cap
@@ -42,7 +43,7 @@ Normal end-of-round flow:
 2. run `source_chunk_batch` and `task_route` in parallel
    - if chunking omits a requested source or is too large for the structured window, that source is
      kept whole
-3. dedupe exact duplicate pieces by content hash
+3. dedupe exact duplicate pieces by content hash while recording duplicate source markers
 4. build the routed candidate active set
 5. run `piece_drop_batch` over full-payload batches sized under the prune budget
 6. keep everything not dropped with an accepted concrete reason

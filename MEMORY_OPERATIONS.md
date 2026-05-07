@@ -24,7 +24,8 @@ If the model calls `recall({offset,limit})`:
 2. chunk non-Pando user, assistant talk/reasoning, and tool-result sources with `source_chunk_batch`
 3. decide `same_task` vs `new_task` vs `revive_task(relativeIndex)` with `task_route`
 4. materialize exact new pieces
-5. dedupe exact duplicate pieces by content hash
+5. dedupe exact duplicate pieces by content hash, recording duplicate source markers on the
+   canonical kept piece
 6. build the candidate active set from the route
 7. ask `piece_drop_batch` about bounded full-payload batches
 8. keep all pieces that are not dropped with an accepted concrete reason
@@ -46,9 +47,13 @@ the archive and can be recovered through `recall`.
 On `revive_task(-N)`, the current active task is archived and the selected previous task bundle is
 restored as the active candidate set.
 
+If the requested revive index does not exist, the proxy keeps the current active task and treats the
+round as `same_task`.
+
 ## Failure policy
 
 - `task_route` invalid after retry -> use `same_task`
+- `revive_task(relativeIndex)` points at no archived task -> use `same_task`
 - `piece_drop_batch` invalid after retry -> keep all pieces evaluated by that failed batch
 - `source_chunk_batch` omits requested source -> keep that source whole
 - `source_chunk_batch` exceeds the overflow structured window -> keep the whole batch as whole

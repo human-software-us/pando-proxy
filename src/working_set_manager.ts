@@ -4,6 +4,7 @@ import {
   type ActiveTask,
   type ArchivedTaskBundle,
   chronologicalPieces,
+  type DuplicateSource,
   type MaterializedMemoryPiece,
   type MemoryPiece,
   type MemoryState,
@@ -202,9 +203,14 @@ export async function applyWorkingSetUpdate(
   }
 
   const routed = applyTaskRoute(state, taskRoute, nextSeq);
-  const duplicateNewIds = duplicateNewPieceIds(routed.baseOldPieces, newMemoryPieces);
-  const nonDuplicateNewPieces = newMemoryPieces.filter((piece) => !duplicateNewIds.has(piece.id));
-  const candidatePieces = chronologicalPieces([...routed.baseOldPieces, ...nonDuplicateNewPieces]);
+  const deduped = markDuplicateNewPieces(routed.baseOldPieces, newMemoryPieces);
+  const duplicateNewIds = deduped.duplicateIds;
+  const nonDuplicateNewPieces = deduped.newPieces.filter((piece) => !duplicateNewIds.has(piece.id));
+  const candidateBaseOldPieces = deduped.oldPieces;
+  const candidatePieces = chronologicalPieces([
+    ...candidateBaseOldPieces,
+    ...nonDuplicateNewPieces,
+  ]);
   const supersessionHints = supersessionHintsFor(candidatePieces);
   const pruneBatches = buildPruneBatches({
     activeTask: routed.activeTask,
@@ -258,7 +264,7 @@ export async function applyWorkingSetUpdate(
     ...nonDuplicateNewPieces.filter((piece) => pruneDropIds.has(piece.id)).map((piece) => piece.id),
   ]);
   const oldDropIds = new Set(
-    routed.baseOldPieces.filter((piece) => pruneDropIds.has(piece.id)).map((piece) => piece.id),
+    candidateBaseOldPieces.filter((piece) => pruneDropIds.has(piece.id)).map((piece) => piece.id),
   );
 
   return {
@@ -274,10 +280,10 @@ export async function applyWorkingSetUpdate(
     },
     oldDropDecisions: {
       decisions: dropDecisions.filter((decision) =>
-        routed.baseOldPieces.some((piece) => piece.id === decision.pieceId)
+        candidateBaseOldPieces.some((piece) => piece.id === decision.pieceId)
       ),
     },
-    keptOldPieceIds: routed.baseOldPieces
+    keptOldPieceIds: candidateBaseOldPieces
       .filter((piece) => !oldDropIds.has(piece.id))
       .map((piece) => piece.id),
     droppedOldPieceIds: [...oldDropIds],
@@ -328,6 +334,14 @@ function applyTaskRoute(
         archivedTasks: withCurrentArchived,
         baseOldPieces: resolved.task.pieces,
         effectiveRoute: route,
+      };
+    }
+    if (state.activeTask) {
+      return {
+        activeTask: state.activeTask,
+        archivedTasks: state.archivedTasks,
+        baseOldPieces: state.pieces,
+        effectiveRoute: { kind: "same_task" },
       };
     }
   }
@@ -410,17 +424,66 @@ function primaryKeyForPiece(piece: PieceDraft): string | null {
   return null;
 }
 
-function duplicateNewPieceIds(oldPieces: MemoryPiece[], newPieces: MemoryPiece[]): Set<string> {
-  const seenHashes = new Set(oldPieces.map((piece) => piece.contentHash));
-  const dropped = new Set<string>();
-  for (const piece of newPieces) {
-    if (seenHashes.has(piece.contentHash)) {
-      dropped.add(piece.id);
+function markDuplicateNewPieces(
+  oldPieces: MemoryPiece[],
+  newPieces: MemoryPiece[],
+): { oldPieces: MemoryPiece[]; newPieces: MemoryPiece[]; duplicateIds: Set<string> } {
+  const oldOut = oldPieces.map(cloneMemoryPiece);
+  const newOut = newPieces.map(cloneMemoryPiece);
+  const oldById = new Map(oldOut.map((piece) => [piece.id, piece] as const));
+  const newById = new Map(newOut.map((piece) => [piece.id, piece] as const));
+  const byHash = new Map<string, { kind: "old" | "new"; pieceId: string }>();
+  const duplicateIds = new Set<string>();
+
+  for (const piece of oldOut) {
+    if (!byHash.has(piece.contentHash)) {
+      byHash.set(piece.contentHash, { kind: "old", pieceId: piece.id });
+    }
+  }
+
+  for (const piece of newOut) {
+    const canonical = byHash.get(piece.contentHash);
+    if (canonical) {
+      duplicateIds.add(piece.id);
+      const canonicalPiece = canonical.kind === "old"
+        ? oldById.get(canonical.pieceId)
+        : newById.get(canonical.pieceId);
+      if (canonicalPiece) {
+        addDuplicateSource(canonicalPiece, duplicateSourceFromPiece(piece));
+      }
       continue;
     }
-    seenHashes.add(piece.contentHash);
+    byHash.set(piece.contentHash, { kind: "new", pieceId: piece.id });
   }
-  return dropped;
+
+  return { oldPieces: oldOut, newPieces: newOut, duplicateIds };
+}
+
+function cloneMemoryPiece(piece: MemoryPiece): MemoryPiece {
+  return {
+    ...piece,
+    ...(piece.duplicateSources
+      ? { duplicateSources: piece.duplicateSources.map((duplicate) => ({ ...duplicate })) }
+      : {}),
+  };
+}
+
+function addDuplicateSource(piece: MemoryPiece, duplicate: DuplicateSource): void {
+  const existing = piece.duplicateSources ?? [];
+  if (existing.some((candidate) => candidate.pieceId === duplicate.pieceId)) {
+    return;
+  }
+  piece.duplicateSources = [...existing, duplicate];
+}
+
+function duplicateSourceFromPiece(piece: MemoryPiece): DuplicateSource {
+  return {
+    pieceId: piece.id,
+    sourceId: piece.sourceId,
+    sourceKind: piece.sourceKind,
+    ...(piece.toolName ? { toolName: piece.toolName } : {}),
+    ...(piece.pointer ? { pointer: piece.pointer } : {}),
+  };
 }
 
 function supersessionHintsFor(pieces: MemoryPiece[]): SupersessionHint[] {

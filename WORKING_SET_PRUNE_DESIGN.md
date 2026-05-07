@@ -37,6 +37,7 @@ Active memory is just:
 ```text
 one active task
 + exact pieces that currently belong to that task
++ duplicate source markers when the same exact content appears elsewhere
 ```
 
 The archive is the long-term store:
@@ -135,6 +136,9 @@ revive_task(-N):
 ```
 
 If the route call fails or is uncertain, use `same_task`.
+
+If `revive_task(-N)` points at no archived task, keep the current active task with `same_task`
+instead of starting a new task.
 
 ## Full-Payload Prune Batches
 
@@ -245,6 +249,7 @@ Everything else means keep.
 
 ```text
 malformed route -> same_task
+unresolvable revive route -> same_task
 malformed prune batch -> keep all pieces in that batch
 source_chunk_batch omits a requested source -> use whole selector for that source
 source_chunk_batch exceeds the overflow structured window -> use whole selectors for that batch
@@ -259,3 +264,11 @@ are applied.
 
 The archive makes active-memory pruning reversible; conservative failure rules make accidental
 active-memory loss hard.
+
+## Duplicate Content
+
+Exact duplicate payloads are not repeated in active memory. The first retained piece stays as the
+canonical source for that content, and later duplicate pieces are represented as `duplicateSources`
+markers on that canonical piece.
+
+This keeps prompt data compact without hiding the fact that the same content appeared elsewhere.

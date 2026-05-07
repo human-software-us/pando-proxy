@@ -36,6 +36,13 @@ type MemoryPiece = {
   selector: ChunkSelector;
   contentHash: string;
   primaryKey?: string;
+  duplicateSources?: Array<{
+    pieceId: string;
+    sourceId: string;
+    sourceKind: "user" | "assistant" | "tool" | "tool_call";
+    toolName?: string;
+    pointer?: Record<string, unknown>;
+  }>;
 };
 
 type MemoryState = {
@@ -54,6 +61,8 @@ Important invariant:
 - `archivedTasks` stores previous task piece metadata for revive
 - raw payloads live in the lossless archive
 - pieces reference exact original sources through selectors
+- exact duplicate content is stored once in active memory, with duplicate source markers attached to
+  the canonical kept piece
 - there are no memory groups, summaries, or visibility tiers
 
 ## Structured Manager Calls
@@ -108,6 +117,9 @@ Relative indexes are negative:
 ```
 
 If route fails, the runtime keeps the current task with `same_task`.
+
+If `revive_task` names a relative index that does not exist, the runtime also keeps the current task
+with `same_task`.
 
 ### `piece_drop_batch`
 

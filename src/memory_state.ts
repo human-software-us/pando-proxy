@@ -45,6 +45,15 @@ export type MemoryPiece = {
   selector: ChunkSelector;
   contentHash: string;
   primaryKey?: string;
+  duplicateSources?: DuplicateSource[];
+};
+
+export type DuplicateSource = {
+  pieceId: string;
+  sourceId: string;
+  sourceKind: SourceKind;
+  toolName?: string;
+  pointer?: Record<string, unknown>;
 };
 
 export type MaterializedMemoryPiece = MemoryPiece & {
@@ -156,6 +165,7 @@ export function dedupePieces(pieces: MemoryPiece[]): MemoryPiece[] {
       ...(typeof piece.primaryKey === "string" && piece.primaryKey
         ? { primaryKey: piece.primaryKey }
         : {}),
+      ...normalizedDuplicateSources(piece.duplicateSources),
     });
   }
   return chronologicalPieces([...byId.values()]);
@@ -184,6 +194,11 @@ export function assertMemoryInvariant(state: MemoryState): void {
     }
     if (!piece.contentHash) {
       errors.push(`Piece ${piece.id} is missing contentHash`);
+    }
+    for (const duplicate of piece.duplicateSources ?? []) {
+      if (!duplicate.pieceId || !duplicate.sourceId) {
+        errors.push(`Piece ${piece.id} has invalid duplicate source marker`);
+      }
     }
   }
 
@@ -265,6 +280,36 @@ function normalizeArchivedTasks(value: unknown): ArchivedTaskBundle[] {
     });
   }
   return out;
+}
+
+function normalizedDuplicateSources(value: unknown): { duplicateSources?: DuplicateSource[] } {
+  if (!Array.isArray(value)) {
+    return {};
+  }
+  const out: DuplicateSource[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const pieceId = typeof record.pieceId === "string" ? record.pieceId : "";
+    const sourceId = typeof record.sourceId === "string" ? record.sourceId : "";
+    if (!pieceId || !sourceId || seen.has(pieceId)) {
+      continue;
+    }
+    seen.add(pieceId);
+    out.push({
+      pieceId,
+      sourceId,
+      sourceKind: normalizeSourceKind(record.sourceKind),
+      ...(typeof record.toolName === "string" && record.toolName
+        ? { toolName: record.toolName }
+        : {}),
+      ...(isRecord(record.pointer) ? { pointer: record.pointer } : {}),
+    });
+  }
+  return out.length > 0 ? { duplicateSources: out } : {};
 }
 
 function nonNegativeInt(value: unknown): number {
