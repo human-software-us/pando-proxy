@@ -1150,6 +1150,8 @@ Rules:
 - Keep chunks in original order.
 - If you cannot split a source losslessly, return the entire raw source body as one chunk.
 - Do not invent, rewrite, truncate, paraphrase, summarize, label, add markers, return selectors, return boundary text, or return character offsets.
+- Bias strongly toward splitting. Later pruning can keep too much if a split is not useful, and local validation will reject any split that is not exact, so prefer useful multi-chunk output unless the source is clearly one inseparable piece.
+- Do not split after every character or create tiny fragments. Chunks should be coherent retained-memory units.
 - Prefer multiple coherent exact chunks over one huge chunk when the source is large and lossless splitting is clear.
 - For large shell/search/test/log outputs, first split on conceptual boundaries: command sections, failure blocks, stack traces, assertion blocks, test-case sections, file blocks, path-prefix groups, or other visible separators.
 - For 'rg --files ...' output, each line is a path. Prefer conceptual groups by top-level directory, package, namespace, or subsystem path, for example consecutive blocks for 'src/metabase/api/...', 'src/metabase/search/...', 'test/metabase/...', or 'enterprise/backend/...'. If no stable grouping is visible, return the entire raw source body as one chunk.

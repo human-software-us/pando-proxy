@@ -223,6 +223,10 @@ low reasoning effort when the selected model supports it, and `service_tier: "pr
 `task_route` and `piece_drop_batch` remain cost-sensitive and use the configured small model,
 currently `gpt-5.4-mini`, when they fit.
 
+The prompt biases the model toward coherent multi-chunk output because malformed chunks fail closed
+to whole-source retention and later pruning can keep too much. Clearly inseparable sources should
+still be returned as one whole chunk.
+
 User messages are not sent to this classifier. Each user message becomes one inseparable `whole`
 piece before pruning.
 

@@ -259,11 +259,10 @@ liveChunkTest("live LLM chunking splits big arrays with lots of small items", as
 });
 
 function liveChunkTest(name: string, fn: () => Promise<void>): void {
-  Deno.test({
-    name,
-    ignore: !liveEnabled,
-    fn,
-  });
+  if (!liveEnabled) {
+    return;
+  }
+  Deno.test({ name, fn });
 }
 
 async function liveResult(): Promise<{ pieces: PieceDraft[] }> {

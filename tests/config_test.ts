@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 
 import {
+  DEFAULT_MODEL_TIMEOUT_MS,
   DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW,
   DEFAULT_OVERFLOW_STRUCTURED_MODEL,
   DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW,
@@ -47,6 +48,8 @@ Deno.test("loadConfig defaults to current structured model pair and context wind
     "PANDO_PROXY_OVERFLOW_STRUCTURED_MODEL",
     "PANDO_PROXY_SMALL_STRUCTURED_CONTEXT_WINDOW",
     "PANDO_PROXY_OVERFLOW_STRUCTURED_CONTEXT_WINDOW",
+    "PANDO_PROXY_MODEL_TIMEOUT_MS",
+    "PANDO_PROXY_MAINTENANCE_TIMEOUT_MS",
   ], () => loadConfig());
 
   assertEquals(config.smallStructuredModel, DEFAULT_SMALL_STRUCTURED_MODEL);
@@ -57,6 +60,8 @@ Deno.test("loadConfig defaults to current structured model pair and context wind
   assertEquals(config.overflowStructuredModel, "gpt-5.4");
   assertEquals(config.smallStructuredContextWindow, 400_000);
   assertEquals(config.overflowStructuredContextWindow, 1_047_576);
+  assertEquals(config.modelTimeoutMs, DEFAULT_MODEL_TIMEOUT_MS);
+  assertEquals(config.modelTimeoutMs, 120_000);
 });
 
 function withClearedEnv<T>(names: string[], fn: () => T): T {

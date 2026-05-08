@@ -44,6 +44,8 @@ Normal end-of-round flow:
    - user messages are never split; each user message is one atomic `whole` piece
    - `source_chunk_batch` always uses the configured full/overflow structured model, currently
      `gpt-5.4`, with low reasoning effort when the model supports it and priority service tier
+   - chunking is biased toward coherent multi-chunk output because bad splits fail closed and later
+     pruning can keep too much; clearly single-piece sources still remain whole
    - `task_route` and `piece_drop_batch` use the configured small structured model when the request
      fits, currently `gpt-5.4-mini`, and overflow only when needed
    - if chunking fails, returns malformed output, omits a requested source, or is too large for the

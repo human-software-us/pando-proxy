@@ -37,7 +37,7 @@ export const DEFAULT_SMALL_STRUCTURED_MODEL = "gpt-5.4-mini";
 export const DEFAULT_OVERFLOW_STRUCTURED_MODEL = "gpt-5.4";
 export const DEFAULT_SMALL_STRUCTURED_CONTEXT_WINDOW = 400_000;
 export const DEFAULT_OVERFLOW_STRUCTURED_CONTEXT_WINDOW = 1_047_576;
-export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
+export const DEFAULT_MODEL_TIMEOUT_MS = 120_000;
 export const DEFAULT_CODEX_AUTO_COMPACT_TOKEN_LIMIT = 280_000;
 
 export function loadConfig(options: CliOptions = {}): ProxyConfig {
