@@ -195,6 +195,28 @@ export function materializeSelector(
   };
 }
 
+const MAX_CHUNK_ROUNDS = 7;
+
+type SourceSpan = { start: number; end: number };
+
+export type ChunkRoundLogEntry = {
+  round: number;
+  itemCount: number;
+  itemSizes: number[];
+  realSplits: number;
+  itemErrors: number;
+  perItemSections: number[];
+  perItemResulting: number[];
+  resultingChunkCount: number;
+  resultingLargest: number;
+  durationMs: number;
+};
+
+let chunkRoundLogger: ((entry: ChunkRoundLogEntry) => void) | null = null;
+export function setChunkRoundLogger(fn: ((entry: ChunkRoundLogEntry) => void) | null): void {
+  chunkRoundLogger = fn;
+}
+
 async function chunkBatchWithModel(
   sources: RoundSource[],
   clients: StructuredClients,
@@ -202,100 +224,218 @@ async function chunkBatchWithModel(
   selectorsBySourceId: Map<string, ChunkSelector[]>;
   modelSelectedSourceIds: Set<string>;
 }> {
-  const request = {
-    sources: sources.map((source) => ({
-      sourceId: source.sourceId,
-      sourceKind: source.sourceKind,
-      ...(source.toolName ? { toolName: source.toolName } : {}),
-      contentText: sourceTextView(source),
-      ...(source.pointer ? { pointer: source.pointer } : {}),
-    })),
-  };
-  const response = await requestChunkBatchWithSingleRetry(
-    (attempt) => clients.sourceChunkBatch(request, attempt),
-  ).catch(() => null);
-  if (!response || !Array.isArray(response.results)) {
-    return wholePieceFallback(sources);
+  const sourceTextById = new Map<string, string>();
+  const spansBySourceId = new Map<string, SourceSpan[]>();
+  for (const source of sources) {
+    const text = sourceTextView(source);
+    sourceTextById.set(source.sourceId, text);
+    spansBySourceId.set(source.sourceId, [{ start: 0, end: text.length }]);
   }
-  const byId = new Map<string, ChunkSelector[]>();
-  const requestedIds = new Set(sources.map((source) => source.sourceId));
-  const modelSelectedSourceIds = new Set<string>();
-  for (const entry of response.results ?? []) {
-    if (
-      !entry ||
-      typeof entry !== "object" ||
-      Array.isArray(entry) ||
-      typeof entry.sourceId !== "string" ||
-      !requestedIds.has(entry.sourceId)
-    ) {
-      continue;
+
+  let anyCallFailed = false;
+  const sourceHasSuccess = new Set<string>();
+  for (let round = 0; round < MAX_CHUNK_ROUNDS; round += 1) {
+    type ItemKey = { sourceId: string; spanIndex: number };
+    const items: { itemId: string; text: string }[] = [];
+    const itemKeys: ItemKey[] = [];
+    for (const source of sources) {
+      const spans = spansBySourceId.get(source.sourceId) ?? [];
+      const text = sourceTextById.get(source.sourceId) ?? "";
+      for (const [spanIndex, span] of spans.entries()) {
+        const itemId = `s${itemKeys.length}`;
+        items.push({ itemId, text: text.slice(span.start, span.end) });
+        itemKeys.push({ sourceId: source.sourceId, spanIndex });
+      }
     }
-    if (byId.has(entry.sourceId)) {
-      return wholePieceFallback(sources);
+    if (items.length === 0) {
+      break;
     }
-    const source = sources.find((candidate) => candidate.sourceId === entry.sourceId);
-    const selectors = source ? materializeModelChunks(entry.chunks, source) : null;
-    byId.set(
-      entry.sourceId,
-      selectors ?? [{ kind: "whole" }],
+
+    const startedAt = Date.now();
+    const response = await callSourceChunkBatchWithRetry(clients, { items }).catch(() => null);
+    const durationMs = Date.now() - startedAt;
+    if (!response || !Array.isArray(response.results)) {
+      anyCallFailed = true;
+      break;
+    }
+
+    const resultsById = new Map<string, typeof response.results[number]>();
+    for (const entry of response.results) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        continue;
+      }
+      const record = entry as Record<string, unknown>;
+      if (typeof record.itemId !== "string") {
+        continue;
+      }
+      resultsById.set(record.itemId, entry);
+    }
+
+    let realSplits = 0;
+    let itemErrors = 0;
+    const perItemSections: number[] = [];
+    const perItemResulting: number[] = [];
+    const newSpansBySourceId = new Map<string, SourceSpan[]>();
+    for (const source of sources) {
+      newSpansBySourceId.set(source.sourceId, []);
+    }
+    for (const [itemIndex, item] of items.entries()) {
+      const key = itemKeys[itemIndex];
+      const parentSpans = spansBySourceId.get(key.sourceId) ?? [];
+      const parentSpan = parentSpans[key.spanIndex];
+      const carry = newSpansBySourceId.get(key.sourceId) ?? [];
+      const result = resultsById.get(item.itemId) as
+        | { itemId: string; sections?: unknown; error?: unknown }
+        | undefined;
+      const sections = result && Array.isArray(result.sections) ? result.sections : null;
+      if (typeof result?.error === "string") {
+        itemErrors += 1;
+      }
+      if (!sections) {
+        perItemSections.push(0);
+        perItemResulting.push(1);
+        carry.push(parentSpan);
+        newSpansBySourceId.set(key.sourceId, carry);
+        continue;
+      }
+      sourceHasSuccess.add(key.sourceId);
+      const sub = resolveAnchorsToSpans(item.text, sections as { anchor?: unknown }[]);
+      perItemSections.push(sections.length);
+      perItemResulting.push(sub.length);
+      if (sub.length < 2) {
+        carry.push(parentSpan);
+        newSpansBySourceId.set(key.sourceId, carry);
+        continue;
+      }
+      for (const local of sub) {
+        carry.push({
+          start: parentSpan.start + local.start,
+          end: parentSpan.start + local.end,
+        });
+      }
+      newSpansBySourceId.set(key.sourceId, carry);
+      realSplits += 1;
+    }
+
+    for (const [sourceId, spans] of newSpansBySourceId) {
+      spansBySourceId.set(sourceId, spans);
+    }
+
+    const resultingChunkCount = Array.from(spansBySourceId.values()).reduce(
+      (sum, spans) => sum + spans.length,
+      0,
     );
-    if (selectors) {
-      modelSelectedSourceIds.add(entry.sourceId);
+    const resultingLargest = Array.from(spansBySourceId.values()).reduce(
+      (m, spans) => spans.reduce((mm, s) => Math.max(mm, s.end - s.start), m),
+      0,
+    );
+    chunkRoundLogger?.({
+      round: round + 1,
+      itemCount: items.length,
+      itemSizes: items.map((i) => i.text.length),
+      realSplits,
+      itemErrors,
+      perItemSections,
+      perItemResulting,
+      resultingChunkCount,
+      resultingLargest,
+      durationMs,
+    });
+
+    if (realSplits === 0) {
+      break;
     }
   }
-  return { selectorsBySourceId: byId, modelSelectedSourceIds };
-}
 
-function wholePieceFallback(sources: RoundSource[]): {
-  selectorsBySourceId: Map<string, ChunkSelector[]>;
-  modelSelectedSourceIds: Set<string>;
-} {
-  return {
-    selectorsBySourceId: new Map(
-      sources.map((source) => [source.sourceId, [{ kind: "whole" } satisfies ChunkSelector]]),
-    ),
-    modelSelectedSourceIds: new Set(),
-  };
-}
-
-function materializeModelChunks(
-  value: unknown,
-  source: RoundSource,
-): ChunkSelector[] | null {
-  if (!Array.isArray(value) || value.length === 0) {
-    return null;
-  }
-  if (!value.every((chunk) => typeof chunk === "string")) {
-    return null;
-  }
-  const sourceText = sourceTextView(source);
-  const chunks = value as string[];
-  if (chunks.join("") !== sourceText) {
-    return null;
-  }
-  const selectors: ChunkSelector[] = [];
-  let cursor = 0;
-  for (const chunk of chunks) {
-    const start = cursor;
-    const end = start + chunk.length;
-    cursor = end;
-    if (chunk.length === 0) {
+  const selectorsBySourceId = new Map<string, ChunkSelector[]>();
+  const modelSelectedSourceIds = new Set<string>();
+  for (const source of sources) {
+    const text = sourceTextById.get(source.sourceId) ?? "";
+    const spans = spansBySourceId.get(source.sourceId) ?? [];
+    const losslessOk = spans.length > 0 &&
+      spans[0].start === 0 &&
+      spans[spans.length - 1].end === text.length &&
+      spans.every((span, index) =>
+        span.end > span.start &&
+        (index === 0 || span.start === spans[index - 1].end)
+      );
+    if (anyCallFailed || !losslessOk) {
+      selectorsBySourceId.set(source.sourceId, [{ kind: "whole" }]);
       continue;
     }
-    selectors.push({ kind: "chunks", chunks: [{ start, end }] });
+    if (spans.length <= 1 && !sourceHasSuccess.has(source.sourceId)) {
+      // Model never returned sections for this source; treat as deterministic whole.
+      selectorsBySourceId.set(source.sourceId, [{ kind: "whole" }]);
+      continue;
+    }
+    selectorsBySourceId.set(
+      source.sourceId,
+      spans.map((span) =>
+        ({ kind: "chunks", chunks: [{ start: span.start, end: span.end }] }) satisfies ChunkSelector
+      ),
+    );
+    modelSelectedSourceIds.add(source.sourceId);
   }
-  return selectors.length > 0 ? selectors : null;
+  return { selectorsBySourceId, modelSelectedSourceIds };
 }
 
-async function requestChunkBatchWithSingleRetry(
-  invoke: (
-    attempt: number,
-  ) => Promise<{ results?: Array<{ sourceId: string; chunks?: unknown }> }>,
-): Promise<{ results?: Array<{ sourceId: string; chunks?: unknown }> }> {
+function resolveAnchorsToSpans(
+  text: string,
+  sections: { label?: unknown; anchor?: unknown }[],
+): SourceSpan[] {
+  if (text.length === 0) {
+    return [];
+  }
+  if (sections.length === 0) {
+    return [{ start: 0, end: text.length }];
+  }
+  let cursor = 0;
+  const offsets: number[] = [];
+  for (const section of sections) {
+    const anchor = typeof section.anchor === "string" ? section.anchor : "";
+    if (!anchor) {
+      continue;
+    }
+    const pos = text.indexOf(anchor, cursor);
+    if (pos < 0) {
+      continue;
+    }
+    offsets.push(pos);
+    cursor = pos + Math.max(1, anchor.length);
+  }
+  if (offsets.length === 0) {
+    return [{ start: 0, end: text.length }];
+  }
+  if (offsets[0] !== 0) {
+    offsets.unshift(0);
+  }
+  const out: SourceSpan[] = [];
+  for (let i = 0; i < offsets.length; i += 1) {
+    const start = offsets[i];
+    const end = i + 1 < offsets.length ? offsets[i + 1] : text.length;
+    if (end > start) {
+      out.push({ start, end });
+    }
+  }
+  if (
+    out.length === 0 ||
+    out[0].start !== 0 ||
+    out[out.length - 1].end !== text.length
+  ) {
+    return [{ start: 0, end: text.length }];
+  }
+  return out;
+}
+
+async function callSourceChunkBatchWithRetry(
+  clients: StructuredClients,
+  request: { items: { itemId: string; text: string }[] },
+): Promise<{ results?: unknown[] } & Record<string, unknown> | null> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      return await invoke(attempt);
+      const response = await clients.sourceChunkBatch(request, attempt);
+      return response as unknown as { results: unknown[] };
     } catch (error) {
       lastError = error;
     }

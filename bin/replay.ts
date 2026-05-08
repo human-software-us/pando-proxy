@@ -101,6 +101,13 @@ async function main() {
   await Deno.writeTextFile(progressPath, "");
   if (realLlm) await Deno.writeTextFile(managerUsagePath, "");
 
+  const chunkRoundsPath = `${outDir}/${base}__${tag}__chunk-rounds.jsonl`;
+  const wirePath = `${outDir}/${base}__${tag}__wire.jsonl`;
+  if (realLlm) {
+    await Deno.writeTextFile(chunkRoundsPath, "");
+    await Deno.writeTextFile(wirePath, "");
+  }
+
   const onProgress = async (t: ReplayTurnResult) => {
     await Deno.writeTextFile(progressPath, JSON.stringify(t) + "\n", { append: true });
     console.error(
@@ -109,6 +116,29 @@ async function main() {
   };
   const onManagerUsage = async (u: StructuredModelUsage) => {
     await Deno.writeTextFile(managerUsagePath, JSON.stringify(u) + "\n", { append: true });
+    console.error(
+      `    [usage] ${u.classifier} dur=${u.durationMs}ms in=${u.inputTokens} out=${u.outputTokens}`,
+    );
+  };
+  const onChunkRound = (e: any) => {
+    Deno.writeTextFileSync(chunkRoundsPath, JSON.stringify(e) + "\n", { append: true });
+    console.error(
+      `    [chunk-round ${e.round}] items=${e.itemCount} sizes=[${e.itemSizes.slice(0, 8).join(",")}${e.itemSizes.length > 8 ? "..." : ""}] splits=${e.realSplits} errors=${e.itemErrors} chunksAfter=${e.resultingChunkCount} largestAfter=${e.resultingLargest} dur=${e.durationMs}ms`,
+    );
+  };
+  const onManagerWireRequest = async (w: any) => {
+    await Deno.writeTextFile(
+      wirePath,
+      JSON.stringify({ kind: "request", ...w }) + "\n",
+      { append: true },
+    );
+  };
+  const onManagerWireResponse = async (w: any) => {
+    await Deno.writeTextFile(
+      wirePath,
+      JSON.stringify({ kind: "response", ...w }) + "\n",
+      { append: true },
+    );
   };
 
   const { stats, turns } = await replayRollout(args.rollout, {
@@ -120,6 +150,9 @@ async function main() {
         requestModel: args["request-model"] ?? "gpt-5.4",
         onProgress,
         onManagerUsage,
+        onChunkRound,
+        onManagerWireRequest,
+        onManagerWireResponse,
       }
       : undefined,
   });

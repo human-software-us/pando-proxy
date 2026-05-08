@@ -108,21 +108,34 @@ export type PieceManifestEntry = {
   fullPayloadIncludedInThisBatch: boolean;
 };
 
+export type SourceChunkBatchSection = {
+  label: string;
+  anchor: string;
+};
+
 export type SourceChunkBatchRequest = {
-  sources: Array<{
-    sourceId: string;
-    sourceKind: SourceKind;
-    toolName?: string;
-    contentText: string;
-    pointer?: Record<string, unknown>;
+  items: Array<{
+    itemId: string;
+    text: string;
   }>;
 };
 
+export type SourceChunkBatchResultOk = {
+  itemId: string;
+  sections: SourceChunkBatchSection[];
+};
+
+export type SourceChunkBatchResultError = {
+  itemId: string;
+  error: string;
+};
+
+export type SourceChunkBatchResult =
+  | SourceChunkBatchResultOk
+  | SourceChunkBatchResultError;
+
 export type SourceChunkBatchResponse = {
-  results: Array<{
-    sourceId: string;
-    chunks: string[];
-  }>;
+  results: SourceChunkBatchResult[];
 };
 
 export type MemoryManagerClients = {

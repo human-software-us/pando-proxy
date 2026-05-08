@@ -16,8 +16,13 @@ import { type ArchivedSource, materializeMemoryFromArchivedSources } from "./sto
 import {
   createStructuredClients,
   type StructuredClients,
+  type StructuredModelFailureDiagnostics,
+  type StructuredModelSelection,
+  type StructuredModelSkipped,
   type StructuredModelUsage,
+  type StructuredModelWireLog,
 } from "./structured_model.ts";
+import { type ChunkRoundLogEntry, setChunkRoundLogger } from "./chunking.ts";
 
 type RolloutEvent = {
   timestamp?: string;
@@ -91,6 +96,12 @@ export type RealLlmOpts = {
   requestModel?: string;
   onProgress?: (turn: ReplayTurnResult) => void | Promise<void>;
   onManagerUsage?: (usage: StructuredModelUsage) => void | Promise<void>;
+  onManagerSelection?: (sel: StructuredModelSelection) => void | Promise<void>;
+  onManagerSkipped?: (sk: StructuredModelSkipped) => void | Promise<void>;
+  onManagerError?: (err: StructuredModelFailureDiagnostics) => void | Promise<void>;
+  onManagerWireRequest?: (wire: StructuredModelWireLog) => void | Promise<void>;
+  onManagerWireResponse?: (wire: StructuredModelWireLog) => void | Promise<void>;
+  onChunkRound?: (entry: ChunkRoundLogEntry) => void;
 };
 
 export function parseRollout(text: string): RolloutEvent[] {
@@ -213,10 +224,31 @@ export async function replayRollout(
       config,
       opts.realLlm.requestModel ?? "gpt-5.4",
       opts.realLlm.authHeader,
-      undefined,
+      opts.realLlm.onManagerSelection,
       opts.realLlm.onManagerUsage,
+      opts.realLlm.onManagerSkipped,
+      opts.realLlm.onManagerError,
+      opts.realLlm.onManagerWireRequest,
+      opts.realLlm.onManagerWireResponse,
     )
     : buildStubClients(policy);
+  setChunkRoundLogger(opts.realLlm?.onChunkRound ?? null);
+  try {
+    return await runReplay(opts, config, clients, prefixItems, roundsToRun, effectivePolicy, path);
+  } finally {
+    setChunkRoundLogger(null);
+  }
+}
+
+async function runReplay(
+  opts: { policy?: StubPolicy; maxRounds?: number; config?: ProxyConfig; realLlm?: RealLlmOpts },
+  config: ProxyConfig,
+  clients: StructuredClients,
+  prefixItems: Record<string, unknown>[],
+  roundsToRun: Round[],
+  effectivePolicy: string,
+  path: string,
+): Promise<{ stats: ReplayStats; turns: ReplayTurnResult[] }> {
 
   const accumulated = [...prefixItems];
   const turns: ReplayTurnResult[] = [];
@@ -334,9 +366,9 @@ function buildStubClients(policy: StubPolicy): StructuredClients {
       _attempt = 1,
     ): Promise<SourceChunkBatchResponse> =>
       Promise.resolve({
-        results: request.sources.map((source) => ({
-          sourceId: source.sourceId,
-          chunks: [source.contentText],
+        results: request.items.map((item) => ({
+          itemId: item.itemId,
+          sections: [{ label: "whole item", anchor: item.text.slice(0, 1) }],
         })),
       }),
     pieceDropBatch: (
