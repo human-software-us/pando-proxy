@@ -44,49 +44,59 @@ Task routing receives the active task title, full exact active pieces, full new 
 only a five-card newest-first archive page. It can request the next linear page when older archived
 task titles are needed for `revive_task`.
 
-If `source_chunk_batch` omits a requested source from its result array, the proxy keeps that source
-as one whole exact piece. Returned source ids and verbatim chunks still have to validate locally.
-
 If a chunk request is too large for the overflow structured window, the proxy skips the model call
-and keeps each requested source whole.
+and keeps each requested source whole. Per-item failure is isolated: a malformed item's response
+cannot break parsing of the others — it just leaves that item unchanged for the round.
 
 ## Chunk contract
 
-Chunking returns verbatim chunk strings. It never returns summaries, labels, content types, boundary
-classifications, selectors, character offsets, or model-generated rewrites.
+Chunking is **iterative outline+anchor commitment**, never verbatim-chunk return. The model never
+reproduces source bytes; verbatim is a property of slicing the original source text locally.
 
-The model should see the exact raw source text it is being asked to chunk, not a JSON-escaped
-serialization of that text. The returned chunks must be validated against that same raw source view.
-If the prompt representation and materialization representation differ, chunk equality is not
-trustworthy and must not be accepted as exact chunks.
-
-The model output for each source is only:
+State is a list of chunks, initialized as one chunk per source (the whole source). Each round, every
+current chunk is sent to `source_chunk_batch` as an item in one batched call. The model returns, per
+item, a section outline:
 
 ```ts
 type SourceChunkBatchResponse = {
-  results: Array<{
-    sourceId: string;
-    chunks: string[];
-  }>;
+  results: Array<
+    | { itemId: string; sections: Array<{ label: string; anchor: string }> }
+    | { itemId: string; error: string }
+  >;
 };
 ```
 
-For `chunks`, every item must be exact text copied from the raw source body. Chunking is lossless:
-`chunks.join("")` must equal the complete raw source body exactly. The model may cut anywhere,
-including before or after whitespace, but it must not trim, normalize, delete, add, or rewrite any
-character. Empty chunks are ignored only after the joined output has passed the exact equality
-check.
+Each `label` is a 3–8 word semantic description; each `anchor` is a 5–7 word verbatim prefix copied
+exactly from the start of that section in the item's text. Anchors are cut points — the slice from
+one anchor to the next becomes one sub-chunk.
 
-Local code converts the validated chunk list into persisted `[start,end)` selectors by cumulative
-offset. If the model cannot return valid coherent chunks, the source remains one whole exact piece.
-Invalid chunk output retries once with diagnostics; if it still cannot be validated, the proxy keeps
-that source whole. Opaque payloads such as image/base64-like data should usually be returned as one
-chunk containing the entire raw source body.
+Local code resolves anchors against the item's text using forward-sequential `indexOf`. Each anchor
+is searched only after the previous resolved position. A failed anchor drops just that cut and the
+others apply. The prefix before the first resolved anchor is preserved (extended to position 0).
+Resulting sub-chunks are converted to `[start,end)` selectors relative to the original source.
 
-The chunker never invents semantic split points. It materializes model-selected exact chunks and
-keeps the source whole on invalid model output. Large `rg`, test, log, XML, JSON, image-like, or
-blob-like payloads stay whole unless the model selects exact chunks that local validation can
-materialize.
+The model is instructed: each section will be evaluated independently for keep/drop in the active
+working set, so each section should be a self-standing keep/drop decision. If two adjacent sections
+would always travel together, they should be one section. Atomic content (encrypted blobs, minified
+streams, opaque payloads, small already-coherent units) returns a single section. The model never
+returns an empty sections array.
+
+The orchestrator (`chunkBatchWithModel`) runs up to 7 rounds. It terminates early when a whole round
+produces zero real splits (a real split = item replaced by ≥2 sub-chunks). Item boundaries set in an
+earlier round are never undone — chunk count is monotonically non-decreasing across rounds. There is
+no size threshold; every chunk is re-evaluated every round until the model declines to split it.
+
+Empty-text spans (e.g., a tool that produced no output) are short-circuited locally — they become a
+single empty chunk without burning a model call.
+
+Final per-source verbatim check: the concatenation of a source's final chunks must equal the
+original source text. On any mismatch the chunker falls back to whole for that source only. This is
+the verbatim safety net: any drift from anchor resolution is caught before chunks reach downstream
+code.
+
+Per-round telemetry is emitted via `setChunkRoundLogger(fn)`: round number, item count, item sizes,
+real splits, item errors, per-item section counts, resulting chunk count, largest resulting chunk,
+duration. Replay and serve modes both forward this telemetry to the JSONL log.
 
 On `new_task`, the old task identity is always archived as a complete task bundle. The old active
 pieces are still included as prune candidates for the fresh task, so pieces that remain relevant can

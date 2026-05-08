@@ -1147,8 +1147,9 @@ For every item:
 - For each section, return a label (3-8 words describing the section) and an anchor (a 5-7 word verbatim prefix copied EXACTLY from the start of that section in the item text, including any leading whitespace and punctuation).
 - The anchor MUST appear in the item text; anchors must be in order of appearance.
 - Anchors are cut points: the slice from one anchor up to the next anchor becomes one chunk. Choose anchors at real conceptual boundaries.
-- Bias toward more sections rather than fewer. Over-splitting is fine; under-splitting is bad.
-- If an item has no clear internal structure (a single base64/encrypted blob, a minified token stream, an opaque payload), return a SINGLE section covering the whole item. Never return an empty sections array. Do not invent boundaries inside opaque content.
+- Each section will be evaluated independently downstream as a candidate to keep in or drop from active memory. Make sections so that each one is a meaningful, self-standing keep/drop decision — a piece a reviewer could judge on its own merits. If two adjacent sections would always be kept or dropped together, they should be one section, not two. If a section cannot be evaluated without reading the previous one, you have cut too deep.
+- Prefer one clean cut at a real boundary over three cuts that split a coherent block. Useful seams, not maximum section count.
+- If an item has no clear internal structure (a single base64/encrypted blob, a minified token stream, an opaque payload, or a small already-coherent unit that is one keep/drop decision), return a SINGLE section covering the whole item. Never return an empty sections array. Do not invent boundaries inside opaque or already-coherent content.
 - Each item is independent. If you cannot produce a valid outline for one item, return { itemId, error: "..." } for that item only and continue with the others.
 - Do NOT return chunk text. Only labels and short verbatim anchors.
 - Return JSON only.

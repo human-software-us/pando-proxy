@@ -242,6 +242,12 @@ async function chunkBatchWithModel(
       const spans = spansBySourceId.get(source.sourceId) ?? [];
       const text = sourceTextById.get(source.sourceId) ?? "";
       for (const [spanIndex, span] of spans.entries()) {
+        if (span.end <= span.start) {
+          // Empty span — keep it as a single chunk locally so downstream sees
+          // "this tool produced no output" without burning a model call.
+          sourceHasSuccess.add(source.sourceId);
+          continue;
+        }
         const itemId = `s${itemKeys.length}`;
         items.push({ itemId, text: text.slice(span.start, span.end) });
         itemKeys.push({ sourceId: source.sourceId, spanIndex });
